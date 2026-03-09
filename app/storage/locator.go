@@ -210,7 +210,9 @@ func (l *Locator) AddMessage(ctx context.Context, msg string, chatID, userID int
 	l.Lock()
 	defer l.Unlock()
 
-	hash := l.MsgHash(msg)
+	baseHash := l.MsgHash(msg)
+	// Store a parseable key to allow deterministic duplicate selection by prefix + msg_id.
+	hash := fmt.Sprintf("%s:%d", baseHash, msgID)
 	log.Printf("[DEBUG] add message to locator: %q, hash:%s, userID:%d, user name:%q, chatID:%d, msgID:%d",
 		msg, hash, userID, userName, chatID, msgID)
 
@@ -274,15 +276,24 @@ func (l *Locator) Message(ctx context.Context, msg string) (MsgMeta, bool) {
 	l.RLock()
 	defer l.RUnlock()
 
-	var meta MsgMeta
-	hash := l.MsgHash(msg)
-	query := l.Adopt(`SELECT time, chat_id, user_id, user_name, msg_id FROM messages WHERE hash = ? AND gid = ?`)
-	err := l.GetContext(ctx, &meta, query, hash, l.GID())
+	type locatedMsg struct {
+		MsgMeta
+		Hash string `db:"hash"`
+	}
+
+	var located locatedMsg
+	baseHash := l.MsgHash(msg)
+	hashPattern := baseHash + ":%"
+	query := l.Adopt(`SELECT hash, time, chat_id, user_id, user_name, msg_id
+		FROM messages WHERE gid = ? AND (hash = ? OR hash LIKE ?)
+		ORDER BY time DESC, msg_id DESC LIMIT 1`)
+	err := l.GetContext(ctx, &located, query, l.GID(), baseHash, hashPattern)
 	if err != nil {
-		log.Printf("[DEBUG] failed to find message by hash %q: %v", hash, err)
+		log.Printf("[DEBUG] failed to find message by hash %q: %v", baseHash, err)
 		return MsgMeta{}, false
 	}
-	return meta, true
+
+	return located.MsgMeta, true
 }
 
 // UserNameByID returns username by user id within the same gid
