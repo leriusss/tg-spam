@@ -425,6 +425,7 @@ func (a *admin) deleteUserMessages(userID int64) (deleted int, err error) {
 
 	const maxConsecutiveFailures = 5
 	consecutiveFailures := 0
+	softMisses := 0
 	failed := 0
 
 	for _, msgID := range msgIDs {
@@ -444,17 +445,32 @@ func (a *admin) deleteUserMessages(userID int64) (deleted int, err error) {
 		if err == nil {
 			deleted++
 			consecutiveFailures = 0 // reset on success
-		} else {
-			failed++
-			consecutiveFailures++
-			// continue on error - message might already be deleted
+			continue
 		}
+		if isSoftDeleteMiss(err) {
+			softMisses++
+			continue
+		}
+
+		failed++
+		consecutiveFailures++
+		// continue on hard error until the consecutive failure guard trips
 	}
 
-	if failed > 0 {
-		log.Printf("[INFO] aggressive cleanup completed: deleted %d messages, failed %d", deleted, failed)
+	if failed > 0 || softMisses > 0 {
+		log.Printf("[INFO] aggressive cleanup completed: deleted %d messages, soft misses %d, hard failures %d",
+			deleted, softMisses, failed)
 	}
 	return deleted, nil
+}
+
+func isSoftDeleteMiss(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "message to delete not found") || strings.Contains(msg, "message already deleted")
 }
 
 // directReport handles messages replayed with "/spam" or "spam", or "/ban" or "ban" by admin

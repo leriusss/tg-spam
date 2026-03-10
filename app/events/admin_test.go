@@ -2386,6 +2386,37 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 		assert.Len(t, mockAPI.RequestCalls(), 3)
 	})
 
+	t.Run("stale message ids are soft misses", func(t *testing.T) {
+		callCount := 0
+		mockAPI := &mocks.TbAPIMock{
+			RequestFunc: func(c tbapi.Chattable) (*tbapi.APIResponse, error) {
+				callCount++
+				if callCount <= 5 {
+					return nil, fmt.Errorf("Bad Request: message to delete not found")
+				}
+				return &tbapi.APIResponse{Ok: true}, nil
+			},
+		}
+
+		locatorMock := &mocks.LocatorMock{
+			GetUserMessageIDsFunc: func(ctx context.Context, userID int64, limit int) ([]int, error) {
+				return []int{401, 402, 403, 404, 405, 406, 407}, nil
+			},
+		}
+
+		adm := &admin{
+			tbAPI:                  mockAPI,
+			locator:                locatorMock,
+			primChatID:             123456789,
+			aggressiveCleanupLimit: 100,
+		}
+
+		deleted, err := adm.deleteUserMessages(666)
+		require.NoError(t, err)
+		assert.Equal(t, 2, deleted)
+		assert.Len(t, mockAPI.RequestCalls(), 7) // stale IDs should not stop scanning
+	})
+
 	t.Run("too many consecutive failures", func(t *testing.T) {
 		failCount := 0
 		mockAPI := &mocks.TbAPIMock{
