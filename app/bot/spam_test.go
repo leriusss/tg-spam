@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"strconv"
@@ -1103,4 +1104,17 @@ func TestSpamFilter_RemoveDynamicSamples(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSpamFilter_RemoveApprovedUser_NoRowsIsNoop(t *testing.T) {
+	det := &mocks.DetectorMock{
+		RemoveApprovedUserFunc: func(id string) error {
+			assert.Equal(t, "123", id)
+			return sql.ErrNoRows
+		},
+	}
+
+	s := NewSpamFilter(det, SpamConfig{})
+	err := s.RemoveApprovedUser(123)
+	require.NoError(t, err)
 }

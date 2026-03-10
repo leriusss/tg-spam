@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -209,6 +211,10 @@ func (s *SpamFilter) AddApprovedUser(id int64, name string) error {
 func (s *SpamFilter) RemoveApprovedUser(id int64) error {
 	log.Printf("[INFO] remove aproved user: %d", id)
 	if err := s.Detector.RemoveApprovedUser(fmt.Sprintf("%d", id)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[DEBUG] approved user %d is not present, skip removal", id)
+			return nil
+		}
 		return fmt.Errorf("failed to delete approved user from storage: %w", err)
 	}
 	return nil

@@ -1676,10 +1676,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		update := tbapi.Update{Message: msg}
 		err := adminHandler.MsgHandler(update)
 
-		// in the actual code, the error from RemoveApprovedUser is collected in a multierror
-		// so the final error should include that failure
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to remove user")
+		require.NoError(t, err)
 
 		// other operations should still proceed
 		assert.Len(t, mockAPI.SendCalls(), 1, "Should send detection results to admin")
@@ -2455,4 +2452,65 @@ func TestAdmin_channelDisplayName(t *testing.T) {
 			assert.Equal(t, tt.expected, adm.channelDisplayName(tt.chat))
 		})
 	}
+}
+
+func TestAdmin_MsgHandlerForwardWithAggressiveCleanup(t *testing.T) {
+	mockAPI := &mocks.TbAPIMock{
+		RequestFunc: func(c tbapi.Chattable) (*tbapi.APIResponse, error) {
+			return &tbapi.APIResponse{Ok: true}, nil
+		},
+		SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) {
+			return tbapi.Message{Text: "ok"}, nil
+		},
+	}
+
+	botMock := &mocks.BotMock{
+		RemoveApprovedUserFunc: func(id int64) error { return nil },
+		OnMessageFunc: func(msg bot.Message, checkOnly bool) bot.Response {
+			return bot.Response{CheckResults: []spamcheck.Response{{Name: "test", Spam: true, Details: "spam"}}}
+		},
+		UpdateSpamFunc: func(msg string) error { return nil },
+	}
+
+	locatorMock := &mocks.LocatorMock{
+		MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
+			return storage.MsgMeta{UserID: 888, UserName: "spammer", MsgID: 999}, true
+		},
+		GetUserMessageIDsFunc: func(ctx context.Context, userID int64, limit int) ([]int, error) {
+			assert.Equal(t, int64(888), userID)
+			assert.Equal(t, 3, limit)
+			return []int{999, 998, 997}, nil
+		},
+	}
+
+	adminHandler := admin{
+		tbAPI:                  mockAPI,
+		bot:                    botMock,
+		locator:                locatorMock,
+		primChatID:             123,
+		adminChatID:            456,
+		aggressiveCleanup:      true,
+		aggressiveCleanupLimit: 3,
+	}
+
+	msg := &tbapi.Message{
+		MessageID: 789,
+		Chat:      tbapi.Chat{ID: 456},
+		From:      &tbapi.User{UserName: "admin", ID: 123},
+		Text:      "spam message text",
+		ForwardOrigin: &tbapi.MessageOrigin{
+			Type:       "user",
+			SenderUser: &tbapi.User{ID: 555, UserName: "user"},
+		},
+	}
+
+	err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+	require.NoError(t, err)
+
+	// wait for async aggressive cleanup goroutine
+	time.Sleep(200 * time.Millisecond)
+
+	require.Len(t, locatorMock.GetUserMessageIDsCalls(), 1)
+	assert.Equal(t, int64(888), locatorMock.GetUserMessageIDsCalls()[0].UserID)
+	assert.Equal(t, 3, locatorMock.GetUserMessageIDsCalls()[0].Limit)
 }

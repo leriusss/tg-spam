@@ -139,7 +139,7 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 
 	// remove user from the approved list and from storage
 	if err := a.bot.RemoveApprovedUser(info.UserID); err != nil {
-		errs = multierror.Append(errs, fmt.Errorf("failed to remove user %d from approved list: %w", info.UserID, err))
+		log.Printf("[WARN] failed to remove user %d from approved list: %v", info.UserID, err)
 	}
 
 	// make a message with spam info and send to admin chat
@@ -198,6 +198,24 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		}
 	}
 
+	if a.aggressiveCleanup && !a.dry && info.UserID != a.primChatID {
+		go func(cleanupUserID int64, cleanupName string) {
+			deleted, err := a.deleteUserMessages(cleanupUserID)
+			if err != nil {
+				log.Printf("[WARN] aggressive cleanup failed: %v", err)
+				return
+			}
+			if deleted > 0 {
+				log.Printf("[INFO] aggressive cleanup: deleted %d messages from %d", deleted, cleanupUserID)
+				notifyMsg := fmt.Sprintf("_deleted %d messages from spammer %q (%d)_",
+					deleted, escapeMarkDownV1Text(cleanupName), cleanupUserID)
+				if err := send(tbapi.NewMessage(a.adminChatID, notifyMsg), a.tbAPI); err != nil {
+					log.Printf("[WARN] failed to send deletion notification: %v", err)
+				}
+			}
+		}(info.UserID, info.UserName)
+	}
+
 	if err := errs.ErrorOrNil(); err != nil {
 		return fmt.Errorf("spam notification failed: %w", err)
 	}
@@ -219,7 +237,7 @@ func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, m
 
 	// remove user from the approved list
 	if err := a.bot.RemoveApprovedUser(fwdID); err != nil {
-		errs = multierror.Append(errs, fmt.Errorf("failed to remove user %d from approved list: %w", fwdID, err))
+		log.Printf("[WARN] failed to remove user %d from approved list: %v", fwdID, err)
 	}
 
 	// get detection results (check only, don't update storage)
