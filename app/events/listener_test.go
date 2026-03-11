@@ -3535,6 +3535,60 @@ func TestTelegramListener_OrphanedReportDeletion(t *testing.T) {
 	})
 }
 
+func TestTelegramListener_getBanUsername_UserFormatting(t *testing.T) {
+	l := TelegramListener{}
+
+	tests := []struct {
+		name     string
+		user     bot.User
+		expected string
+	}{
+		{
+			name:     "without premium flag leak",
+			user:     bot.User{ID: 7832276321, Username: "EndosteumBreaker", DisplayName: "Ariana Rybakova", IsPremium: false},
+			expected: "7832276321 EndosteumBreaker Ariana Rybakova",
+		},
+		{
+			name:     "with premium flag leak prevented",
+			user:     bot.User{ID: 7832276321, Username: "EndosteumBreaker", DisplayName: "Ariana Rybakova", IsPremium: true},
+			expected: "7832276321 EndosteumBreaker Ariana Rybakova",
+		},
+		{
+			name:     "fallback to first and last name",
+			user:     bot.User{ID: 42, Username: "user42", FirstName: "First", LastName: "Last", IsPremium: true},
+			expected: "42 user42 First Last",
+		},
+		{
+			name:     "id only",
+			user:     bot.User{ID: 99, IsPremium: false},
+			expected: "99",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := l.getBanUsername(bot.Response{User: tt.user}, tbapi.Update{})
+			assert.Equal(t, tt.expected, got)
+			assert.NotContains(t, got, " false")
+			assert.NotContains(t, got, " true")
+		})
+	}
+}
+
+func TestTelegramListener_getBanUsername_ChannelUnchanged(t *testing.T) {
+	l := TelegramListener{}
+
+	update := tbapi.Update{
+		Message: &tbapi.Message{
+			SenderChat: &tbapi.Chat{UserName: "spamchannel"},
+		},
+	}
+	resp := bot.Response{ChannelID: -100999888}
+
+	got := l.getBanUsername(resp, update)
+	expected := fmt.Sprintf("%v", bot.SenderChat{ID: -100999888, UserName: "spamchannel"})
+	assert.Equal(t, expected, got)
+}
 func TestTelegramListener_isReportCommand(t *testing.T) {
 	tests := []struct {
 		name        string

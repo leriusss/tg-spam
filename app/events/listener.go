@@ -561,7 +561,7 @@ func (l *TelegramListener) isAdminChat(fromChat int64, from string, fromID int64
 
 func (l *TelegramListener) getBanUsername(resp bot.Response, update tbapi.Update) string {
 	if resp.ChannelID == 0 {
-		return fmt.Sprintf("%v", resp.User)
+		return formatBanUser(resp.User)
 	}
 	botChat := bot.SenderChat{
 		ID: resp.ChannelID,
@@ -581,6 +581,22 @@ func (l *TelegramListener) getBanUsername(resp bot.Response, update tbapi.Update
 		}
 	}
 	return fmt.Sprintf("%v", botChat)
+}
+func formatBanUser(user bot.User) string {
+	parts := []string{fmt.Sprintf("%d", user.ID)}
+	if user.Username != "" {
+		parts = append(parts, user.Username)
+	}
+
+	displayName := strings.TrimSpace(user.DisplayName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	}
+	if displayName != "" {
+		parts = append(parts, displayName)
+	}
+
+	return strings.Join(parts, " ")
 }
 
 // NotificationType defines how a message is delivered to users
