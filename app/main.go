@@ -129,6 +129,17 @@ type options struct {
 		Window    time.Duration `long:"window" env:"WINDOW" default:"1h" description:"time window for duplicate detection"`
 	} `group:"duplicates" namespace:"duplicates" env-namespace:"DUPLICATES"`
 
+	ContentExtraction struct {
+		Enabled                     bool `long:"enabled" env:"ENABLED" description:"enable normalized message content extraction"`
+		LogDebug                    bool `long:"log-debug" env:"LOG_DEBUG" description:"log normalized content extraction metadata"`
+		IncludeQuote                bool `long:"include-quote" env:"INCLUDE_QUOTE" description:"include Telegram quote text in normalized content"`
+		IncludeReply                bool `long:"include-reply" env:"INCLUDE_REPLY" description:"include replied message text in normalized content when quote is absent"`
+		IncludePreview              bool `long:"include-preview" env:"INCLUDE_PREVIEW" description:"reserve flag for link preview extraction"`
+		IncludeForwarded            bool `long:"include-forwarded" env:"INCLUDE_FORWARDED" description:"reserve flag for forwarded content extraction"`
+		UseFingerprintForDuplicates bool `long:"use-fingerprint-for-duplicates" env:"USE_FINGERPRINT_FOR_DUPLICATES" description:"reserve flag for duplicate detector fingerprint input"`
+		LowTextThreshold            int  `long:"low-text-threshold" env:"LOW_TEXT_THRESHOLD" default:"12" description:"rune length below which normalized content is marked low-text"`
+	} `group:"content-extraction" namespace:"content-extraction" env-namespace:"CONTENT_EXTRACTION"`
+
 	Report struct {
 		Enabled          bool          `long:"enabled" env:"ENABLED" description:"enable user spam reporting"`
 		Threshold        int           `long:"threshold" env:"THRESHOLD" default:"2" description:"number of reports to trigger admin notification"`
@@ -767,6 +778,16 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 		SpamMsg:      opts.Message.Spam,
 		SpamDryMsg:   opts.Message.Dry,
 		Dry:          opts.Dry,
+		ContentExtraction: bot.ContentExtractionConfig{
+			Enabled:               opts.ContentExtraction.Enabled,
+			LogDebug:              opts.ContentExtraction.LogDebug,
+			IncludeQuote:          opts.ContentExtraction.IncludeQuote,
+			IncludeReply:          opts.ContentExtraction.IncludeReply,
+			IncludePreview:        opts.ContentExtraction.IncludePreview,
+			IncludeForwarded:      opts.ContentExtraction.IncludeForwarded,
+			UseFingerprintForDups: opts.ContentExtraction.UseFingerprintForDuplicates,
+			LowTextThreshold:      opts.ContentExtraction.LowTextThreshold,
+		},
 	}
 	spamBot := bot.NewSpamFilter(detector, spamBotParams)
 	log.Printf("[DEBUG] spam bot config: %+v", spamBotParams)

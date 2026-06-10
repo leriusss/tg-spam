@@ -34,10 +34,11 @@ type SpamConfig struct {
 	SamplesStore SamplesStore // storage for spam samples
 	DictStore    DictStore    // storage for stop words and excluded tokens
 
-	SpamMsg    string
-	SpamDryMsg string
-	GroupID    string
-	Dry        bool
+	SpamMsg           string
+	SpamDryMsg        string
+	GroupID           string
+	Dry               bool
+	ContentExtraction ContentExtractionConfig
 }
 
 // Detector is a spam detector interface
@@ -88,6 +89,10 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		msgText = msg.Text + "\n" + msg.Quote
 	case msg.ReplyTo.Text != "":
 		msgText = msg.Text + "\n" + msg.ReplyTo.Text
+	}
+	if s.params.ContentExtraction.Enabled {
+		content := NormalizeMessageContent(msg, s.params.ContentExtraction)
+		msgText = content.CombinedText
 	}
 
 	// use channel identity for spam check when message is from a channel,
