@@ -1,10 +1,12 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"testing"
@@ -555,16 +557,14 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 	}
 }
 
-func TestSpamFilter_OnMessageDoesNotCallBurstRuntimePath(t *testing.T) {
+func TestSpamFilter_BurstDisabledDefaultDoesNotAffectOnMessage(t *testing.T) {
 	det := &mocks.DetectorMock{
 		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
 			return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
 		},
 	}
-	s := NewSpamFilter(det, SpamConfig{
-		Burst: BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30},
-	})
-	msg := Message{Text: "limited time offer", From: User{ID: 1, Username: "user1"}}
+	s := NewSpamFilter(det, SpamConfig{})
+	msg := Message{ID: 100, ChatID: 1, Text: "limited time offer", From: User{ID: 1, Username: "user1"}}
 
 	for range 3 {
 		got := s.OnMessage(msg, false)
@@ -572,6 +572,215 @@ func TestSpamFilter_OnMessageDoesNotCallBurstRuntimePath(t *testing.T) {
 		assert.Equal(t, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}, got.CheckResults)
 	}
 	assert.Len(t, det.CheckCalls(), 3)
+	assert.Empty(t, det.IsExplicitTrustedUserCalls())
+}
+
+func TestSpamFilter_BurstEnabledDetectsSameUserSameChat(t *testing.T) {
+	var logs bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(oldOutput)
+
+	rawText := "limited time offer"
+	det := &mocks.DetectorMock{
+		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+			return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+		},
+		IsExplicitTrustedUserFunc: func(userID string) bool {
+			assert.Equal(t, "10", userID)
+			return false
+		},
+	}
+	s := NewSpamFilter(det, SpamConfig{
+		SpamMsg: "detected",
+		Burst:   BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30},
+	})
+
+	msg := Message{ChatID: 1, Text: rawText, From: User{ID: 10, Username: "user1"}}
+	assert.False(t, s.OnMessage(withMessageID(msg, 101), false).Send)
+	assert.False(t, s.OnMessage(withMessageID(msg, 102), false).Send)
+	got := s.OnMessage(withMessageID(msg, 103), false)
+
+	require.True(t, got.Send)
+	require.Len(t, got.CheckResults, 2)
+	assert.Equal(t, spamcheck.Response{Name: "test", Spam: false, Details: "ham"}, got.CheckResults[0])
+	assert.Equal(t, "burst", got.CheckResults[1].Name)
+	assert.True(t, got.CheckResults[1].Spam)
+	assert.Contains(t, got.CheckResults[1].Details, "burst_exact_repetition")
+	assert.Contains(t, got.CheckResults[1].Details, "repeated 3 times in 30s")
+	assert.Empty(t, got.CheckResults[1].ExtraDeleteIDs)
+	assert.Len(t, det.CheckCalls(), 3)
+	assert.Len(t, det.IsExplicitTrustedUserCalls(), 3)
+	assert.NotContains(t, logs.String(), rawText)
+}
+
+func TestSpamFilter_BurstEnabledKeepsDetectorSpamAndMergesResults(t *testing.T) {
+	det := &mocks.DetectorMock{
+		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+			return true, []spamcheck.Response{{Name: "existing", Spam: true, Details: "existing spam"}}
+		},
+		IsExplicitTrustedUserFunc: func(userID string) bool { return false },
+	}
+	s := NewSpamFilter(det, SpamConfig{
+		SpamMsg: "detected",
+		Burst:   BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30},
+	})
+
+	msg := Message{ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}}
+	s.OnMessage(withMessageID(msg, 101), false)
+	s.OnMessage(withMessageID(msg, 102), false)
+	got := s.OnMessage(withMessageID(msg, 103), false)
+
+	require.True(t, got.Send)
+	require.Len(t, got.CheckResults, 2)
+	assert.Equal(t, "existing", got.CheckResults[0].Name)
+	assert.Equal(t, "burst", got.CheckResults[1].Name)
+	assert.Len(t, det.CheckCalls(), 3)
+}
+
+func TestSpamFilter_BurstEnabledDoesNotDetectBelowThresholdOrAcrossBuckets(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []Message
+	}{
+		{
+			name: "two messages only",
+			messages: []Message{
+				{ID: 101, ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+				{ID: 102, ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+			},
+		},
+		{
+			name: "same text from different users",
+			messages: []Message{
+				{ID: 101, ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+				{ID: 102, ChatID: 1, Text: "limited time offer", From: User{ID: 11, Username: "user2"}},
+				{ID: 103, ChatID: 1, Text: "limited time offer", From: User{ID: 12, Username: "user3"}},
+			},
+		},
+		{
+			name: "same user and text in different chats",
+			messages: []Message{
+				{ID: 101, ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+				{ID: 102, ChatID: 2, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+				{ID: 103, ChatID: 3, Text: "limited time offer", From: User{ID: 10, Username: "user1"}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &mocks.DetectorMock{
+				CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+					return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+				},
+				IsExplicitTrustedUserFunc: func(userID string) bool { return false },
+			}
+			s := NewSpamFilter(det, SpamConfig{Burst: BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30}})
+
+			for _, msg := range tc.messages {
+				got := s.OnMessage(msg, false)
+				assert.False(t, got.Send)
+				assert.Len(t, got.CheckResults, 1)
+				assert.Equal(t, "test", got.CheckResults[0].Name)
+			}
+			assert.Len(t, det.CheckCalls(), len(tc.messages))
+		})
+	}
+}
+
+func TestSpamFilter_BurstTrustedBoundary(t *testing.T) {
+	t.Run("manual explicit trusted skips burst", func(t *testing.T) {
+		det := &mocks.DetectorMock{
+			CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+				return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+			},
+			IsExplicitTrustedUserFunc: func(userID string) bool { return true },
+			IsApprovedUserFunc: func(userID string) bool {
+				t.Fatal("burst trusted boundary must not call IsApprovedUser")
+				return false
+			},
+		}
+		s := NewSpamFilter(det, SpamConfig{Burst: BurstConfig{Enabled: true, Threshold: 3}})
+		msg := Message{ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}}
+
+		for i := 0; i < 3; i++ {
+			got := s.OnMessage(withMessageID(msg, 100+i), false)
+			assert.False(t, got.Send)
+			assert.Len(t, got.CheckResults, 1)
+		}
+		assert.Len(t, det.IsExplicitTrustedUserCalls(), 3)
+	})
+
+	for _, name := range []string{"auto approved does not skip burst", "legacy unknown does not skip burst"} {
+		t.Run(name, func(t *testing.T) {
+			det := &mocks.DetectorMock{
+				CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+					return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+				},
+				IsExplicitTrustedUserFunc: func(userID string) bool { return false },
+				IsApprovedUserFunc: func(userID string) bool {
+					t.Fatal("burst trusted boundary must not call IsApprovedUser")
+					return false
+				},
+			}
+			s := NewSpamFilter(det, SpamConfig{SpamMsg: "detected", Burst: BurstConfig{Enabled: true, Threshold: 3}})
+			msg := Message{ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}}
+
+			s.OnMessage(withMessageID(msg, 101), false)
+			s.OnMessage(withMessageID(msg, 102), false)
+			got := s.OnMessage(withMessageID(msg, 103), false)
+
+			require.True(t, got.Send)
+			require.Len(t, got.CheckResults, 2)
+			assert.Equal(t, "burst", got.CheckResults[1].Name)
+		})
+	}
+}
+
+func TestSpamFilter_BurstCleanupCandidates(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  BurstConfig
+		wantIDs []int
+	}{
+		{
+			name:    "cleanup disabled",
+			config:  BurstConfig{Enabled: true, Threshold: 3, CleanupEnabled: false},
+			wantIDs: nil,
+		},
+		{
+			name:    "cleanup enabled",
+			config:  BurstConfig{Enabled: true, Threshold: 3, CleanupEnabled: true, MaxMessagesPerUser: 4},
+			wantIDs: []int{101, 102},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			det := &mocks.DetectorMock{
+				CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+					return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+				},
+				IsExplicitTrustedUserFunc: func(userID string) bool { return false },
+			}
+			s := NewSpamFilter(det, SpamConfig{SpamMsg: "detected", Burst: tc.config})
+			msg := Message{ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}}
+
+			s.OnMessage(withMessageID(msg, 101), false)
+			s.OnMessage(withMessageID(msg, 102), false)
+			got := s.OnMessage(withMessageID(msg, 103), false)
+
+			require.True(t, got.Send)
+			require.Len(t, got.CheckResults, 2)
+			assert.Equal(t, tc.wantIDs, got.CheckResults[1].ExtraDeleteIDs)
+		})
+	}
+}
+
+func withMessageID(msg Message, id int) Message {
+	msg.ID = id
+	return msg
 }
 
 func TestSpamFilter_UpdateSpam(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 
@@ -27,6 +28,7 @@ import (
 type SpamFilter struct {
 	Detector
 	params SpamConfig
+	burst  *BurstDetector
 }
 
 // SpamConfig is a full set of parameters for spam bot
@@ -73,7 +75,7 @@ type DictStore interface {
 
 // NewSpamFilter creates new spam filter
 func NewSpamFilter(detector Detector, params SpamConfig) *SpamFilter {
-	return &SpamFilter{Detector: detector, params: params}
+	return &SpamFilter{Detector: detector, params: params, burst: NewBurstDetector(params.Burst)}
 }
 
 // OnMessage checks if user already approved and if not checks if user is a spammer
@@ -156,14 +158,33 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 			}
 		}
 	}
-	isSpam, checkResults := s.Check(spamReq)
+
+	burstDecision := BurstDecision{}
+	if s.burst != nil && s.burst.Config().Enabled && !s.Detector.IsExplicitTrustedUser(spamReq.UserID) {
+		burstDecision = s.burst.Check(msg.ChatID, checkUserID, msg.ID, msgText, time.Time{})
+	}
+
+	detectorSpam, checkResults := s.Check(spamReq)
+	if burstDecision.Spam {
+		checkResults = append(checkResults, spamcheck.Response{
+			Name:           "burst",
+			Spam:           true,
+			Details:        fmt.Sprintf("%s: repeated %d times in %ds", burstDecision.Reason, burstDecision.Count, burstDecision.WindowSeconds),
+			ExtraDeleteIDs: burstDecision.ExtraDeleteIDs,
+		})
+	}
 	crs := make([]string, 0, len(checkResults))
 	for _, cr := range checkResults {
 		crs = append(crs, fmt.Sprintf("{name: %s, spam: %v, details: %s}", cr.Name, cr.Spam, cr.Details))
 	}
 	checkResultStr := strings.Join(crs, ", ")
+	isSpam := detectorSpam || burstDecision.Spam
 	if isSpam {
-		log.Printf("[INFO] user %s detected as spammer: %s, %q", displayUsername, checkResultStr, msgText)
+		if detectorSpam {
+			log.Printf("[INFO] user %s detected as spammer: %s, %q", displayUsername, checkResultStr, msgText)
+		} else {
+			log.Printf("[INFO] user %s detected as spammer: %s", displayUsername, checkResultStr)
+		}
 		msgPrefix := s.params.SpamMsg
 		if s.params.Dry {
 			msgPrefix = s.params.SpamDryMsg
