@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -171,6 +172,86 @@ func Test_makeDetector(t *testing.T) {
 		assert.NotNil(t, res)
 		assert.Equal(t, 0, res.FirstMessagesCount)
 		assert.False(t, res.FirstMessageOnly)
+	})
+}
+
+func TestBurstConfigParsing(t *testing.T) {
+	clearBurstEnv := func(t *testing.T) {
+		t.Helper()
+		for _, key := range []string{
+			"BURST_ENABLED",
+			"BURST_WINDOW_SECONDS",
+			"BURST_THRESHOLD",
+			"BURST_SIMILARITY",
+			"BURST_MAX_USERS",
+			"BURST_MAX_MESSAGES_PER_USER",
+			"BURST_CLEANUP_ENABLED",
+			"BURST_LOG_DEBUG",
+		} {
+			old, ok := os.LookupEnv(key)
+			require.NoError(t, os.Unsetenv(key))
+			t.Cleanup(func() {
+				if ok {
+					require.NoError(t, os.Setenv(key, old))
+					return
+				}
+				require.NoError(t, os.Unsetenv(key))
+			})
+		}
+	}
+
+	parse := func(t *testing.T, args ...string) (options, error) {
+		t.Helper()
+		var opts options
+		p := flags.NewParser(&opts, flags.None)
+		_, err := p.ParseArgs(args)
+		return opts, err
+	}
+
+	t.Run("defaults disabled", func(t *testing.T) {
+		clearBurstEnv(t)
+		opts, err := parse(t)
+		require.NoError(t, err)
+
+		assert.False(t, opts.Burst.Enabled)
+		assert.False(t, opts.Burst.CleanupEnabled)
+		assert.Equal(t, 30, opts.Burst.WindowSeconds)
+		assert.Equal(t, 3, opts.Burst.Threshold)
+		assert.Equal(t, "exact", opts.Burst.Similarity)
+		assert.Equal(t, 1000, opts.Burst.MaxUsers)
+		assert.Equal(t, 10, opts.Burst.MaxMessagesPerUser)
+		assert.False(t, opts.Burst.LogDebug)
+	})
+
+	t.Run("env fields", func(t *testing.T) {
+		clearBurstEnv(t)
+		t.Setenv("BURST_ENABLED", "true")
+		t.Setenv("BURST_WINDOW_SECONDS", "45")
+		t.Setenv("BURST_THRESHOLD", "4")
+		t.Setenv("BURST_SIMILARITY", "exact")
+		t.Setenv("BURST_MAX_USERS", "50")
+		t.Setenv("BURST_MAX_MESSAGES_PER_USER", "7")
+		t.Setenv("BURST_CLEANUP_ENABLED", "true")
+		t.Setenv("BURST_LOG_DEBUG", "true")
+
+		opts, err := parse(t)
+		require.NoError(t, err)
+
+		assert.True(t, opts.Burst.Enabled)
+		assert.Equal(t, 45, opts.Burst.WindowSeconds)
+		assert.Equal(t, 4, opts.Burst.Threshold)
+		assert.Equal(t, "exact", opts.Burst.Similarity)
+		assert.Equal(t, 50, opts.Burst.MaxUsers)
+		assert.Equal(t, 7, opts.Burst.MaxMessagesPerUser)
+		assert.True(t, opts.Burst.CleanupEnabled)
+		assert.True(t, opts.Burst.LogDebug)
+	})
+
+	t.Run("invalid similarity rejected", func(t *testing.T) {
+		clearBurstEnv(t)
+		_, err := parse(t, "--burst.similarity=fuzzy")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "fuzzy")
 	})
 }
 

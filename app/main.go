@@ -129,6 +129,17 @@ type options struct {
 		Window    time.Duration `long:"window" env:"WINDOW" default:"1h" description:"time window for duplicate detection"`
 	} `group:"duplicates" namespace:"duplicates" env-namespace:"DUPLICATES"`
 
+	Burst struct {
+		Enabled            bool   `long:"enabled" env:"ENABLED" description:"enable burst spam detector foundation"`
+		WindowSeconds      int    `long:"window-seconds" env:"WINDOW_SECONDS" default:"30" description:"rolling window for burst detection, in seconds"`
+		Threshold          int    `long:"threshold" env:"THRESHOLD" default:"3" description:"matching messages required to detect a burst"`
+		Similarity         string `long:"similarity" env:"SIMILARITY" default:"exact" choice:"exact" description:"burst matching mode"`
+		MaxUsers           int    `long:"max-users" env:"MAX_USERS" default:"1000" description:"maximum chat/user burst buckets kept in memory"`
+		MaxMessagesPerUser int    `long:"max-messages-per-user" env:"MAX_MESSAGES_PER_USER" default:"10" description:"maximum burst messages kept per chat/user bucket"`
+		CleanupEnabled     bool   `long:"cleanup-enabled" env:"CLEANUP_ENABLED" description:"return burst cleanup candidates"`
+		LogDebug           bool   `long:"log-debug" env:"LOG_DEBUG" description:"log burst detector debug metadata"`
+	} `group:"burst" namespace:"burst" env-namespace:"BURST"`
+
 	ContentExtraction struct {
 		Enabled                     bool `long:"enabled" env:"ENABLED" description:"enable normalized message content extraction"`
 		LogDebug                    bool `long:"log-debug" env:"LOG_DEBUG" description:"log normalized content extraction metadata"`
@@ -787,6 +798,16 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 			IncludeForwarded:      opts.ContentExtraction.IncludeForwarded,
 			UseFingerprintForDups: opts.ContentExtraction.UseFingerprintForDuplicates,
 			LowTextThreshold:      opts.ContentExtraction.LowTextThreshold,
+		},
+		Burst: bot.BurstConfig{
+			Enabled:            opts.Burst.Enabled,
+			WindowSeconds:      opts.Burst.WindowSeconds,
+			Threshold:          opts.Burst.Threshold,
+			Similarity:         opts.Burst.Similarity,
+			MaxUsers:           opts.Burst.MaxUsers,
+			MaxMessagesPerUser: opts.Burst.MaxMessagesPerUser,
+			CleanupEnabled:     opts.Burst.CleanupEnabled,
+			LogDebug:           opts.Burst.LogDebug,
 		},
 	}
 	spamBot := bot.NewSpamFilter(detector, spamBotParams)

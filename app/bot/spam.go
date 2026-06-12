@@ -39,6 +39,7 @@ type SpamConfig struct {
 	GroupID           string
 	Dry               bool
 	ContentExtraction ContentExtractionConfig
+	Burst             BurstConfig
 }
 
 // Detector is a spam detector interface
