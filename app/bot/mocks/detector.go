@@ -32,6 +32,9 @@ import (
 //			IsApprovedUserFunc: func(userID string) bool {
 //				panic("mock out the IsApprovedUser method")
 //			},
+//			IsExplicitTrustedUserFunc: func(userID string) bool {
+//				panic("mock out the IsExplicitTrustedUser method")
+//			},
 //			LoadSamplesFunc: func(exclReader io.Reader, spamReaders []io.Reader, hamReaders []io.Reader) (tgspam.LoadResult, error) {
 //				panic("mock out the LoadSamples method")
 //			},
@@ -74,6 +77,9 @@ type DetectorMock struct {
 
 	// IsApprovedUserFunc mocks the IsApprovedUser method.
 	IsApprovedUserFunc func(userID string) bool
+
+	// IsExplicitTrustedUserFunc mocks the IsExplicitTrustedUser method.
+	IsExplicitTrustedUserFunc func(userID string) bool
 
 	// LoadSamplesFunc mocks the LoadSamples method.
 	LoadSamplesFunc func(exclReader io.Reader, spamReaders []io.Reader, hamReaders []io.Reader) (tgspam.LoadResult, error)
@@ -119,6 +125,11 @@ type DetectorMock struct {
 			// UserID is the userID argument value.
 			UserID string
 		}
+		// IsExplicitTrustedUser holds details about calls to the IsExplicitTrustedUser method.
+		IsExplicitTrustedUser []struct {
+			// UserID is the userID argument value.
+			UserID string
+		}
 		// LoadSamples holds details about calls to the LoadSamples method.
 		LoadSamples []struct {
 			// ExclReader is the exclReader argument value.
@@ -159,18 +170,19 @@ type DetectorMock struct {
 			Msg string
 		}
 	}
-	lockAddApprovedUser    sync.RWMutex
-	lockApprovedUsers      sync.RWMutex
-	lockCheck              sync.RWMutex
-	lockGetLuaPluginNames  sync.RWMutex
-	lockIsApprovedUser     sync.RWMutex
-	lockLoadSamples        sync.RWMutex
-	lockLoadStopWords      sync.RWMutex
-	lockRemoveApprovedUser sync.RWMutex
-	lockRemoveHam          sync.RWMutex
-	lockRemoveSpam         sync.RWMutex
-	lockUpdateHam          sync.RWMutex
-	lockUpdateSpam         sync.RWMutex
+	lockAddApprovedUser       sync.RWMutex
+	lockApprovedUsers         sync.RWMutex
+	lockCheck                 sync.RWMutex
+	lockGetLuaPluginNames     sync.RWMutex
+	lockIsApprovedUser        sync.RWMutex
+	lockIsExplicitTrustedUser sync.RWMutex
+	lockLoadSamples           sync.RWMutex
+	lockLoadStopWords         sync.RWMutex
+	lockRemoveApprovedUser    sync.RWMutex
+	lockRemoveHam             sync.RWMutex
+	lockRemoveSpam            sync.RWMutex
+	lockUpdateHam             sync.RWMutex
+	lockUpdateSpam            sync.RWMutex
 }
 
 // AddApprovedUser calls AddApprovedUserFunc.
@@ -356,6 +368,45 @@ func (mock *DetectorMock) ResetIsApprovedUserCalls() {
 	mock.lockIsApprovedUser.Lock()
 	mock.calls.IsApprovedUser = nil
 	mock.lockIsApprovedUser.Unlock()
+}
+
+// IsExplicitTrustedUser calls IsExplicitTrustedUserFunc.
+func (mock *DetectorMock) IsExplicitTrustedUser(userID string) bool {
+	if mock.IsExplicitTrustedUserFunc == nil {
+		panic("DetectorMock.IsExplicitTrustedUserFunc: method is nil but Detector.IsExplicitTrustedUser was just called")
+	}
+	callInfo := struct {
+		UserID string
+	}{
+		UserID: userID,
+	}
+	mock.lockIsExplicitTrustedUser.Lock()
+	mock.calls.IsExplicitTrustedUser = append(mock.calls.IsExplicitTrustedUser, callInfo)
+	mock.lockIsExplicitTrustedUser.Unlock()
+	return mock.IsExplicitTrustedUserFunc(userID)
+}
+
+// IsExplicitTrustedUserCalls gets all the calls that were made to IsExplicitTrustedUser.
+// Check the length with:
+//
+//	len(mockedDetector.IsExplicitTrustedUserCalls())
+func (mock *DetectorMock) IsExplicitTrustedUserCalls() []struct {
+	UserID string
+} {
+	var calls []struct {
+		UserID string
+	}
+	mock.lockIsExplicitTrustedUser.RLock()
+	calls = mock.calls.IsExplicitTrustedUser
+	mock.lockIsExplicitTrustedUser.RUnlock()
+	return calls
+}
+
+// ResetIsExplicitTrustedUserCalls reset all the calls that were made to IsExplicitTrustedUser.
+func (mock *DetectorMock) ResetIsExplicitTrustedUserCalls() {
+	mock.lockIsExplicitTrustedUser.Lock()
+	mock.calls.IsExplicitTrustedUser = nil
+	mock.lockIsExplicitTrustedUser.Unlock()
 }
 
 // LoadSamples calls LoadSamplesFunc.
@@ -660,6 +711,10 @@ func (mock *DetectorMock) ResetCalls() {
 	mock.lockIsApprovedUser.Lock()
 	mock.calls.IsApprovedUser = nil
 	mock.lockIsApprovedUser.Unlock()
+
+	mock.lockIsExplicitTrustedUser.Lock()
+	mock.calls.IsExplicitTrustedUser = nil
+	mock.lockIsExplicitTrustedUser.Unlock()
 
 	mock.lockLoadSamples.Lock()
 	mock.calls.LoadSamples = nil

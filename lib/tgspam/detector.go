@@ -311,6 +311,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 			UserID:    req.UserID,
 			UserName:  req.UserName,
 			Timestamp: time.Now(),
+			Source:    approved.SourceAuto,
 		}
 		d.approvedUsers[req.UserID] = au // update approved users status in memory
 		if d.userStorage != nil {
@@ -464,6 +465,18 @@ func (d *Detector) IsApprovedUser(userID string) bool {
 	return ui.Count > d.FirstMessagesCount
 }
 
+// IsExplicitTrustedUser checks if a user was explicitly approved by admin/API.
+func (d *Detector) IsExplicitTrustedUser(userID string) bool {
+	d.lock.RLock()
+	defer d.lock.RUnlock()
+
+	ui, ok := d.approvedUsers[userID]
+	if !ok {
+		return false
+	}
+	return ui.Source == approved.SourceManual
+}
+
 // AddApprovedUser adds user IDs to the list of approved users.
 func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
 	d.lock.Lock()
@@ -477,11 +490,14 @@ func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
 		UserName:  user.UserName,
 		Count:     d.FirstMessagesCount + 1, // +1 to skip first message check if count is 0
 		Timestamp: ts,
+		Source:    approved.SourceManual,
 	}
 
 	if d.userStorage != nil {
 		ctx, cancel := d.ctxWithStoreTimeout()
 		defer cancel()
+		user.Source = approved.SourceManual
+		user.Timestamp = ts
 		if err := d.userStorage.Write(ctx, user); err != nil {
 			return fmt.Errorf("failed to write approved user %+v to storage: %w", user, err)
 		}

@@ -50,7 +50,7 @@ func (s *StorageTestSuite) TestApprovedUsers_NewApprovedUsers() {
 				var columnCount int
 				err = db.Get(&columnCount, "SELECT COUNT(*) FROM pragma_table_info('approved_users')")
 				s.Require().NoError(err)
-				s.Equal(5, columnCount) // id, uid, gid, name, timestamp
+				s.Equal(6, columnCount) // id, uid, gid, name, timestamp, source
 			})
 
 			s.Run("nil db connection", func() {
@@ -106,6 +106,7 @@ func (s *StorageTestSuite) TestApprovedUsers_NewApprovedUsers() {
 				s.Equal("user1", users[0].UserID)
 				s.Equal("test", users[0].UserName)
 				s.Equal(oldTime.Unix(), users[0].Timestamp.Unix())
+				s.Equal(approved.SourceUnknown, users[0].Source)
 			})
 		})
 	}
@@ -127,13 +128,15 @@ func (s *StorageTestSuite) TestApprovedUsers_Write() {
 					user: approved.UserInfo{
 						UserID:   "123",
 						UserName: "John Doe",
+						Source:   approved.SourceManual,
 					},
 					verify: func(s *StorageTestSuite, db *engine.SQL, user approved.UserInfo) {
 						var saved approvedUsersInfo
-						query := db.Adopt("SELECT uid, name FROM approved_users WHERE uid = ?")
+						query := db.Adopt("SELECT uid, name, source FROM approved_users WHERE uid = ?")
 						err := db.Get(&saved, query, user.UserID)
 						s.Require().NoError(err)
 						s.Equal(user.UserName, saved.UserName)
+						s.Equal(approved.SourceManual, saved.Source)
 					},
 				},
 				{
@@ -141,13 +144,15 @@ func (s *StorageTestSuite) TestApprovedUsers_Write() {
 					user: approved.UserInfo{
 						UserID:   "456",
 						UserName: "Jane Doe",
+						Source:   approved.SourceAuto,
 					},
 					verify: func(s *StorageTestSuite, db *engine.SQL, user approved.UserInfo) {
 						var saved approvedUsersInfo
-						query := db.Adopt("SELECT uid, name FROM approved_users WHERE uid = ?")
+						query := db.Adopt("SELECT uid, name, source FROM approved_users WHERE uid = ?")
 						err := db.Get(&saved, query, user.UserID)
 						s.Require().NoError(err)
 						s.Equal(user.UserName, saved.UserName)
+						s.Equal(approved.SourceAuto, saved.Source)
 					},
 				},
 			}
@@ -188,8 +193,8 @@ func (s *StorageTestSuite) TestApprovedUsers_Read() {
 
 			// write test data
 			users := []approved.UserInfo{
-				{UserID: "123", UserName: "John", Timestamp: testTime},
-				{UserID: "456", UserName: "Jane", Timestamp: testTime},
+				{UserID: "123", UserName: "John", Timestamp: testTime, Source: approved.SourceManual},
+				{UserID: "456", UserName: "Jane", Timestamp: testTime, Source: approved.SourceAuto},
 			}
 			for _, u := range users {
 				writeErr := au.Write(ctx, u)
@@ -201,6 +206,75 @@ func (s *StorageTestSuite) TestApprovedUsers_Read() {
 			s.Require().NoError(err)
 			s.Require().Len(users, 2)
 			s.Equal("123", users[0].UserID)
+			s.Equal(approved.SourceManual, users[0].Source)
+			s.Equal(approved.SourceAuto, users[1].Source)
+		})
+	}
+}
+
+func (s *StorageTestSuite) TestApprovedUsers_SourceDefaultsToUnknown() {
+	ctx := context.Background()
+	for _, dbt := range s.getTestDB() {
+		db := dbt.DB
+		s.Run(fmt.Sprintf("with %s", db.Type()), func() {
+			defer db.Exec("DROP TABLE approved_users")
+
+			au, err := NewApprovedUsers(ctx, db)
+			s.Require().NoError(err)
+
+			insertQuery := db.Adopt("INSERT INTO approved_users (uid, gid, name, source) VALUES (?, ?, ?, ?)")
+			_, err = db.Exec(insertQuery, "empty-source", db.GID(), "empty", "")
+			s.Require().NoError(err)
+			_, err = db.Exec(insertQuery, "null-source", db.GID(), "null", nil)
+			s.Require().NoError(err)
+
+			users, err := au.Read(ctx)
+			s.Require().NoError(err)
+			s.Require().Len(users, 2)
+			for _, user := range users {
+				s.Equal(approved.SourceUnknown, user.Source)
+			}
+		})
+	}
+}
+
+func (s *StorageTestSuite) TestApprovedUsers_LegacyRowsRemainUnknownAfterMigration() {
+	ctx := context.Background()
+	for _, dbt := range s.getTestDB() {
+		db := dbt.DB
+		s.Run(fmt.Sprintf("with %s", db.Type()), func() {
+			if db.Type() != engine.Sqlite {
+				s.T().Skip("legacy schema setup is sqlite-specific")
+			}
+
+			_, err := db.Exec(`
+				CREATE TABLE approved_users (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					uid TEXT,
+					gid TEXT DEFAULT '',
+					name TEXT,
+					timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+					UNIQUE(gid, uid)
+				)
+			`)
+			s.Require().NoError(err)
+			defer db.Exec("DROP TABLE approved_users")
+
+			_, err = db.Exec("INSERT INTO approved_users (uid, gid, name) VALUES (?, ?, ?)", "legacy", db.GID(), "legacy user")
+			s.Require().NoError(err)
+
+			au, err := NewApprovedUsers(ctx, db)
+			s.Require().NoError(err)
+
+			// A second init must not fail on the already-added source column.
+			_, err = NewApprovedUsers(ctx, db)
+			s.Require().NoError(err)
+
+			users, err := au.Read(ctx)
+			s.Require().NoError(err)
+			s.Require().Len(users, 1)
+			s.Equal("legacy", users[0].UserID)
+			s.Equal(approved.SourceUnknown, users[0].Source)
 		})
 	}
 }

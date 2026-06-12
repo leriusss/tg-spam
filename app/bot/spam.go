@@ -55,6 +55,7 @@ type Detector interface {
 	RemoveApprovedUser(id string) error
 	ApprovedUsers() (res []approved.UserInfo)
 	IsApprovedUser(userID string) bool
+	IsExplicitTrustedUser(userID string) bool
 	GetLuaPluginNames() []string // Returns the list of available Lua plugin names
 }
 
@@ -202,6 +203,11 @@ func (s *SpamFilter) UpdateHam(msg string) error {
 // IsApprovedUser checks if user is in the list of approved users
 func (s *SpamFilter) IsApprovedUser(userID int64) bool {
 	return s.Detector.IsApprovedUser(fmt.Sprintf("%d", userID))
+}
+
+// IsExplicitTrustedUser checks if user was explicitly approved by admin/API.
+func (s *SpamFilter) IsExplicitTrustedUser(userID int64) bool {
+	return s.Detector.IsExplicitTrustedUser(fmt.Sprintf("%d", userID))
 }
 
 // AddApprovedUser adds users to the list of approved users, to both the detector and the storage

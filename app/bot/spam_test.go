@@ -555,6 +555,25 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 	}
 }
 
+func TestSpamFilter_OnMessageDoesNotCallBurstRuntimePath(t *testing.T) {
+	det := &mocks.DetectorMock{
+		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+			return false, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}
+		},
+	}
+	s := NewSpamFilter(det, SpamConfig{
+		Burst: BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30},
+	})
+	msg := Message{Text: "limited time offer", From: User{ID: 1, Username: "user1"}}
+
+	for range 3 {
+		got := s.OnMessage(msg, false)
+		assert.False(t, got.Send)
+		assert.Equal(t, []spamcheck.Response{{Name: "test", Spam: false, Details: "ham"}}, got.CheckResults)
+	}
+	assert.Len(t, det.CheckCalls(), 3)
+}
+
 func TestSpamFilter_UpdateSpam(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -958,6 +977,21 @@ func TestSpamFilter_IsApprovedUser(t *testing.T) {
 			assert.Len(t, det.IsApprovedUserCalls(), 1)
 		})
 	}
+}
+
+func TestSpamFilter_IsExplicitTrustedUser(t *testing.T) {
+	det := &mocks.DetectorMock{
+		IsExplicitTrustedUserFunc: func(userID string) bool {
+			assert.Equal(t, "123", userID)
+			return true
+		},
+	}
+
+	s := NewSpamFilter(det, SpamConfig{})
+	got := s.IsExplicitTrustedUser(123)
+
+	assert.True(t, got)
+	assert.Len(t, det.IsExplicitTrustedUserCalls(), 1)
 }
 
 func TestSpamFilter_DynamicSamples(t *testing.T) {

@@ -2407,6 +2407,71 @@ func TestDetector_ApprovedUsers(t *testing.T) {
 
 }
 
+func TestDetector_ExplicitTrustedUserProvenance(t *testing.T) {
+	t.Run("manual approval is explicit trusted and still approved", func(t *testing.T) {
+		d := NewDetector(Config{MaxAllowedEmoji: -1, MinMsgLen: 5, FirstMessageOnly: true})
+
+		err := d.AddApprovedUser(approved.UserInfo{UserID: "manual-user", UserName: "trusted"})
+		require.NoError(t, err)
+
+		assert.True(t, d.IsExplicitTrustedUser("manual-user"))
+		assert.True(t, d.IsApprovedUser("manual-user"))
+	})
+
+	t.Run("auto approval is not explicit trusted and pre-approved behavior is unchanged", func(t *testing.T) {
+		mockUserStore := &mocks.UserStorageMock{
+			ReadFunc: func(context.Context) ([]approved.UserInfo, error) {
+				return nil, nil
+			},
+			WriteFunc:  func(_ context.Context, au approved.UserInfo) error { return nil },
+			DeleteFunc: func(_ context.Context, id string) error { return nil },
+		}
+		d := NewDetector(Config{MaxAllowedEmoji: -1, MinMsgLen: 5, FirstMessagesCount: 2, FirstMessageOnly: true})
+		_, err := d.WithUserStorage(mockUserStore)
+		require.NoError(t, err)
+
+		spam, _ := d.Check(spamcheck.Request{Msg: "this is normal ham", UserID: "auto-user"})
+		assert.False(t, spam)
+		spam, _ = d.Check(spamcheck.Request{Msg: "another normal ham", UserID: "auto-user"})
+		assert.False(t, spam)
+
+		require.Len(t, mockUserStore.WriteCalls(), 2)
+		assert.Equal(t, approved.SourceAuto, mockUserStore.WriteCalls()[1].Au.Source)
+		assert.False(t, d.IsExplicitTrustedUser("auto-user"))
+		assert.False(t, d.IsApprovedUser("auto-user"), "threshold semantics use count > FirstMessagesCount")
+
+		spam, cr := d.Check(spamcheck.Request{Msg: "spam after pre-approved", UserID: "auto-user"})
+		assert.False(t, spam)
+		require.NotEmpty(t, cr)
+		assert.Equal(t, "pre-approved", cr[0].Name)
+		assert.False(t, d.IsExplicitTrustedUser("auto-user"))
+	})
+
+	t.Run("legacy unknown is not explicit trusted but preserves pre-approved behavior", func(t *testing.T) {
+		mockUserStore := &mocks.UserStorageMock{
+			ReadFunc: func(context.Context) ([]approved.UserInfo, error) {
+				return []approved.UserInfo{{UserID: "legacy-user", UserName: "legacy", Source: approved.SourceUnknown}}, nil
+			},
+			WriteFunc:  func(_ context.Context, au approved.UserInfo) error { return nil },
+			DeleteFunc: func(_ context.Context, id string) error { return nil },
+		}
+		d := NewDetector(Config{MaxAllowedEmoji: -1, MinMsgLen: 5, FirstMessagesCount: 3, FirstMessageOnly: true})
+		_, err := d.LoadStopWords(strings.NewReader("spam"))
+		require.NoError(t, err)
+		count, err := d.WithUserStorage(mockUserStore)
+		require.NoError(t, err)
+		assert.Equal(t, 1, count)
+
+		assert.False(t, d.IsExplicitTrustedUser("legacy-user"))
+		assert.True(t, d.IsApprovedUser("legacy-user"))
+
+		spam, cr := d.Check(spamcheck.Request{Msg: "spam text should still be pre-approved", UserID: "legacy-user"})
+		assert.False(t, spam)
+		require.NotEmpty(t, cr)
+		assert.Equal(t, "pre-approved", cr[0].Name)
+	})
+}
+
 func TestDetector_LoadSamples(t *testing.T) {
 	t.Run("basic loading", func(t *testing.T) {
 		d := NewDetector(Config{})

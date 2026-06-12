@@ -28,6 +28,7 @@ type approvedUsersInfo struct {
 	GroupID   string    `db:"gid"`
 	UserName  string    `db:"name"`
 	Timestamp time.Time `db:"timestamp"`
+	Source    string    `db:"source"`
 }
 
 // all approved users queries
@@ -37,6 +38,7 @@ const (
 	CmdAddApprovedUser
 	CmdAddUIDColumn
 	CmdAddGIDColumn
+	CmdAddSourceColumn
 )
 
 // queries holds all approved users queries
@@ -48,6 +50,7 @@ var approvedUsersQueries = engine.NewQueryMap().
             gid TEXT DEFAULT '',
             name TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            source TEXT DEFAULT 'unknown',
             UNIQUE(gid, uid)
         )`,
 		Postgres: `CREATE TABLE IF NOT EXISTS approved_users (
@@ -56,6 +59,7 @@ var approvedUsersQueries = engine.NewQueryMap().
             gid TEXT DEFAULT '',
             name TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            source TEXT DEFAULT 'unknown',
             UNIQUE(gid, uid)
         )`,
 	}).
@@ -66,9 +70,9 @@ var approvedUsersQueries = engine.NewQueryMap().
         CREATE INDEX IF NOT EXISTS idx_approved_users_timestamp ON approved_users(timestamp)
     `).
 	Add(CmdAddApprovedUser, engine.Query{
-		Sqlite: "INSERT OR REPLACE INTO approved_users (uid, gid, name, timestamp) VALUES (?, ?, ?, ?)",
-		Postgres: "INSERT INTO approved_users (uid, gid, name, timestamp) VALUES ($1, $2, $3, $4) " +
-			"ON CONFLICT (gid, uid) DO UPDATE SET name=EXCLUDED.name, timestamp=EXCLUDED.timestamp",
+		Sqlite: "INSERT OR REPLACE INTO approved_users (uid, gid, name, timestamp, source) VALUES (?, ?, ?, ?, ?)",
+		Postgres: "INSERT INTO approved_users (uid, gid, name, timestamp, source) VALUES ($1, $2, $3, $4, $5) " +
+			"ON CONFLICT (gid, uid) DO UPDATE SET name=EXCLUDED.name, timestamp=EXCLUDED.timestamp, source=EXCLUDED.source",
 	}).
 	Add(CmdAddUIDColumn, engine.Query{
 		Sqlite:   "ALTER TABLE approved_users ADD COLUMN uid TEXT",
@@ -77,6 +81,10 @@ var approvedUsersQueries = engine.NewQueryMap().
 	Add(CmdAddGIDColumn, engine.Query{
 		Sqlite:   "ALTER TABLE approved_users ADD COLUMN gid TEXT DEFAULT ''",
 		Postgres: "ALTER TABLE approved_users ADD COLUMN IF NOT EXISTS gid TEXT DEFAULT ''",
+	}).
+	Add(CmdAddSourceColumn, engine.Query{
+		Sqlite:   "ALTER TABLE approved_users ADD COLUMN source TEXT DEFAULT 'unknown'",
+		Postgres: "ALTER TABLE approved_users ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'unknown'",
 	})
 
 // NewApprovedUsers creates a new ApprovedUsers storage
@@ -103,7 +111,7 @@ func (au *ApprovedUsers) Read(ctx context.Context) ([]approved.UserInfo, error) 
 	au.RLock()
 	defer au.RUnlock()
 
-	query := au.Adopt("SELECT uid, gid, name, timestamp FROM approved_users WHERE gid = ? ORDER BY uid ASC")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source FROM approved_users WHERE gid = ? ORDER BY uid ASC")
 	users := []approvedUsersInfo{}
 	if err := au.SelectContext(ctx, &users, query, au.GID()); err != nil {
 		return nil, fmt.Errorf("failed to get approved users: %w", err)
@@ -115,6 +123,7 @@ func (au *ApprovedUsers) Read(ctx context.Context) ([]approved.UserInfo, error) 
 			UserID:    u.UserID,
 			UserName:  u.UserName,
 			Timestamp: u.Timestamp,
+			Source:    normalizeApprovedSource(u.Source),
 		}
 	}
 	log.Printf("[DEBUG] read %d approved users", len(res))
@@ -133,13 +142,14 @@ func (au *ApprovedUsers) Write(ctx context.Context, user approved.UserInfo) erro
 	if user.Timestamp.IsZero() {
 		user.Timestamp = time.Now()
 	}
+	user.Source = normalizeApprovedSource(user.Source)
 
 	query, err := approvedUsersQueries.Pick(au.Type(), CmdAddApprovedUser)
 	if err != nil {
 		return fmt.Errorf("failed to get write query: %w", err)
 	}
 
-	if _, err := au.ExecContext(ctx, query, user.UserID, au.GID(), user.UserName, user.Timestamp); err != nil {
+	if _, err := au.ExecContext(ctx, query, user.UserID, au.GID(), user.UserName, user.Timestamp, user.Source); err != nil {
 		return fmt.Errorf("failed to insert user %+v: %w", user, err)
 	}
 
@@ -158,7 +168,7 @@ func (au *ApprovedUsers) Delete(ctx context.Context, id string) error {
 
 	// check if user exists first
 	var user approvedUsersInfo
-	query := au.Adopt("SELECT uid, gid, name, timestamp FROM approved_users WHERE uid = ? AND gid = ?")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source FROM approved_users WHERE uid = ? AND gid = ?")
 	if err := au.GetContext(ctx, &user, query, id, au.GID()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("[DEBUG] approved user %q not found, nothing to delete", id)
@@ -181,7 +191,7 @@ func (au *ApprovedUsers) Delete(ctx context.Context, id string) error {
 func (au *ApprovedUsers) migrate(ctx context.Context, tx *sqlx.Tx, gid string) error {
 	// try to select with new structure, if works - already migrated
 	var count int
-	err := tx.GetContext(ctx, &count, "SELECT COUNT(*) FROM approved_users WHERE uid='' AND gid=''")
+	err := tx.GetContext(ctx, &count, "SELECT COUNT(*) FROM approved_users WHERE uid='' AND gid='' AND source IS NOT NULL")
 	if err == nil {
 		log.Printf("[DEBUG] approved_users table already migrated")
 		return nil
@@ -208,6 +218,16 @@ func (au *ApprovedUsers) migrate(ctx context.Context, tx *sqlx.Tx, gid string) e
 		return fmt.Errorf("failed to add gid column: %w", err)
 	}
 
+	addSourceQuery, err := approvedUsersQueries.Pick(au.Type(), CmdAddSourceColumn)
+	if err != nil {
+		return fmt.Errorf("failed to get add source query: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, addSourceQuery)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("failed to add source column: %w", err)
+	}
+
 	migrateQuery := au.Adopt("UPDATE approved_users SET uid = id, gid = ? WHERE uid IS NULL OR uid = ''")
 	if _, err = tx.ExecContext(ctx, migrateQuery, gid); err != nil {
 		return fmt.Errorf("failed to migrate data: %w", err)
@@ -215,4 +235,13 @@ func (au *ApprovedUsers) migrate(ctx context.Context, tx *sqlx.Tx, gid string) e
 
 	log.Printf("[DEBUG] approved_users table migrated")
 	return nil
+}
+
+func normalizeApprovedSource(source string) string {
+	switch source {
+	case approved.SourceManual, approved.SourceAuto:
+		return source
+	default:
+		return approved.SourceUnknown
+	}
 }
