@@ -300,8 +300,9 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	log.Printf("[DEBUG] %s", string(msgJSON))
 	msg := transform(update.Message)
 
-	// ignore messages with empty text, no media, no video, no video note, no forward
-	if strings.TrimSpace(msg.Text) == "" && msg.Image == nil && !msg.WithVideoNote && !msg.WithVideo && !msg.WithForward {
+	// External-link buttons must reach the deterministic guard even when Telegram exposes no text/media flag.
+	if strings.TrimSpace(msg.Text) == "" && msg.Image == nil && !msg.WithVideoNote && !msg.WithVideo && !msg.WithForward &&
+		!msg.WithExternalLinkButton {
 		return nil
 	}
 	ctx := context.TODO()
@@ -315,7 +316,8 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		locatorUserID = msg.SenderChat.ID
 		locatorUserName = msg.SenderChat.UserName
 	}
-	if err := l.Locator.AddMessage(ctx, msg.Text, fromChat, locatorUserID, locatorUserName, msg.ID); err != nil {
+	if err := l.Locator.AddMessage(ctx, locatorMessageKey(update.Message, msg.Text, fromChat, locatorUserID), fromChat,
+		locatorUserID, locatorUserName, msg.ID); err != nil {
 		log.Printf("[WARN] failed to add message to locator: %v", err)
 	}
 
@@ -324,6 +326,13 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	if msg.SenderChat.ID != 0 && msg.SenderChat.ID == fromChat {
 		log.Printf("[DEBUG] skipping spam check for anonymous admin post from group itself")
 		return nil
+	}
+
+	// Telegram group administrators are loaded into SuperUsers by updateSupers. They are exempt from
+	// this guard; approved/trusted non-admin users are deliberately not exempt.
+	if msg.WithExternalLinkButton && l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) {
+		log.Printf("[DEBUG] external inline button guard bypassed for administrator %s (%d)", msg.From.Username, msg.From.ID)
+		msg.WithExternalLinkButton = false
 	}
 
 	resp := l.Bot.OnMessage(*msg, false)

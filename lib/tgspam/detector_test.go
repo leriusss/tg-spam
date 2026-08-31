@@ -23,6 +23,29 @@ import (
 	"github.com/umputun/tg-spam/lib/tgspam/mocks"
 )
 
+func TestDetector_ExternalInlineButtonGuard(t *testing.T) {
+	d := NewDetector(Config{FirstMessageOnly: true, FirstMessagesCount: 1, MinMsgLen: 50})
+	d.approvedUsers["123"] = approved.UserInfo{UserID: "123", Count: 10}
+
+	metaCheckCalled := false
+	d.WithMetaChecks(func(spamcheck.Request) spamcheck.Response {
+		metaCheckCalled = true
+		return spamcheck.Response{Name: "should not run"}
+	})
+
+	spam, checks := d.Check(spamcheck.Request{
+		Msg:    "",
+		UserID: "123",
+		Meta:   spamcheck.MetaData{HasExternalLinkButton: true},
+	})
+
+	assert.True(t, spam)
+	require.Len(t, checks, 1)
+	assert.Equal(t, "external inline button", checks[0].Name)
+	assert.True(t, checks[0].Spam)
+	assert.False(t, metaCheckCalled, "guard must return before configurable/expensive checks")
+}
+
 func TestDetector_CheckWithShort(t *testing.T) {
 	d := NewDetector(Config{MaxAllowedEmoji: 1, MinMsgLen: 150})
 	lr, err := d.LoadStopWords(bytes.NewBufferString("в личку\nвсем привет"))

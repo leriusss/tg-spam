@@ -111,8 +111,12 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		msgTxt = m.Text
 	}
 
-	if msgTxt == "" {
-		return errors.New("empty message text")
+	lookupKey := locatorMessageKey(update.Message, msgTxt, a.primChatID, fwdID)
+	if msgTxt == "" && lookupKey == "" {
+		if fwdID != 0 {
+			return a.msgHandlerFallback(update, fwdID, username, msgTxt)
+		}
+		return errors.New("empty message text and no stable media locator key")
 	}
 
 	log.Printf("[DEBUG] forwarded message from superuser %q (%d) to admin chat %d: %q",
@@ -120,7 +124,7 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 
 	// it would be nice to ban this user right away, but we don't have forwarded user ID here due to tg privacy limitation.
 	// it is empty in update.Message. to ban this user, we need to get the match on the message from the locator and ban from there.
-	info, ok := a.locator.Message(context.TODO(), msgTxt)
+	info, ok := a.locator.Message(context.TODO(), lookupKey)
 	if !ok {
 		// locator lookup failed; if ForwardOrigin provides a user ID, use degraded fallback path
 		if fwdID != 0 {
@@ -168,8 +172,10 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	}
 
 	// update spam samples
-	if err := a.bot.UpdateSpam(msgTxt); err != nil {
-		return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+	if msgTxt != "" {
+		if err := a.bot.UpdateSpam(msgTxt); err != nil {
+			return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+		}
 	}
 
 	// delete message
@@ -272,8 +278,10 @@ func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, m
 	}
 
 	// update spam samples
-	if err := a.bot.UpdateSpam(msgTxt); err != nil {
-		return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+	if msgTxt != "" {
+		if err := a.bot.UpdateSpam(msgTxt); err != nil {
+			return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+		}
 	}
 
 	// ban user (no message deletion - we don't have the message ID from primary chat)
@@ -285,6 +293,9 @@ func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, m
 
 	// warn admin that the original message must be deleted manually
 	snippet := msgTxt
+	if snippet == "" {
+		snippet = "[media/button message without text]"
+	}
 	if len([]rune(snippet)) > 100 {
 		snippet = string([]rune(snippet)[:100]) + "..."
 	}

@@ -521,6 +521,24 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 				UserName: "user1",
 			},
 		},
+		{
+			name: "external inline button metadata reaches detector",
+			message: Message{
+				ID: 42, Text: "", From: User{ID: 1, Username: "user1"},
+				WithKeyboard: true, WithExternalLinkButton: true,
+			},
+			wantResponse: Response{
+				Text: `detected: "user1" (1)`, Send: true, ReplyTo: 42,
+				BanInterval: PermanentBanDuration, DeleteReplyTo: true,
+				User:         User{ID: 1, Username: "user1"},
+				CheckResults: []spamcheck.Response{{Name: "test", Spam: true, Details: "spam"}},
+			},
+			wantRequest: spamcheck.Request{
+				Msg: "", UserID: "1", UserName: "user1", Meta: spamcheck.MetaData{
+					HasKeyboard: true, HasExternalLinkButton: true, MessageID: 42,
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {

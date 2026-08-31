@@ -177,6 +177,18 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
+	// External inline-link buttons are a deterministic production guard. It must run before
+	// approved-user handling and before every configurable or expensive classifier check.
+	if req.Meta.HasExternalLinkButton {
+		cr = append(cr, spamcheck.Response{
+			Name:    "external inline button",
+			Spam:    true,
+			Details: "message contains an external inline-link button",
+		})
+		d.spamHistory.Push(req)
+		return true, cr
+	}
+
 	// check for duplicate messages FIRST - behavioral check that applies to all users
 	if d.duplicateDetector != nil {
 		cr = append(cr, d.duplicateDetector.check(req))

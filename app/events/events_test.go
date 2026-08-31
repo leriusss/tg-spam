@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -459,6 +460,101 @@ func TestTelegramListener_transformTextMessage(t *testing.T) {
 			assert.Equal(t, tt.expected, transform(tt.input))
 		})
 	}
+}
+
+func TestExternalInlineButtonDetection(t *testing.T) {
+	httpURL := "http://example.com/open"
+	httpsURL := "https://example.com/open"
+	tgURL := "tg://resolve?domain=example"
+	callback := "open"
+	switchInline := "query"
+
+	tests := []struct {
+		name   string
+		button tbapi.InlineKeyboardButton
+		want   bool
+	}{
+		{name: "http url", button: tbapi.InlineKeyboardButton{URL: &httpURL}, want: true},
+		{name: "https url", button: tbapi.InlineKeyboardButton{URL: &httpsURL}, want: true},
+		{name: "login url", button: tbapi.InlineKeyboardButton{LoginURL: &tbapi.LoginURL{URL: httpsURL}}, want: true},
+		{name: "web app", button: tbapi.InlineKeyboardButton{WebApp: &tbapi.WebAppInfo{URL: httpsURL}}, want: true},
+		{name: "telegram internal url", button: tbapi.InlineKeyboardButton{URL: &tgURL}, want: false},
+		{name: "callback", button: tbapi.InlineKeyboardButton{CallbackData: &callback}, want: false},
+		{name: "payment", button: tbapi.InlineKeyboardButton{Pay: true}, want: false},
+		{name: "copy", button: tbapi.InlineKeyboardButton{CopyText: &tbapi.CopyTextButton{Text: "copy"}}, want: false},
+		{name: "switch inline", button: tbapi.InlineKeyboardButton{SwitchInlineQuery: &switchInline}, want: false},
+		{name: "game", button: tbapi.InlineKeyboardButton{CallbackGame: &tbapi.CallbackGame{}}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			markup := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{tt.button}}}
+			assert.Equal(t, tt.want, hasExternalInlineButton(markup))
+			msg := transform(&tbapi.Message{ReplyMarkup: markup})
+			assert.True(t, msg.WithKeyboard)
+			assert.Equal(t, tt.want, msg.WithExternalLinkButton)
+		})
+	}
+	assert.False(t, transform(&tbapi.Message{}).WithExternalLinkButton)
+}
+
+func TestLocatorMessageKeyForEmptyMedia(t *testing.T) {
+	msg := &tbapi.Message{Photo: []tbapi.PhotoSize{{FileID: "small"}, {FileID: "largest"}}}
+	assert.Equal(t, "telegram-media:chat:100|sender:200|photo:largest", locatorMessageKey(msg, "", 100, 200))
+	assert.Equal(t, "caption wins", locatorMessageKey(msg, "caption wins", 100, 200))
+
+	t.Run("same file id is scoped by sender", func(t *testing.T) {
+		keyA := locatorMessageKey(msg, "", 100, 200)
+		keyB := locatorMessageKey(msg, "", 100, 201)
+		assert.NotEqual(t, keyA, keyB)
+	})
+
+	t.Run("same file id is scoped by chat", func(t *testing.T) {
+		keyA := locatorMessageKey(msg, "", 100, 200)
+		keyB := locatorMessageKey(msg, "", 101, 200)
+		assert.NotEqual(t, keyA, keyB)
+	})
+
+	t.Run("same sender repeat is deterministic content key", func(t *testing.T) {
+		keyA := locatorMessageKey(msg, "", 100, 200)
+		keyB := locatorMessageKey(msg, "", 100, 200)
+		assert.Equal(t, keyA, keyB)
+	})
+}
+
+func TestMediaLocatorKeysPreventCrossIdentitySelection(t *testing.T) {
+	locator, teardown := prepTestLocator(t)
+	defer teardown()
+	ctx := context.Background()
+	media := &tbapi.Message{Animation: &tbapi.Animation{FileID: "same-file"}}
+
+	keyUserA := locatorMessageKey(media, "", 100, 200)
+	keyUserB := locatorMessageKey(media, "", 100, 201)
+	require.NoError(t, locator.AddMessage(ctx, keyUserA, 100, 200, "user-a", 101))
+	require.NoError(t, locator.AddMessage(ctx, keyUserB, 100, 201, "user-b", 201))
+
+	foundA, ok := locator.Message(ctx, keyUserA)
+	require.True(t, ok)
+	assert.Equal(t, int64(200), foundA.UserID)
+	assert.Equal(t, 101, foundA.MsgID)
+
+	foundB, ok := locator.Message(ctx, keyUserB)
+	require.True(t, ok)
+	assert.Equal(t, int64(201), foundB.UserID)
+	assert.Equal(t, 201, foundB.MsgID)
+
+	keyChatB := locatorMessageKey(media, "", 101, 200)
+	require.NoError(t, locator.AddMessage(ctx, keyChatB, 101, 200, "user-a", 301))
+	foundChatB, ok := locator.Message(ctx, keyChatB)
+	require.True(t, ok)
+	assert.Equal(t, int64(101), foundChatB.ChatID)
+	assert.Equal(t, 301, foundChatB.MsgID)
+
+	// Existing locator semantics for repeated content are deterministic: newest time/msg_id wins.
+	require.NoError(t, locator.AddMessage(ctx, keyUserA, 100, 200, "user-a", 102))
+	repeated, ok := locator.Message(ctx, keyUserA)
+	require.True(t, ok)
+	assert.Equal(t, 102, repeated.MsgID)
 }
 
 func TestTelegramListener_transformPhoto(t *testing.T) {

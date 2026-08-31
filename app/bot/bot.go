@@ -56,13 +56,14 @@ type Message struct {
 	} `json:",omitzero"`
 	Quote string `json:",omitempty"` // quoted text from TextQuote
 
-	WithVideo     bool `json:",omitempty"`
-	WithVideoNote bool `json:",omitempty"`
-	WithForward   bool `json:",omitempty"`
-	WithAudio     bool `json:",omitempty"`
-	WithKeyboard  bool `json:",omitempty"`
-	WithContact   bool `json:",omitempty"`
-	WithGiveaway  bool `json:",omitempty"`
+	WithVideo              bool `json:",omitempty"`
+	WithVideoNote          bool `json:",omitempty"`
+	WithForward            bool `json:",omitempty"`
+	WithAudio              bool `json:",omitempty"`
+	WithKeyboard           bool `json:",omitempty"`
+	WithExternalLinkButton bool `json:",omitempty"`
+	WithContact            bool `json:",omitempty"`
+	WithGiveaway           bool `json:",omitempty"`
 }
 
 // Entity represents one special entity in a text message.

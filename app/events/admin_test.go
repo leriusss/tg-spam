@@ -1166,11 +1166,14 @@ func TestAdmin_MsgHandlerWithEmptyText(t *testing.T) {
 		RemoveApprovedUserFunc: func(id int64) error {
 			return nil
 		},
+		OnMessageFunc: func(msg bot.Message, checkOnly bool) bot.Response {
+			return bot.Response{}
+		},
 	}
 
 	locatorMock := &mocks.LocatorMock{
-		AddMessageFunc: func(ctx context.Context, msg string, chatID, userID int64, userName string, msgID int) error {
-			return nil
+		MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
+			return storage.MsgMeta{UserID: 456, UserName: "user", MsgID: 42}, true
 		},
 	}
 
@@ -1189,11 +1192,10 @@ func TestAdmin_MsgHandlerWithEmptyText(t *testing.T) {
 
 			update := tbapi.Update{Message: tt.msg}
 			err := adminHandler.MsgHandler(update)
-			require.Error(t, err)
-			assert.Equal(t, "empty message text", err.Error())
+			require.NoError(t, err)
 
-			// verify no requests were made to ban or delete
-			assert.Empty(t, mockAPI.RequestCalls())
+			// empty-text media now resolves through the stable media locator key and follows normal cleanup/ban.
+			assert.GreaterOrEqual(t, len(mockAPI.RequestCalls()), 2)
 			assert.Empty(t, botMock.UpdateSpamCalls())
 		})
 	}
@@ -1982,6 +1984,89 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		assert.Empty(t, mockAPI.RequestCalls())
 		assert.Empty(t, botMock.UpdateSpamCalls())
 	})
+}
+
+func TestAdmin_MsgHandlerEmptyMediaSelectsScopedSender(t *testing.T) {
+	locator, teardown := prepTestLocator(t)
+	defer teardown()
+	ctx := context.Background()
+	media := &tbapi.Message{Animation: &tbapi.Animation{FileID: "shared-gif"}}
+	keyA := locatorMessageKey(media, "", 123, 501)
+	keyB := locatorMessageKey(media, "", 123, 502)
+	require.NoError(t, locator.AddMessage(ctx, keyA, 123, 501, "user-a", 101))
+	require.NoError(t, locator.AddMessage(ctx, keyB, 123, 502, "user-b", 202))
+
+	var deletedIDs []int
+	mockAPI := &mocks.TbAPIMock{
+		SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) { return tbapi.Message{}, nil },
+		RequestFunc: func(c tbapi.Chattable) (*tbapi.APIResponse, error) {
+			if deleteReq, ok := c.(tbapi.DeleteMessageConfig); ok {
+				deletedIDs = append(deletedIDs, deleteReq.MessageID)
+			}
+			return &tbapi.APIResponse{Ok: true}, nil
+		},
+	}
+	botMock := &mocks.BotMock{
+		RemoveApprovedUserFunc: func(id int64) error { return nil },
+		OnMessageFunc:          func(bot.Message, bool) bot.Response { return bot.Response{} },
+		UpdateSpamFunc:         func(string) error { return nil },
+	}
+	adminHandler := admin{tbAPI: mockAPI, bot: botMock, locator: locator, primChatID: 123, adminChatID: 456}
+	forward := &tbapi.Message{
+		MessageID: 900, Chat: tbapi.Chat{ID: 456}, From: &tbapi.User{ID: 1, UserName: "admin"},
+		Animation: media.Animation,
+		ForwardOrigin: &tbapi.MessageOrigin{Type: tbapi.MessageOriginUser,
+			SenderUser: &tbapi.User{ID: 501, UserName: "user-a"}},
+	}
+
+	require.NoError(t, adminHandler.MsgHandler(tbapi.Update{Message: forward}))
+	assert.Contains(t, deletedIDs, 101)
+	assert.NotContains(t, deletedIDs, 202)
+	require.Len(t, botMock.RemoveApprovedUserCalls(), 1)
+	assert.Equal(t, int64(501), botMock.RemoveApprovedUserCalls()[0].ID)
+	assert.Empty(t, botMock.UpdateSpamCalls(), "synthetic media keys must not enter spam text samples")
+}
+
+func TestAdmin_MsgHandlerEmptyMediaLocatorMissUsesForwardOriginFallback(t *testing.T) {
+	var sentMessages []string
+	var deleteRequests int
+	mockAPI := &mocks.TbAPIMock{
+		SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) {
+			if msg, ok := c.(tbapi.MessageConfig); ok {
+				sentMessages = append(sentMessages, msg.Text)
+			}
+			return tbapi.Message{}, nil
+		},
+		RequestFunc: func(c tbapi.Chattable) (*tbapi.APIResponse, error) {
+			if _, ok := c.(tbapi.DeleteMessageConfig); ok {
+				deleteRequests++
+			}
+			return &tbapi.APIResponse{Ok: true}, nil
+		},
+	}
+	botMock := &mocks.BotMock{
+		RemoveApprovedUserFunc: func(id int64) error { return nil },
+		OnMessageFunc:          func(bot.Message, bool) bot.Response { return bot.Response{} },
+		UpdateSpamFunc:         func(string) error { return nil },
+	}
+	locatorMock := &mocks.LocatorMock{MessageFunc: func(context.Context, string) (storage.MsgMeta, bool) {
+		return storage.MsgMeta{}, false
+	}}
+	adminHandler := admin{tbAPI: mockAPI, bot: botMock, locator: locatorMock, primChatID: 123, adminChatID: 456}
+	forward := &tbapi.Message{
+		MessageID: 900, Chat: tbapi.Chat{ID: 456}, From: &tbapi.User{ID: 1, UserName: "admin"},
+		Animation: &tbapi.Animation{FileID: "missing-gif"},
+		ForwardOrigin: &tbapi.MessageOrigin{Type: tbapi.MessageOriginUser,
+			SenderUser: &tbapi.User{ID: 501, UserName: "user-a"}},
+	}
+
+	require.NoError(t, adminHandler.MsgHandler(tbapi.Update{Message: forward}))
+	assert.Zero(t, deleteRequests, "fallback must not claim or attempt original-message deletion")
+	assert.Len(t, botMock.RemoveApprovedUserCalls(), 1)
+	assert.Empty(t, botMock.UpdateSpamCalls())
+	require.Len(t, sentMessages, 2)
+	assert.Contains(t, sentMessages[1], "manual deletion")
+	assert.Contains(t, sentMessages[1], "media/button message without text")
 }
 
 func TestAdmin_DirectSpamReport_ImageOnly(t *testing.T) {

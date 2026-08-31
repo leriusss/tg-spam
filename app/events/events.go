@@ -372,6 +372,7 @@ func transform(msg *tbapi.Message) *bot.Message {
 	}
 	if msg.ReplyMarkup != nil { // detect attached keyboards/buttons
 		message.WithKeyboard = true
+		message.WithExternalLinkButton = hasExternalInlineButton(msg.ReplyMarkup)
 	}
 	if msg.Contact != nil {
 		message.WithContact = true
@@ -424,6 +425,68 @@ func transform(msg *tbapi.Message) *bot.Message {
 	}
 
 	return &message
+}
+
+// hasExternalInlineButton reports whether an inline keyboard can open an external resource.
+// Callback, copy, payment, game, and Telegram-internal tg:// buttons are intentionally excluded.
+func hasExternalInlineButton(markup *tbapi.InlineKeyboardMarkup) bool {
+	if markup == nil {
+		return false
+	}
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			if button.URL != nil {
+				u := strings.ToLower(strings.TrimSpace(*button.URL))
+				if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+					return true
+				}
+			}
+			if button.LoginURL != nil && strings.TrimSpace(button.LoginURL.URL) != "" {
+				return true
+			}
+			if button.WebApp != nil && strings.TrimSpace(button.WebApp.URL) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// locatorMessageKey preserves the legacy text key and supplies a stable media key when Telegram
+// exposes no text/caption. This lets admin forwards of empty-text media reach the existing locator.
+func locatorMessageKey(msg *tbapi.Message, text string, chatID, senderID int64) string {
+	if strings.TrimSpace(text) != "" {
+		return text
+	}
+	parts := make([]string, 0, 4)
+	if len(msg.Photo) > 0 {
+		parts = append(parts, "photo:"+msg.Photo[len(msg.Photo)-1].FileID)
+	}
+	if msg.Animation != nil {
+		parts = append(parts, "animation:"+msg.Animation.FileID)
+	}
+	if msg.Video != nil {
+		parts = append(parts, "video:"+msg.Video.FileID)
+	}
+	if msg.VideoNote != nil {
+		parts = append(parts, "video_note:"+msg.VideoNote.FileID)
+	}
+	if msg.Audio != nil {
+		parts = append(parts, "audio:"+msg.Audio.FileID)
+	}
+	if msg.Document != nil {
+		parts = append(parts, "document:"+msg.Document.FileID)
+	}
+	if msg.Voice != nil {
+		parts = append(parts, "voice:"+msg.Voice.FileID)
+	}
+	if msg.Sticker != nil {
+		parts = append(parts, "sticker:"+msg.Sticker.FileID)
+	}
+	if len(parts) == 0 {
+		return text
+	}
+	return fmt.Sprintf("telegram-media:chat:%d|sender:%d|%s", chatID, senderID, strings.Join(parts, "|"))
 }
 
 // parseCallbackData parses callback data format: [prefix]userID:msgID

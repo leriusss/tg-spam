@@ -119,6 +119,9 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	if msg.WithKeyboard {
 		spamReq.Meta.HasKeyboard = true
 	}
+	if msg.WithExternalLinkButton {
+		spamReq.Meta.HasExternalLinkButton = true
+	}
 	if msg.WithContact {
 		spamReq.Meta.HasContact = true
 	}
