@@ -353,7 +353,7 @@ func execute(ctx context.Context, opts options) error {
 	}
 
 	// make telegram bot
-	tbAPI, err := tbapi.NewBotAPI(opts.Telegram.Token)
+	tbAPI, err := tbapi.NewBotAPIWithClient(opts.Telegram.Token, tbapi.APIEndpoint, newTelegramHTTPClient())
 	if err != nil {
 		return fmt.Errorf("can't make telegram bot, %w", err)
 	}
