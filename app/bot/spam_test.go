@@ -614,6 +614,50 @@ func TestSpamFilter_BurstEnabledDetectsSameUserSameChat(t *testing.T) {
 	assert.NotContains(t, logs.String(), rawText)
 }
 
+func TestSpamFilter_BurstRemainsAuthoritativeForGuardedShortMessage(t *testing.T) {
+	det := &mocks.DetectorMock{
+		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {
+			return false, []spamcheck.Response{
+				{Name: "classifier", Spam: false, Details: "probability of spam: 99.00%"},
+				{Name: "short_message_classifier_guard", Spam: false, Details: "classifier spam suppressed"},
+			}
+		},
+		IsExplicitTrustedUserFunc: func(userID string) bool { return false },
+	}
+	s := NewSpamFilter(det, SpamConfig{
+		SpamMsg: "detected",
+		Burst:   BurstConfig{Enabled: true, Threshold: 3, WindowSeconds: 30},
+	})
+	msg := Message{ChatID: 1, Text: "связь", From: User{ID: 10, Username: "user1"}}
+
+	assert.False(t, s.OnMessage(withMessageID(msg, 101), false).Send)
+	assert.False(t, s.OnMessage(withMessageID(msg, 102), false).Send)
+	got := s.OnMessage(withMessageID(msg, 103), false)
+
+	require.True(t, got.Send)
+	require.Len(t, got.CheckResults, 3)
+	assert.Equal(t, "burst", got.CheckResults[2].Name)
+	assert.True(t, got.CheckResults[2].Spam)
+}
+
+func TestSpamFilter_ShortClassifierVerdictDoesNotCreateBanResponse(t *testing.T) {
+	det := tgspam.NewDetector(tgspam.Config{MaxAllowedEmoji: -1, MinSpamProbability: 45})
+	_, err := det.LoadSamples(strings.NewReader(""),
+		[]io.Reader{strings.NewReader(strings.Repeat("связь\nтест\nпривет\nкупить криптовалюту срочно\n", 5))},
+		[]io.Reader{strings.NewReader(strings.Repeat("спасибо\nработает\nпроверка\nнормальное общение\n", 5))})
+	require.NoError(t, err)
+	s := NewSpamFilter(det, SpamConfig{SpamMsg: "detected"})
+
+	short := s.OnMessage(Message{ID: 101, ChatID: 1, Text: "связь", From: User{ID: 10}}, true)
+	assert.False(t, short.Send)
+	assert.Zero(t, short.BanInterval)
+	assert.False(t, short.DeleteReplyTo)
+
+	normalLength := s.OnMessage(Message{ID: 102, ChatID: 1, Text: "купить криптовалюту срочно", From: User{ID: 11}}, true)
+	assert.True(t, normalLength.Send)
+	assert.Equal(t, PermanentBanDuration, normalLength.BanInterval)
+}
+
 func TestSpamFilter_BurstEnabledKeepsDetectorSpamAndMergesResults(t *testing.T) {
 	det := &mocks.DetectorMock{
 		CheckFunc: func(req spamcheck.Request) (bool, []spamcheck.Response) {

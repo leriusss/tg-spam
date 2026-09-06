@@ -59,6 +59,16 @@ type Detector struct {
 	lock sync.RWMutex
 }
 
+const (
+	shortMessageMaxMeaningfulTokens = 1
+	shortMessageClassifierGuardName = "short_message_classifier_guard"
+)
+
+type classifierDecision struct {
+	response    spamcheck.Response
+	probability float64
+}
+
 // Config is a set of parameters for Detector.
 type Config struct {
 	SimilarityThreshold float64       // threshold for spam similarity, 0.0 - 1.0
@@ -244,10 +254,21 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		// if we get here, we have a short message but openai should still check it
 	}
 
+	// Similarity and the local classifier use the same tokenized sample corpus. For messages
+	// with at most one meaningful token neither result is authoritative on its own: a high
+	// posterior or exact sample match is still sparse, correlated textual evidence.
+	meaningfulTokens := d.tokenize(cleanMsg)
+	weakTextEvidence := len(meaningfulTokens) <= shortMessageMaxMeaningfulTokens
+
 	// check for spam similarity if a similarity threshold is set and spam samples are loaded
-	// skip for short messages as similarity doesn't work well on short text
+	// skip for rune-short messages as similarity doesn't work well on short text
 	if !isShortMessage && d.SimilarityThreshold > 0 && len(d.tokenizedSpam) > 0 {
-		cr = append(cr, d.isSpamSimilarityHigh(cleanMsg))
+		similarityResult := d.isSpamSimilarityHighTokens(meaningfulTokens)
+		if weakTextEvidence && similarityResult.Spam {
+			similarityResult.Spam = false
+			similarityResult.Details += "; non-authoritative for insufficient meaningful tokens"
+		}
+		cr = append(cr, similarityResult)
 	}
 
 	// check for spam with classifier if classifier is loaded
@@ -255,7 +276,21 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	classifierReady := d.classifier.nAllDocument > 0 &&
 		d.classifier.nDocumentByClass["ham"] > 0 && d.classifier.nDocumentByClass["spam"] > 0
 	if !isShortMessage && classifierReady {
-		cr = append(cr, d.isSpamClassified(cleanMsg))
+		decision := d.classifyTokens(meaningfulTokens)
+		if shouldSuppressClassifierDecision(len(meaningfulTokens), decision) {
+			decision.response.Spam = false
+			cr = append(cr, decision.response, spamcheck.Response{
+				Name: shortMessageClassifierGuardName,
+				Spam: false,
+				Details: fmt.Sprintf("classifier spam suppressed: meaningful_tokens=%d probability=%.2f%% threshold=%.2f%%",
+					len(meaningfulTokens), decision.probability, d.MinSpamProbability),
+			})
+			log.Printf("[INFO] classifier spam verdict suppressed for short message: user_id=%s message_id=%d meaningful_tokens=%d probability=%.2f threshold=%.2f reason=%s",
+				req.UserID, req.Meta.MessageID, len(meaningfulTokens), decision.probability, d.MinSpamProbability,
+				shortMessageClassifierGuardName)
+		} else {
+			cr = append(cr, decision.response)
+		}
 	}
 
 	spamDetected := isSpamDetected(cr)
@@ -736,8 +771,10 @@ func (d *Detector) tokenize(inp string) map[string]int {
 
 // isSpam checks if a given message is similar to any of the known bad messages
 func (d *Detector) isSpamSimilarityHigh(msg string) spamcheck.Response {
-	// check for spam similarity
-	tokenizedMessage := d.tokenize(msg)
+	return d.isSpamSimilarityHighTokens(d.tokenize(msg))
+}
+
+func (d *Detector) isSpamSimilarityHighTokens(tokenizedMessage map[string]int) spamcheck.Response {
 	maxSimilarity := 0.0
 	for _, spam := range d.tokenizedSpam {
 		similarity := d.cosineSimilarity(tokenizedMessage, spam)
@@ -868,13 +905,16 @@ func (d *Detector) isCasSpam(msgID string) spamcheck.Response {
 
 // isSpamClassified classify tokens from a document
 func (d *Detector) isSpamClassified(msg string) spamcheck.Response {
-	tm := d.tokenize(msg)
+	return d.classifyTokens(d.tokenize(msg)).response
+}
+
+func (d *Detector) classifyTokens(tm map[string]int) classifierDecision {
 	tokens := make([]string, 0, len(tm))
 	for token := range tm {
 		tokens = append(tokens, token)
 	}
 	class, prob, certain := d.classifier.classify(tokens...)
-	isSpam := class == ClassSpam && certain && (d.MinSpamProbability == 0 || prob >= d.MinSpamProbability)
+	isSpam := isClassifierSpam(class, prob, certain, d.MinSpamProbability)
 
 	// handle NaN or infinite probability values
 	probStr := "0.00"
@@ -882,8 +922,19 @@ func (d *Detector) isSpamClassified(msg string) spamcheck.Response {
 		probStr = fmt.Sprintf("%.2f", prob)
 	}
 
-	return spamcheck.Response{Name: "classifier", Spam: isSpam,
-		Details: fmt.Sprintf("probability of %s: %s%%", class, probStr)}
+	return classifierDecision{
+		response: spamcheck.Response{Name: "classifier", Spam: isSpam,
+			Details: fmt.Sprintf("probability of %s: %s%%", class, probStr)},
+		probability: prob,
+	}
+}
+
+func isClassifierSpam(class spamClass, probability float64, certain bool, threshold float64) bool {
+	return class == ClassSpam && certain && (threshold == 0 || probability >= threshold)
+}
+
+func shouldSuppressClassifierDecision(meaningfulTokenCount int, decision classifierDecision) bool {
+	return meaningfulTokenCount <= shortMessageMaxMeaningfulTokens && decision.response.Spam
 }
 
 // isStopWord checks if a given message or username contains any of the stop words.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -1308,6 +1309,179 @@ func TestDetector_CheckClassifier(t *testing.T) {
 		assert.True(t, spam)
 		assert.Equal(t, "probability of spam: 53.36%", cr[0].Details)
 
+	})
+}
+
+func TestDetector_ShortMessageClassifierGuard(t *testing.T) {
+	newGuardDetector := func(t *testing.T) *Detector {
+		t.Helper()
+		d := NewDetector(Config{MaxAllowedEmoji: -1, MinSpamProbability: 45})
+		spamSamples := strings.NewReader(strings.Repeat("связь\nтест\nпривет\nкупить криптовалюту срочно\n", 5))
+		hamSamples := strings.NewReader(strings.Repeat("спасибо\nработает\nпроверка\nнормальное общение\n", 5))
+		_, err := d.LoadSamples(strings.NewReader(""), []io.Reader{spamSamples}, []io.Reader{hamSamples})
+		require.NoError(t, err)
+		d.tokenizedSpam = nil // isolate the classifier unless a test explicitly restores similarity samples
+		return d
+	}
+
+	responseByName := func(t *testing.T, responses []spamcheck.Response, name string) spamcheck.Response {
+		t.Helper()
+		for _, response := range responses {
+			if response.Name == name {
+				return response
+			}
+		}
+		t.Fatalf("response %q not found in %+v", name, responses)
+		return spamcheck.Response{}
+	}
+
+	t.Run("production false-positive words are not authoritative", func(t *testing.T) {
+		for _, message := range []string{"связь", "тест", "привет"} {
+			t.Run(message, func(t *testing.T) {
+				d := newGuardDetector(t)
+				rawDecision := d.classifyTokens(d.tokenize(message))
+				require.True(t, rawDecision.response.Spam, rawDecision.response.Details)
+				require.GreaterOrEqual(t, rawDecision.probability, d.MinSpamProbability)
+
+				spam, responses := d.Check(spamcheck.Request{
+					Msg: message, UserID: "42", Meta: spamcheck.MetaData{MessageID: 100}, CheckOnly: true,
+				})
+				assert.False(t, spam)
+				assert.False(t, responseByName(t, responses, "classifier").Spam)
+				guard := responseByName(t, responses, shortMessageClassifierGuardName)
+				assert.False(t, guard.Spam)
+				assert.Contains(t, guard.Details, "meaningful_tokens=1")
+			})
+		}
+	})
+
+	t.Run("normal short ham remains ham including zero effective tokens", func(t *testing.T) {
+		for _, message := range []string{"спасибо", "ок", "да", "нет", "работает", "проверка"} {
+			t.Run(message, func(t *testing.T) {
+				d := newGuardDetector(t)
+				spam, _ := d.Check(spamcheck.Request{Msg: message, CheckOnly: true})
+				assert.False(t, spam)
+			})
+		}
+		assert.Empty(t, newGuardDetector(t).tokenize("ок"))
+		assert.Empty(t, newGuardDetector(t).tokenize("да"))
+	})
+
+	t.Run("zero-token class prior cannot become authoritative", func(t *testing.T) {
+		d := NewDetector(Config{MaxAllowedEmoji: -1, MinSpamProbability: 45})
+		_, err := d.LoadSamples(strings.NewReader(""),
+			[]io.Reader{strings.NewReader("spamword\nspamword\nspamword\n")},
+			[]io.Reader{strings.NewReader("ordinary\n")})
+		require.NoError(t, err)
+		d.tokenizedSpam = nil
+		rawDecision := d.classifyTokens(d.tokenize("ок"))
+		require.True(t, rawDecision.response.Spam)
+		assert.InDelta(t, 75, rawDecision.probability, 0.001)
+
+		spam, responses := d.Check(spamcheck.Request{Msg: "ок", CheckOnly: true})
+		assert.False(t, spam)
+		assert.Contains(t, responseByName(t, responses, shortMessageClassifierGuardName).Details,
+			"meaningful_tokens=0")
+	})
+
+	t.Run("same-corpus similarity is not independent evidence", func(t *testing.T) {
+		d := newGuardDetector(t)
+		d.SimilarityThreshold = 0.5
+		d.tokenizedSpam = []map[string]int{{"связь": 1}}
+
+		spam, responses := d.Check(spamcheck.Request{Msg: "связь", CheckOnly: true})
+		assert.False(t, spam)
+		similarity := responseByName(t, responses, "similarity")
+		assert.False(t, similarity.Spam)
+		assert.Contains(t, similarity.Details, "non-authoritative")
+	})
+
+	t.Run("independent deterministic signals remain authoritative", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			strongCheck string
+			setup       func(*Detector)
+			req         spamcheck.Request
+		}{
+			{
+				name:        "stopword",
+				strongCheck: "stopword",
+				setup: func(d *Detector) {
+					_, err := d.LoadStopWords(strings.NewReader("=привет"))
+					require.NoError(t, err)
+				},
+				req: spamcheck.Request{Msg: "привет", CheckOnly: true},
+			},
+			{
+				name:        "keyboard meta check",
+				strongCheck: "keyboard",
+				setup:       func(d *Detector) { d.WithMetaChecks(KeyboardCheck()) },
+				req:         spamcheck.Request{Msg: "привет", Meta: spamcheck.MetaData{HasKeyboard: true}, CheckOnly: true},
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				d := newGuardDetector(t)
+				tc.setup(d)
+				spam, responses := d.Check(tc.req)
+				assert.True(t, spam)
+				assert.True(t, responseByName(t, responses, tc.strongCheck).Spam)
+				assert.False(t, responseByName(t, responses, "classifier").Spam)
+			})
+		}
+	})
+
+	t.Run("normal length classifier behavior is unchanged", func(t *testing.T) {
+		d := newGuardDetector(t)
+		spam, responses := d.Check(spamcheck.Request{Msg: "купить криптовалюту срочно", CheckOnly: true})
+		assert.True(t, spam)
+		assert.True(t, responseByName(t, responses, "classifier").Spam)
+
+		d = newGuardDetector(t)
+		spam, responses = d.Check(spamcheck.Request{Msg: "спасибо работает проверка", CheckOnly: true})
+		assert.False(t, spam)
+		assert.False(t, responseByName(t, responses, "classifier").Spam)
+	})
+
+	t.Run("threshold and high-confidence boundary", func(t *testing.T) {
+		tests := []struct {
+			probability     float64
+			classifierSpam  bool
+			suppressedAtOne bool
+			suppressedAtTwo bool
+		}{
+			{probability: 44.9, classifierSpam: false},
+			{probability: 45.0, classifierSpam: true, suppressedAtOne: true},
+			{probability: 61.48, classifierSpam: true, suppressedAtOne: true},
+			{probability: 95.0, classifierSpam: true, suppressedAtOne: true},
+			{probability: 99.0, classifierSpam: true, suppressedAtOne: true},
+		}
+		for _, tc := range tests {
+			t.Run(fmt.Sprintf("%.2f", tc.probability), func(t *testing.T) {
+				classifierSpam := isClassifierSpam(ClassSpam, tc.probability, true, 45)
+				assert.Equal(t, tc.classifierSpam, classifierSpam)
+				decision := classifierDecision{response: spamcheck.Response{Spam: classifierSpam}, probability: tc.probability}
+				assert.Equal(t, tc.suppressedAtOne, shouldSuppressClassifierDecision(1, decision))
+				assert.Equal(t, tc.suppressedAtTwo, shouldSuppressClassifierDecision(2, decision))
+			})
+		}
+	})
+
+	t.Run("suppression log contains safe context but not message text", func(t *testing.T) {
+		d := newGuardDetector(t)
+		var logs bytes.Buffer
+		oldOutput := log.Writer()
+		log.SetOutput(&logs)
+		defer log.SetOutput(oldOutput)
+
+		spam, _ := d.Check(spamcheck.Request{
+			Msg: "связь", UserID: "42", Meta: spamcheck.MetaData{MessageID: 100}, CheckOnly: true,
+		})
+		assert.False(t, spam)
+		assert.Contains(t, logs.String(), "reason="+shortMessageClassifierGuardName)
+		assert.Contains(t, logs.String(), "user_id=42")
+		assert.Contains(t, logs.String(), "message_id=100")
+		assert.NotContains(t, logs.String(), "связь")
 	})
 }
 
