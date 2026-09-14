@@ -26,9 +26,11 @@ type MetaData struct {
 	HasAudio    bool `json:"has_audio"`    // true if the message has an audio
 	HasForward  bool `json:"has_forward"`  // true if the message has a forward
 	HasKeyboard bool `json:"has_keyboard"` // true if the message has a keyboard (buttons)
-	HasContact  bool `json:"has_contact"`  // true if the message has a shared contact
-	HasGiveaway bool `json:"has_giveaway"` // true if the message is a giveaway
-	MessageID   int  `json:"message_id"`   // telegram message ID
+	// HasExternalLinkButton is true when an inline keyboard contains an HTTP(S), login, or Web App button.
+	HasExternalLinkButton bool `json:"has_external_link_button"`
+	HasContact            bool `json:"has_contact"`  // true if the message has a shared contact
+	HasGiveaway           bool `json:"has_giveaway"` // true if the message is a giveaway
+	MessageID             int  `json:"message_id"`   // telegram message ID
 }
 
 func (r *Request) String() string {

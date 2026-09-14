@@ -96,6 +96,44 @@ func TestTelegramListener_Do(t *testing.T) {
 
 }
 
+func TestTelegramListener_ExternalButtonAdminPolicyAndEmptyMediaPreflight(t *testing.T) {
+	httpsURL := "https://example.com/open"
+	markup := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{{URL: &httpsURL}}}}
+
+	tests := []struct {
+		name          string
+		user          *tbapi.User
+		supers        SuperUsers
+		wantGuardFlag bool
+	}{
+		{name: "non-admin keeps guard", user: &tbapi.User{ID: 10, UserName: "user"}, wantGuardFlag: true},
+		{name: "superuser bypasses guard", user: &tbapi.User{ID: 11, UserName: "admin"}, supers: SuperUsers{"11"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			locator, teardown := prepTestLocator(t)
+			defer teardown()
+			var received bot.Message
+			listener := TelegramListener{
+				chatID: 123, Locator: locator, SuperUsers: tt.supers,
+				Bot: &mocks.BotMock{OnMessageFunc: func(msg bot.Message, checkOnly bool) bot.Response {
+					received = msg
+					return bot.Response{}
+				}},
+			}
+			update := tbapi.Update{Message: &tbapi.Message{
+				MessageID: 77, Chat: tbapi.Chat{ID: 123}, From: tt.user,
+				Animation: &tbapi.Animation{FileID: "gif-without-caption"}, ReplyMarkup: markup,
+			}}
+
+			require.NoError(t, listener.procEvents(update))
+			assert.Equal(t, 77, received.ID, "empty-text media with an external button must reach the bot")
+			assert.Equal(t, tt.wantGuardFlag, received.WithExternalLinkButton)
+		})
+	}
+}
+
 func TestTelegramListener_DoWithBotBan(t *testing.T) {
 	mockLogger := &mocks.SpamLoggerMock{SaveFunc: func(msg *bot.Message, response *bot.Response) {}}
 	mockAPI := &mocks.TbAPIMock{

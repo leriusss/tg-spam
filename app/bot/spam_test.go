@@ -54,6 +54,24 @@ func TestSpamFilter_OnMessage(t *testing.T) {
 			},
 		},
 		{
+			name: "external inline button metadata reaches detector",
+			message: Message{
+				ID: 42, Text: "связь", From: User{ID: 1, Username: "user1"},
+				WithKeyboard: true, WithExternalLinkButton: true,
+			},
+			wantResponse: Response{
+				Text: `detected: "user1" (1)`, Send: true, ReplyTo: 42,
+				BanInterval: PermanentBanDuration, DeleteReplyTo: true,
+				User:         User{ID: 1, Username: "user1"},
+				CheckResults: []spamcheck.Response{{Name: "test", Spam: true, Details: "spam"}},
+			},
+			wantRequest: spamcheck.Request{
+				Msg: "связь", UserID: "1", UserName: "user1", Meta: spamcheck.MetaData{
+					HasKeyboard: true, HasExternalLinkButton: true, MessageID: 42,
+				},
+			},
+		},
+		{
 			name: "spam with both video and forward",
 			message: Message{
 				Text:        "spam message",

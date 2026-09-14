@@ -461,6 +461,89 @@ func TestTelegramListener_transformTextMessage(t *testing.T) {
 	}
 }
 
+func TestExternalInlineButtonDetection(t *testing.T) {
+	httpURL := "http://example.com/open"
+	httpsURL := "https://example.com/open"
+	upperHTTPSURL := " HTTPS://example.com/open "
+	tgURL := "tg://resolve?domain=example"
+	ftpURL := "ftp://example.com/file"
+	callback := "open"
+	switchInline := "query"
+
+	tests := []struct {
+		name   string
+		button tbapi.InlineKeyboardButton
+		want   bool
+	}{
+		{name: "http url", button: tbapi.InlineKeyboardButton{URL: &httpURL}, want: true},
+		{name: "https url", button: tbapi.InlineKeyboardButton{URL: &httpsURL}, want: true},
+		{name: "trimmed case-insensitive https url", button: tbapi.InlineKeyboardButton{URL: &upperHTTPSURL}, want: true},
+		{name: "login url", button: tbapi.InlineKeyboardButton{LoginURL: &tbapi.LoginURL{URL: httpsURL}}, want: true},
+		{name: "web app", button: tbapi.InlineKeyboardButton{WebApp: &tbapi.WebAppInfo{URL: httpsURL}}, want: true},
+		{name: "empty login url", button: tbapi.InlineKeyboardButton{LoginURL: &tbapi.LoginURL{}}, want: false},
+		{name: "empty web app", button: tbapi.InlineKeyboardButton{WebApp: &tbapi.WebAppInfo{}}, want: false},
+		{name: "telegram internal url", button: tbapi.InlineKeyboardButton{URL: &tgURL}, want: false},
+		{name: "unapproved url scheme", button: tbapi.InlineKeyboardButton{URL: &ftpURL}, want: false},
+		{name: "callback", button: tbapi.InlineKeyboardButton{CallbackData: &callback}, want: false},
+		{name: "payment", button: tbapi.InlineKeyboardButton{Pay: true}, want: false},
+		{name: "copy", button: tbapi.InlineKeyboardButton{CopyText: &tbapi.CopyTextButton{Text: "copy"}}, want: false},
+		{name: "switch inline", button: tbapi.InlineKeyboardButton{SwitchInlineQuery: &switchInline}, want: false},
+		{name: "game", button: tbapi.InlineKeyboardButton{CallbackGame: &tbapi.CallbackGame{}}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			markup := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{tt.button}}}
+			assert.Equal(t, tt.want, hasExternalInlineButton(markup))
+			msg := transform(&tbapi.Message{ReplyMarkup: markup})
+			assert.True(t, msg.WithKeyboard)
+			assert.Equal(t, tt.want, msg.WithExternalLinkButton)
+		})
+	}
+	assert.False(t, transform(&tbapi.Message{}).WithExternalLinkButton)
+	assert.False(t, transform(&tbapi.Message{Text: "https://example.com/plain"}).WithExternalLinkButton)
+}
+
+func TestExternalInlineButtonProductionShape(t *testing.T) {
+	urls := []string{
+		"https://example.com/open/one",
+		"https://example.com/open/two",
+		"https://example.com/open/three",
+	}
+	markup := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{
+		{Text: "ОТКРЫТЬ НАШЕГО БОТА", URL: &urls[0]},
+		{Text: "ОТКРЫТЬ НАШЕГО БОТА", URL: &urls[1]},
+		{Text: "ОТКРЫТЬ НАШЕГО БОТА", URL: &urls[2]},
+	}}}
+
+	msg := transform(&tbapi.Message{
+		Text: "safe regression fixture", Video: &tbapi.Video{FileID: "video"}, ReplyMarkup: markup,
+	})
+	assert.True(t, msg.WithVideo)
+	assert.True(t, msg.WithKeyboard)
+	assert.True(t, msg.WithExternalLinkButton)
+}
+
+func TestExternalInlineButtonMixedKeyboardAndMediaWithoutExternalTarget(t *testing.T) {
+	httpsURL := "https://example.com/open"
+	callback := "callback"
+	internalURL := "tg://resolve?domain=example"
+
+	mixed := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{
+		{{CallbackData: &callback}},
+		{{URL: &httpsURL}},
+	}}
+	assert.True(t, hasExternalInlineButton(mixed), "one external target makes the keyboard external")
+
+	internalOnly := &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{
+		{{CallbackData: &callback}, {URL: &internalURL}, {Pay: true}},
+	}}
+	msg := transform(&tbapi.Message{Video: &tbapi.Video{FileID: "video"}, ReplyMarkup: internalOnly})
+	assert.True(t, msg.WithVideo)
+	assert.True(t, msg.WithKeyboard)
+	assert.False(t, msg.WithExternalLinkButton, "media alone must not trigger the external-button guard")
+}
+
 func TestTelegramListener_transformPhoto(t *testing.T) {
 	assert.Equal(t,
 		&bot.Message{

@@ -372,6 +372,7 @@ func transform(msg *tbapi.Message) *bot.Message {
 	}
 	if msg.ReplyMarkup != nil { // detect attached keyboards/buttons
 		message.WithKeyboard = true
+		message.WithExternalLinkButton = hasExternalInlineButton(msg.ReplyMarkup)
 	}
 	if msg.Contact != nil {
 		message.WithContact = true
@@ -424,6 +425,31 @@ func transform(msg *tbapi.Message) *bot.Message {
 	}
 
 	return &message
+}
+
+// hasExternalInlineButton reports whether an inline keyboard can open an external resource.
+// Callback, copy, payment, game, and Telegram-internal tg:// buttons are intentionally excluded.
+func hasExternalInlineButton(markup *tbapi.InlineKeyboardMarkup) bool {
+	if markup == nil {
+		return false
+	}
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			if button.URL != nil {
+				u := strings.ToLower(strings.TrimSpace(*button.URL))
+				if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+					return true
+				}
+			}
+			if button.LoginURL != nil && strings.TrimSpace(button.LoginURL.URL) != "" {
+				return true
+			}
+			if button.WebApp != nil && strings.TrimSpace(button.WebApp.URL) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // parseCallbackData parses callback data format: [prefix]userID:msgID
