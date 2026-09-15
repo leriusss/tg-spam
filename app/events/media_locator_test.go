@@ -64,6 +64,12 @@ func TestExtractMediaLocatorKey(t *testing.T) {
 		require.Equal(t, mediaLocatorExtracted, status)
 		assert.Equal(t, first, second)
 	})
+
+	t.Run("same filename with different stable ids remains distinct", func(t *testing.T) {
+		first, _ := extractMediaLocatorKey(&tbapi.Message{Document: &tbapi.Document{FileUniqueID: "stable-a", FileName: "same.pdf"}})
+		second, _ := extractMediaLocatorKey(&tbapi.Message{Document: &tbapi.Document{FileUniqueID: "stable-b", FileName: "same.pdf"}})
+		assert.NotEqual(t, first, second)
+	})
 }
 
 func mediaKeyForTest(kind storage.MediaKind, id string) storage.MediaLocatorKey {

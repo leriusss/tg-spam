@@ -574,6 +574,23 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed origins fail closed before media lookup", func(t *testing.T) {
+		fixtures := []*tbapi.Message{
+			replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginUser}, ""),
+			replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginUser, SenderUser: &tbapi.User{}}, ""),
+			replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginHiddenUser, SenderUserName: "hidden"}, ""),
+			replayAdminMessage(&tbapi.MessageOrigin{Type: "future-origin"}, ""),
+			replayAdminMessage(nil, ""),
+		}
+		for _, msg := range fixtures {
+			msg.Photo = []tbapi.PhotoSize{{FileUniqueID: "stable-photo"}}
+			r := newAdminForwardReplay(t, user, true)
+			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			assertNoModerationActions(t, r.actions())
+			assert.Empty(t, r.locator.MessageByMediaCalls())
+		}
+	})
+
 	t.Run("sender chat locator miss fails closed without textual fallback", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
