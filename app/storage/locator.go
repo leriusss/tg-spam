@@ -256,7 +256,7 @@ func (l *Locator) AddMediaMessage(ctx context.Context, key MediaLocatorKey, chat
 	}
 	l.Lock()
 	defer l.Unlock()
-	baseHash := l.MsgHash(mediaLocatorPreimage(key))
+	baseHash := l.mediaLocatorHash(key)
 	log.Printf("[DEBUG] add media to locator: kind:%s version:1 userID:%d user name:%q chatID:%d msgID:%d",
 		key.Kind, identity.ID, userName, chatID, msgID)
 	return l.addMessageRecord(ctx, baseHash, chatID, identity.ID, userName, msgID)
@@ -303,7 +303,7 @@ func (l *Locator) MessageByMedia(ctx context.Context, key MediaLocatorKey, chatI
 	l.RLock()
 	defer l.RUnlock()
 
-	baseHash := l.MsgHash(mediaLocatorPreimage(key))
+	baseHash := l.mediaLocatorHash(key)
 	hashPattern := baseHash + ":%"
 	var located MsgMeta
 	query := l.Adopt(`SELECT time, chat_id, user_id, user_name, msg_id
@@ -320,6 +320,13 @@ func (l *Locator) MessageByMedia(ctx context.Context, key MediaLocatorKey, chatI
 
 func mediaLocatorPreimage(key MediaLocatorKey) string {
 	return fmt.Sprintf("media:v%d:%s:%s", key.Version, key.Kind, key.StableMediaID)
+}
+
+// mediaLocatorHash separates typed media rows from legacy textual hashes. A Telegram text
+// can equal the canonical media preimage, so hashing the preimage alone is not sufficient
+// domain separation inside the shared messages.hash column.
+func (l *Locator) mediaLocatorHash(key MediaLocatorKey) string {
+	return "m:" + l.MsgHash(mediaLocatorPreimage(key))
 }
 
 func validateMediaLocatorInput(key MediaLocatorKey, identity LocatorIdentity) error {

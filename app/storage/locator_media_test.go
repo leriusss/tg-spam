@@ -62,10 +62,14 @@ func TestLocatorMediaSenderChatAndTypedKeys(t *testing.T) {
 	channel := LocatorIdentity{Kind: LocatorIdentitySenderChat, ID: -100123}
 	photo := locatorMediaKey(MediaPhoto, "same-id")
 	video := locatorMediaKey(MediaVideo, "same-id")
+	document := locatorMediaKey(MediaDocument, "document-id")
+	animation := locatorMediaKey(MediaAnimation, "animation-id")
 
 	require.NoError(t, locator.AddMediaMessage(ctx, photo, 123, user, "user", 1))
 	require.NoError(t, locator.AddMediaMessage(ctx, photo, 123, channel, "channel", 2))
 	require.NoError(t, locator.AddMediaMessage(ctx, video, 123, user, "user", 3))
+	require.NoError(t, locator.AddMediaMessage(ctx, document, 123, user, "user", 5))
+	require.NoError(t, locator.AddMediaMessage(ctx, animation, 123, user, "user", 6))
 
 	got, ok := locator.MessageByMedia(ctx, photo, 123, channel)
 	require.True(t, ok)
@@ -76,6 +80,13 @@ func TestLocatorMediaSenderChatAndTypedKeys(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, 3, got.MsgID, "media kind participates in canonical key")
 
+	got, ok = locator.MessageByMedia(ctx, document, 123, user)
+	require.True(t, ok)
+	assert.Equal(t, 5, got.MsgID)
+	got, ok = locator.MessageByMedia(ctx, animation, 123, user)
+	require.True(t, ok)
+	assert.Equal(t, 6, got.MsgID)
+
 	_, ok = locator.MessageByMedia(ctx, locatorMediaKey(MediaPhoto, "different"), 123, user)
 	assert.False(t, ok)
 
@@ -84,6 +95,23 @@ func TestLocatorMediaSenderChatAndTypedKeys(t *testing.T) {
 	require.NoError(t, locator.AddMessage(ctx, "", 123, user.ID, "user", 4))
 	_, ok = locator.MessageByMedia(ctx, locatorMediaKey(MediaDocument, "filename-only"), 123, user)
 	assert.False(t, ok)
+}
+
+func TestLocatorMediaHashDomainIsolatedFromText(t *testing.T) {
+	ctx := context.Background()
+	locator, _ := newMediaTestLocator(t, "instance", time.Hour, 1000)
+	identity := LocatorIdentity{Kind: LocatorIdentityUser, ID: 101}
+	key := locatorMediaKey(MediaPhoto, "same-visible-preimage")
+
+	require.NoError(t, locator.AddMediaMessage(ctx, key, 123, identity, "user", 10))
+	// This exact text hashes to the media digest unless the shared hash column has
+	// an explicit media namespace. Make it newer to expose candidate shadowing.
+	require.NoError(t, locator.AddMessage(ctx, mediaLocatorPreimage(key), 123, identity.ID, "user", 20))
+
+	got, ok := locator.MessageByMedia(ctx, key, 123, identity)
+	require.True(t, ok)
+	assert.Equal(t, 10, got.MsgID)
+	assert.NotEqual(t, locator.MsgHash(mediaLocatorPreimage(key)), locator.mediaLocatorHash(key))
 }
 
 func TestLocatorMediaInputValidation(t *testing.T) {
@@ -123,7 +151,7 @@ func TestLocatorMediaPruningAndQueryPlan(t *testing.T) {
 	_, ok := locator.MessageByMedia(ctx, oldKey, 123, identity)
 	assert.False(t, ok, "media rows use ordinary locator TTL cleanup")
 
-	baseHash := locator.MsgHash(mediaLocatorPreimage(locatorMediaKey(MediaDocument, "new")))
+	baseHash := locator.mediaLocatorHash(locatorMediaKey(MediaDocument, "new"))
 	query := `EXPLAIN QUERY PLAN SELECT time, chat_id, user_id, user_name, msg_id FROM messages
 		WHERE gid = ? AND chat_id = ? AND user_id = ? AND (hash = ? OR hash LIKE ?)
 		ORDER BY time DESC, msg_id DESC LIMIT 1`
