@@ -8,12 +8,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tbapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/hashicorp/go-multierror"
 
 	"github.com/umputun/tg-spam/app/bot"
+	"github.com/umputun/tg-spam/app/storage"
 )
 
 // admin is a helper to handle all admin-group related stuff, created by listener
@@ -31,6 +31,24 @@ type admin struct {
 	warnMsg                string
 	aggressiveCleanup      bool
 	aggressiveCleanupLimit int
+	isExplicitlyApproved   func(int64) bool
+}
+
+type adminReportIdentityKind string
+
+const (
+	adminReportIdentityUser        adminReportIdentityKind = "user"
+	adminReportIdentitySenderChat  adminReportIdentityKind = "sender_chat"
+	adminReportIdentityHiddenUser  adminReportIdentityKind = "hidden_user"
+	adminReportIdentityUnavailable adminReportIdentityKind = "unavailable"
+)
+
+type adminReportIdentity struct {
+	Kind       adminReportIdentityKind
+	OriginType string
+	ID         int64
+	Name       string
+	Reliable   bool
 }
 
 const (
@@ -84,23 +102,31 @@ func (a *admin) ReportBan(banUserStr string, msg *bot.Message) {
 // a degraded fallback path is used: the user is banned and spam samples updated,
 // but the original message cannot be deleted automatically.
 func (a *admin) MsgHandler(update tbapi.Update) error {
-	shrink := func(inp string, maxLen int) string {
-		if utf8.RuneCountInString(inp) <= maxLen {
-			return inp
-		}
-		return string([]rune(inp)[:maxLen]) + "..."
+	if update.Message == nil {
+		log.Printf("[WARN] admin report blocked: outcome=missing_message update_id=%d", update.UpdateID)
+		return nil
 	}
 
-	// get forwarded user ID and username; used for logging and fallback path when locator lookup fails
-	fwdID, username := a.getForwardUsernameAndID(update)
+	adminID := int64(0)
+	if update.Message.From != nil {
+		adminID = update.Message.From.ID
+	}
+	log.Printf("[INFO] admin report received: admin_msg_id=%d update_id=%d admin_id=%d",
+		update.Message.MessageID, update.UpdateID, adminID)
 
-	log.Printf("[DEBUG] message from admin chat: msg id: %d, update id: %d, from: %s, sender: %q (%d)",
-		update.Message.MessageID, update.UpdateID, update.Message.From.UserName,
-		username, fwdID)
-
-	if username == "" && update.Message.ForwardOrigin == nil {
-		// this is a regular message from admin chat, not the forwarded one, ignore it
+	if update.Message.ForwardOrigin == nil {
+		// Regular messages in the admin chat are intentionally ignored. Keep this quiet for
+		// the user, but leave a stable marker so delivery can be distinguished from absence.
+		log.Printf("[DEBUG] admin report ignored: outcome=missing_origin admin_msg_id=%d", update.Message.MessageID)
 		return nil
+	}
+
+	origin := adminForwardOriginIdentity(update.Message.ForwardOrigin)
+	log.Printf("[DEBUG] admin report origin parsed: admin_msg_id=%d origin_type=%s target_type=%s target_id=%d reliable=%t",
+		update.Message.MessageID, origin.OriginType, origin.Kind, origin.ID, origin.Reliable)
+	if !origin.Reliable {
+		return a.blockAdminReport(update, "origin_unavailable",
+			"Unable to determine the forwarded message sender reliably. No automatic moderation action was taken.")
 	}
 
 	// this is a forwarded message from super to admin chat, it is an example of missed spam
@@ -112,29 +138,50 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	}
 
 	if msgTxt == "" {
+		log.Printf("[WARN] admin report blocked: outcome=empty_message admin_msg_id=%d origin_type=%s target_id=%d",
+			update.Message.MessageID, origin.OriginType, origin.ID)
 		return errors.New("empty message text")
 	}
-
-	log.Printf("[DEBUG] forwarded message from superuser %q (%d) to admin chat %d: %q",
-		update.Message.From.UserName, update.Message.From.ID, a.adminChatID, msgTxt)
 
 	// it would be nice to ban this user right away, but we don't have forwarded user ID here due to tg privacy limitation.
 	// it is empty in update.Message. to ban this user, we need to get the match on the message from the locator and ban from there.
 	info, ok := a.locator.Message(context.TODO(), msgTxt)
 	if !ok {
-		// locator lookup failed; if ForwardOrigin provides a user ID, use degraded fallback path
-		if fwdID != 0 {
-			return a.msgHandlerFallback(update, fwdID, username, msgTxt)
+		log.Printf("[INFO] admin report locator result: outcome=locator_miss admin_msg_id=%d origin_type=%s target_id=%d",
+			update.Message.MessageID, origin.OriginType, origin.ID)
+		// Preserve the existing degraded fallback only for a reliable Telegram user.
+		if origin.Kind == adminReportIdentityUser {
+			if a.targetExplicitlyApproved(origin.ID) {
+				return a.blockAdminReport(update, "approved_target",
+					"Report target is explicitly approved. Automatic spam action was blocked. Remove approval explicitly before retrying.")
+			}
+			log.Printf("[WARN] admin report degraded fallback: admin_msg_id=%d target_type=%s target_id=%d",
+				update.Message.MessageID, origin.Kind, origin.ID)
+			return a.msgHandlerFallback(update, origin.ID, origin.Name, msgTxt)
 		}
-		return fmt.Errorf("not found %q in locator", shrink(msgTxt, 50))
+		return a.blockAdminReport(update, "locator_miss_unsupported_origin",
+			"The original message could not be located safely for this sender type. No automatic moderation action was taken.")
 	}
 
-	log.Printf("[DEBUG] locator found message %s", info)
+	locatorIdentity := adminLocatorIdentity(info)
+	log.Printf("[INFO] admin report locator result: outcome=locator_hit admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
+		update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
+	if !adminReportIdentitiesMatch(origin, locatorIdentity) {
+		log.Printf("[WARN] admin report locator identity mismatch; destructive action blocked: admin_msg_id=%d original_msg_id=%d origin_type=%s origin_id=%d locator_type=%s locator_id=%d",
+			update.Message.MessageID, info.MsgID, origin.Kind, origin.ID, locatorIdentity.Kind, locatorIdentity.ID)
+		return a.blockAdminReport(update, "identity_mismatch",
+			"Forwarded sender identity does not match the located source. Automatic moderation was blocked.")
+	}
+
 	errs := new(multierror.Error)
 
 	// check if the forwarded message will ban a super-user and ignore it
 	if a.superUsers.IsSuper(info.UserName, info.UserID) {
 		return fmt.Errorf("forwarded message is about super-user %s (%d), ignored", info.UserName, info.UserID)
+	}
+	if a.targetExplicitlyApproved(info.UserID) {
+		return a.blockAdminReport(update, "approved_target",
+			"Report target is explicitly approved. Automatic spam action was blocked. Remove approval explicitly before retrying.")
 	}
 
 	// remove user from the approved list and from storage
@@ -169,7 +216,7 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 
 	// update spam samples
 	if err := a.bot.UpdateSpam(msgTxt); err != nil {
-		return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+		return fmt.Errorf("failed to update spam sample: %w", err)
 	}
 
 	// delete message
@@ -192,7 +239,7 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	} else {
 		banReq := banRequest{duration: bot.PermanentBanDuration, userID: info.UserID,
 			channelID: channelIDFromCallback(info.UserID),
-			chatID:    a.primChatID, tbAPI: a.tbAPI, dry: a.dry, training: a.trainingMode, userName: username}
+			chatID:    a.primChatID, tbAPI: a.tbAPI, dry: a.dry, training: a.trainingMode, userName: origin.Name}
 		if err := banUserOrChannel(banReq); err != nil {
 			errs = multierror.Append(errs, fmt.Errorf("failed to ban user %d: %w", info.UserID, err))
 		}
@@ -219,6 +266,68 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	if err := errs.ErrorOrNil(); err != nil {
 		return fmt.Errorf("spam notification failed: %w", err)
 	}
+	log.Printf("[INFO] admin report handled: outcome=moderation_handled admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
+		update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
+	return nil
+}
+
+func adminForwardOriginIdentity(origin *tbapi.MessageOrigin) adminReportIdentity {
+	if origin == nil {
+		return adminReportIdentity{Kind: adminReportIdentityUnavailable}
+	}
+
+	identity := adminReportIdentity{Kind: adminReportIdentityUnavailable, OriginType: origin.Type}
+	switch origin.Type {
+	case tbapi.MessageOriginUser:
+		identity.Kind = adminReportIdentityUser
+		if origin.SenderUser != nil && origin.SenderUser.ID != 0 {
+			identity.ID, identity.Name, identity.Reliable = origin.SenderUser.ID, origin.SenderUser.UserName, true
+		}
+	case tbapi.MessageOriginHiddenUser:
+		identity.Kind, identity.Name = adminReportIdentityHiddenUser, origin.SenderUserName
+	case tbapi.MessageOriginChat:
+		identity.Kind = adminReportIdentitySenderChat
+		if origin.SenderChat != nil && origin.SenderChat.ID != 0 {
+			identity.ID, identity.Name, identity.Reliable = origin.SenderChat.ID, origin.SenderChat.UserName, true
+		}
+	case tbapi.MessageOriginChannel:
+		identity.Kind = adminReportIdentitySenderChat
+		channel := origin.Chat
+		// SenderChat was used by older fixtures and library representations.
+		if channel == nil {
+			channel = origin.SenderChat
+		}
+		if channel != nil && channel.ID != 0 {
+			identity.ID, identity.Name, identity.Reliable = channel.ID, channel.UserName, true
+		}
+	}
+	return identity
+}
+
+func adminLocatorIdentity(info storage.MsgMeta) adminReportIdentity {
+	kind := adminReportIdentityUser
+	if info.UserID < 0 {
+		kind = adminReportIdentitySenderChat
+	}
+	return adminReportIdentity{Kind: kind, ID: info.UserID, Name: info.UserName, Reliable: info.UserID != 0}
+}
+
+func adminReportIdentitiesMatch(origin, located adminReportIdentity) bool {
+	return origin.Reliable && located.Reliable && origin.Kind == located.Kind && origin.ID == located.ID
+}
+
+func (a *admin) targetExplicitlyApproved(targetID int64) bool {
+	return a.isExplicitlyApproved != nil && a.isExplicitlyApproved(targetID)
+}
+
+func (a *admin) blockAdminReport(update tbapi.Update, outcome, feedback string) error {
+	log.Printf("[WARN] admin report blocked: outcome=%s admin_msg_id=%d", outcome, update.Message.MessageID)
+	if feedback == "" {
+		return nil
+	}
+	if err := send(tbapi.NewMessage(a.adminChatID, feedback), a.tbAPI); err != nil {
+		return fmt.Errorf("failed to send blocked-report feedback: %w", err)
+	}
 	return nil
 }
 
@@ -227,7 +336,8 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 // (ban, spam update, remove from approved) and warns the admin that the original message
 // must be deleted manually since we don't have the message ID from the primary chat.
 func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, msgTxt string) error {
-	log.Printf("[INFO] locator fallback: forwarded user %q (%d), processing without locator data", username, fwdID)
+	log.Printf("[INFO] admin report fallback started: admin_msg_id=%d target_type=%s target_id=%d",
+		update.Message.MessageID, adminReportIdentityUser, fwdID)
 	errs := new(multierror.Error)
 
 	// check if the forwarded user is a super-user and ignore if so
@@ -273,7 +383,7 @@ func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, m
 
 	// update spam samples
 	if err := a.bot.UpdateSpam(msgTxt); err != nil {
-		return fmt.Errorf("failed to update spam for %q: %w", msgTxt, err)
+		return fmt.Errorf("failed to update spam sample: %w", err)
 	}
 
 	// ban user (no message deletion - we don't have the message ID from primary chat)
@@ -297,6 +407,8 @@ func (a *admin) msgHandlerFallback(update tbapi.Update, fwdID int64, username, m
 	if err := errs.ErrorOrNil(); err != nil {
 		return fmt.Errorf("spam notification failed: %w", err)
 	}
+	log.Printf("[INFO] admin report handled: outcome=degraded_fallback admin_msg_id=%d target_type=%s target_id=%d",
+		update.Message.MessageID, adminReportIdentityUser, fwdID)
 	return nil
 }
 
@@ -385,13 +497,12 @@ func (a *admin) DirectWarnReport(update tbapi.Update) error {
 // returns the user ID and username from the tg update if's forwarded message,
 // or just username in case sender is hidden user
 func (a *admin) getForwardUsernameAndID(update tbapi.Update) (fwdID int64, username string) {
-	if update.Message.ForwardOrigin != nil {
-		if update.Message.ForwardOrigin.IsUser() {
-			return update.Message.ForwardOrigin.SenderUser.ID, update.Message.ForwardOrigin.SenderUser.UserName
-		}
-		if update.Message.ForwardOrigin.IsHiddenUser() {
-			return 0, update.Message.ForwardOrigin.SenderUserName
-		}
+	if update.Message == nil || update.Message.ForwardOrigin == nil {
+		return 0, ""
+	}
+	identity := adminForwardOriginIdentity(update.Message.ForwardOrigin)
+	if identity.Kind == adminReportIdentityUser || identity.Kind == adminReportIdentityHiddenUser {
+		return identity.ID, identity.Name
 	}
 	return 0, ""
 }

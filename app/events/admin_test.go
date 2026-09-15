@@ -1290,8 +1290,8 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			ForwardOrigin: &tbapi.MessageOrigin{
 				Type: "user",
 				SenderUser: &tbapi.User{
-					ID:       555,
-					UserName: "user",
+					ID:       888,
+					UserName: "superuser",
 				},
 			},
 		}
@@ -1362,8 +1362,8 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			ForwardOrigin: &tbapi.MessageOrigin{
 				Type: "user",
 				SenderUser: &tbapi.User{
-					ID:       555,
-					UserName: "user",
+					ID:       888,
+					UserName: "regularuser",
 				},
 			},
 		}
@@ -1449,7 +1449,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("anonymous admin post skips ban in MsgHandler", func(t *testing.T) {
+	t.Run("hidden origin is blocked before locator in MsgHandler", func(t *testing.T) {
 		mockAPI := &mocks.TbAPIMock{
 			RequestFunc: func(c tbapi.Chattable) (*tbapi.APIResponse, error) {
 				return &tbapi.APIResponse{Ok: true}, nil
@@ -1495,8 +1495,9 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		err := adm.MsgHandler(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
-		// verify the handler reached the locator (not exited early)
-		require.Len(t, locatorMock.MessageCalls(), 1)
+		// An origin without stable numeric identity is not allowed to trust a
+		// content-only locator hit.
+		assert.Empty(t, locatorMock.MessageCalls())
 
 		// should NOT attempt any ban (no BanChatSenderChatConfig or BanChatMemberConfig)
 		for _, call := range mockAPI.RequestCalls() {
@@ -1508,7 +1509,11 @@ func TestAdmin_MsgHandler(t *testing.T) {
 	})
 
 	t.Run("message not found in locator with hidden user", func(t *testing.T) {
-		mockAPI := &mocks.TbAPIMock{}
+		mockAPI := &mocks.TbAPIMock{
+			SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) {
+				return tbapi.Message{}, nil
+			},
+		}
 		botMock := &mocks.BotMock{}
 		locatorMock := &mocks.LocatorMock{
 			MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
@@ -1524,7 +1529,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			adminChatID: 456,
 		}
 
-		// forwarded message with hidden user (fwdID=0), should return error
+		// forwarded message with hidden user has no reliable numeric identity
 		msg := &tbapi.Message{
 			MessageID: 789,
 			Chat:      tbapi.Chat{ID: 456},
@@ -1538,8 +1543,8 @@ func TestAdmin_MsgHandler(t *testing.T) {
 
 		update := tbapi.Update{Message: msg}
 		err := adminHandler.MsgHandler(update)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found")
+		require.NoError(t, err)
+		assert.Empty(t, locatorMock.MessageCalls())
 	})
 
 	t.Run("dry mode", func(t *testing.T) {
@@ -1594,8 +1599,8 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			ForwardOrigin: &tbapi.MessageOrigin{
 				Type: "user",
 				SenderUser: &tbapi.User{
-					ID:       555,
-					UserName: "user",
+					ID:       888,
+					UserName: "regularuser",
 				},
 			},
 		}
@@ -1667,8 +1672,8 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			ForwardOrigin: &tbapi.MessageOrigin{
 				Type: "user",
 				SenderUser: &tbapi.User{
-					ID:       555,
-					UserName: "user",
+					ID:       888,
+					UserName: "regularuser",
 				},
 			},
 		}
@@ -1753,8 +1758,10 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		assert.Contains(t, sentMessages[1], "spammer")
 	})
 
-	t.Run("locator fails, hidden user (fwdID=0)", func(t *testing.T) {
-		mockAPI := &mocks.TbAPIMock{}
+	t.Run("hidden user is blocked before locator", func(t *testing.T) {
+		mockAPI := &mocks.TbAPIMock{
+			SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) { return tbapi.Message{}, nil },
+		}
 		botMock := &mocks.BotMock{}
 		locatorMock := &mocks.LocatorMock{
 			MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
@@ -1777,16 +1784,18 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		}
 
 		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found")
+		require.NoError(t, err)
 
 		// verify no actions were taken
 		assert.Empty(t, mockAPI.RequestCalls())
 		assert.Empty(t, botMock.UpdateSpamCalls())
+		assert.Empty(t, locatorMock.MessageCalls())
 	})
 
-	t.Run("locator fails, channel forward (fwdID=0)", func(t *testing.T) {
-		mockAPI := &mocks.TbAPIMock{}
+	t.Run("malformed channel origin is blocked before locator", func(t *testing.T) {
+		mockAPI := &mocks.TbAPIMock{
+			SendFunc: func(c tbapi.Chattable) (tbapi.Message, error) { return tbapi.Message{}, nil },
+		}
 		botMock := &mocks.BotMock{}
 		locatorMock := &mocks.LocatorMock{
 			MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
@@ -1809,8 +1818,8 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		}
 
 		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not found")
+		require.NoError(t, err)
+		assert.Empty(t, locatorMock.MessageCalls())
 	})
 
 	t.Run("locator fails, ForwardOrigin has user ID, dry mode", func(t *testing.T) {
@@ -2531,7 +2540,7 @@ func TestAdmin_MsgHandlerForwardWithAggressiveCleanup(t *testing.T) {
 		Text:      "spam message text",
 		ForwardOrigin: &tbapi.MessageOrigin{
 			Type:       "user",
-			SenderUser: &tbapi.User{ID: 555, UserName: "user"},
+			SenderUser: &tbapi.User{ID: 888, UserName: "spammer"},
 		},
 	}
 

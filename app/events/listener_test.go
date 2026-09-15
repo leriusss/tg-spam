@@ -792,6 +792,7 @@ func TestTelegramListener_DoWithForwarded(t *testing.T) {
 			return nil
 		},
 		RemoveApprovedUserFunc: func(id int64) error { return nil },
+		IsApprovedUserFunc:     func(int64) bool { return false },
 	}
 
 	locator, teardown := prepTestLocator(t)
@@ -816,12 +817,15 @@ func TestTelegramListener_DoWithForwarded(t *testing.T) {
 
 	updMsg := tbapi.Update{
 		Message: &tbapi.Message{
-			Chat:          tbapi.Chat{ID: 123},
-			Text:          "text 123",
-			From:          &tbapi.User{UserName: "umputun", ID: 77},
-			Date:          int(time.Date(2020, 2, 11, 19, 35, 55, 9, time.UTC).Unix()),
-			ForwardOrigin: &tbapi.MessageOrigin{SenderUserName: "forwarded_name"},
-			MessageID:     999999,
+			Chat: tbapi.Chat{ID: 123},
+			Text: "text 123",
+			From: &tbapi.User{UserName: "umputun", ID: 77},
+			Date: int(time.Date(2020, 2, 11, 19, 35, 55, 9, time.UTC).Unix()),
+			ForwardOrigin: &tbapi.MessageOrigin{
+				Type:       tbapi.MessageOriginUser,
+				SenderUser: &tbapi.User{ID: 88, UserName: "user"},
+			},
+			MessageID: 999999,
 		},
 	}
 

@@ -109,11 +109,18 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		}
 	}
 
+	// SpamFilter exposes explicit approval provenance. Keep the broader approved
+	// check as a conservative fallback for any alternate Bot implementation.
+	isExplicitlyApproved := l.Bot.IsApprovedUser
+	if checker, ok := l.Bot.(interface{ IsExplicitTrustedUser(int64) bool }); ok {
+		isExplicitlyApproved = checker.IsExplicitTrustedUser
+	}
 	l.adminHandler = &admin{
 		tbAPI: l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: l.SuperUsers,
 		primChatID: l.chatID, adminChatID: l.adminChatID,
 		trainingMode: l.TrainingMode, softBan: l.SoftBanMode, dry: l.Dry, warnMsg: l.WarnMsg,
 		aggressiveCleanup: l.AggressiveCleanup, aggressiveCleanupLimit: l.AggressiveCleanupLimit,
+		isExplicitlyApproved: isExplicitlyApproved,
 	}
 
 	l.reportsHandler = &userReports{
@@ -151,12 +158,22 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 
 			// handle admin chat messages. can be just messages (MsgHandler will ignore those)
 			// or forwards of undetected spam by admins to admin's chat (in this case MsgHandler will process them and ban/train)
-			if update.Message != nil && l.isAdminChat(update.Message.Chat.ID, update.Message.From.UserName, update.Message.From.ID) {
+			if update.Message != nil && update.Message.Chat.ID == l.adminChatID {
+				fromName, fromID := "", int64(0)
+				if update.Message.From != nil {
+					fromName, fromID = update.Message.From.UserName, update.Message.From.ID
+				}
+				if !l.isAdminChat(update.Message.Chat.ID, fromName, fromID) {
+					continue
+				}
 				if l.DisableAdminSpamForward {
+					log.Printf("[INFO] admin report ignored: outcome=forwarding_disabled admin_msg_id=%d admin_id=%d",
+						update.Message.MessageID, fromID)
 					continue
 				}
 				if err := l.adminHandler.MsgHandler(update); err != nil {
-					log.Printf("[WARN] failed to process admin chat message: %v", err)
+					log.Printf("[WARN] admin report failed: outcome=moderation_failed admin_msg_id=%d error=%v",
+						update.Message.MessageID, err)
 					errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
 					if errResp != nil {
 						log.Printf("[WARN] failed to respond on error, %v", errResp)
@@ -557,9 +574,9 @@ func (l *TelegramListener) isChatAllowed(fromChat int64) bool {
 
 func (l *TelegramListener) isAdminChat(fromChat int64, from string, fromID int64) bool {
 	if fromChat == l.adminChatID {
-		log.Printf("[DEBUG] message in admin chat %d, from %s (%d)", fromChat, from, fromID)
+		log.Printf("[DEBUG] admin report routed: outcome=admin_chat_received chat_id=%d admin_id=%d", fromChat, fromID)
 		if !l.SuperUsers.IsSuper(from, fromID) {
-			log.Printf("[DEBUG] %s (%d) is not superuser in admin chat, ignored", from, fromID)
+			log.Printf("[WARN] admin report rejected: outcome=unauthorized_sender chat_id=%d admin_id=%d", fromChat, fromID)
 			return false
 		}
 		return true
