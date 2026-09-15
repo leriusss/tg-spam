@@ -327,6 +327,24 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		assert.Equal(t, 1, r.actions().feedback)
 	})
 
+	t.Run("H user origin with zero SenderUser ID is blocked", func(t *testing.T) {
+		r := newAdminForwardReplay(t, locatedUser, true)
+		msg := replayAdminMessage(userOrigin(0, "malformed"), "text")
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		assertNoModerationActions(t, r.actions())
+		assert.Zero(t, r.actions().locatorLookups)
+		assert.Equal(t, 1, r.actions().feedback)
+	})
+
+	t.Run("H unknown origin type is blocked", func(t *testing.T) {
+		r := newAdminForwardReplay(t, locatedUser, true)
+		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: "unsupported"}, "text")
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		assertNoModerationActions(t, r.actions())
+		assert.Zero(t, r.actions().locatorLookups)
+		assert.Equal(t, 1, r.actions().feedback)
+	})
+
 	t.Run("I hidden origin locator hit is not trusted", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginHiddenUser, SenderUserName: "hidden"}, "text")
