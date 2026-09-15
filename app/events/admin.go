@@ -137,15 +137,41 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		msgTxt = m.Text
 	}
 
-	if msgTxt == "" {
-		log.Printf("[WARN] admin report blocked: outcome=empty_message admin_msg_id=%d origin_type=%s target_id=%d",
-			update.Message.MessageID, origin.OriginType, origin.ID)
-		return errors.New("empty message text")
+	mediaOnly := msgTxt == ""
+	var info storage.MsgMeta
+	var ok bool
+	if mediaOnly {
+		mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
+		if mediaStatus != mediaLocatorExtracted {
+			outcome := "media_key_unavailable"
+			if mediaStatus == mediaLocatorUnsupported || mediaStatus == mediaLocatorAlbum {
+				outcome = "media_type_unsupported"
+			}
+			log.Printf("[WARN] admin report blocked: outcome=%s admin_msg_id=%d origin_type=%s target_id=%d media_status=%s",
+				outcome, update.Message.MessageID, origin.OriginType, origin.ID, mediaStatus)
+			return a.blockAdminReport(update, outcome,
+				"Unable to identify the forwarded media safely. No automatic moderation action was taken.")
+		}
+		identity, identityOK := storageIdentity(origin)
+		if !identityOK {
+			return a.blockAdminReport(update, "media_identity_unavailable",
+				"Unable to determine the forwarded media sender reliably. No automatic moderation action was taken.")
+		}
+		log.Printf("[DEBUG] admin report media key extracted: outcome=media_key_extracted admin_msg_id=%d media_kind=%s key_version=%d target_type=%s target_id=%d",
+			update.Message.MessageID, mediaKey.Kind, mediaKey.Version, origin.Kind, origin.ID)
+		info, ok = a.locator.MessageByMedia(context.TODO(), mediaKey, a.primChatID, identity)
+		if !ok {
+			log.Printf("[INFO] admin report media locator result: outcome=media_locator_miss admin_msg_id=%d media_kind=%s target_type=%s target_id=%d",
+				update.Message.MessageID, mediaKey.Kind, origin.Kind, origin.ID)
+			return a.blockAdminReport(update, "media_locator_miss",
+				"The original media message could not be located safely. No automatic moderation action was taken.")
+		}
+		log.Printf("[INFO] admin report media locator result: outcome=media_locator_hit admin_msg_id=%d original_msg_id=%d media_kind=%s target_type=%s target_id=%d",
+			update.Message.MessageID, info.MsgID, mediaKey.Kind, origin.Kind, origin.ID)
+	} else {
+		// Textual and captioned reports keep the established Phase 1 path.
+		info, ok = a.locator.Message(context.TODO(), msgTxt)
 	}
-
-	// it would be nice to ban this user right away, but we don't have forwarded user ID here due to tg privacy limitation.
-	// it is empty in update.Message. to ban this user, we need to get the match on the message from the locator and ban from there.
-	info, ok := a.locator.Message(context.TODO(), msgTxt)
 	if !ok {
 		log.Printf("[INFO] admin report locator result: outcome=locator_miss admin_msg_id=%d origin_type=%s target_id=%d",
 			update.Message.MessageID, origin.OriginType, origin.ID)
@@ -164,12 +190,22 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	}
 
 	locatorIdentity := adminLocatorIdentity(info)
+	if mediaOnly && info.ChatID != a.primChatID {
+		log.Printf("[WARN] admin report media source mismatch; destructive action blocked: outcome=media_identity_mismatch admin_msg_id=%d original_msg_id=%d source_chat_id=%d",
+			update.Message.MessageID, info.MsgID, info.ChatID)
+		return a.blockAdminReport(update, "media_identity_mismatch",
+			"Forwarded media source does not match the protected chat. Automatic moderation was blocked.")
+	}
 	log.Printf("[INFO] admin report locator result: outcome=locator_hit admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
 		update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
 	if !adminReportIdentitiesMatch(origin, locatorIdentity) {
+		outcome := "identity_mismatch"
+		if mediaOnly {
+			outcome = "media_identity_mismatch"
+		}
 		log.Printf("[WARN] admin report locator identity mismatch; destructive action blocked: admin_msg_id=%d original_msg_id=%d origin_type=%s origin_id=%d locator_type=%s locator_id=%d",
 			update.Message.MessageID, info.MsgID, origin.Kind, origin.ID, locatorIdentity.Kind, locatorIdentity.ID)
-		return a.blockAdminReport(update, "identity_mismatch",
+		return a.blockAdminReport(update, outcome,
 			"Forwarded sender identity does not match the located source. Automatic moderation was blocked.")
 	}
 
@@ -180,7 +216,11 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		return fmt.Errorf("forwarded message is about super-user %s (%d), ignored", info.UserName, info.UserID)
 	}
 	if a.targetExplicitlyApproved(info.UserID) {
-		return a.blockAdminReport(update, "approved_target",
+		outcome := "approved_target"
+		if mediaOnly {
+			outcome = "media_approved_block"
+		}
+		return a.blockAdminReport(update, outcome,
 			"Report target is explicitly approved. Automatic spam action was blocked. Remove approval explicitly before retrying.")
 	}
 
@@ -193,13 +233,17 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	spamInfo := []string{}
 	// check only, don't update the storage, as all we care here is to get checks results.
 	// without checkOnly flag, it may add approved user to the storage after we removed it above.
-	resp := a.bot.OnMessage(bot.Message{Text: update.Message.Text, From: bot.User{ID: info.UserID}}, true)
 	spamInfoText := "**can't get spam info**"
-	for _, check := range resp.CheckResults {
-		spamInfo = append(spamInfo, "- "+escapeMarkDownV1Text(check.String()))
-	}
-	if len(spamInfo) > 0 {
-		spamInfoText = strings.Join(spamInfo, "\n")
+	if mediaOnly {
+		spamInfoText = "**captionless media: textual detection and learning skipped**"
+	} else {
+		resp := a.bot.OnMessage(bot.Message{Text: update.Message.Text, From: bot.User{ID: info.UserID}}, true)
+		for _, check := range resp.CheckResults {
+			spamInfo = append(spamInfo, "- "+escapeMarkDownV1Text(check.String()))
+		}
+		if len(spamInfo) > 0 {
+			spamInfoText = strings.Join(spamInfo, "\n")
+		}
 	}
 	newMsgText := fmt.Sprintf("**original detection results for %q (%d)**\n\n%s\n\n\n*the user banned and message deleted*",
 		escapeMarkDownV1Text(info.UserName), info.UserID, spamInfoText)
@@ -215,8 +259,10 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	}
 
 	// update spam samples
-	if err := a.bot.UpdateSpam(msgTxt); err != nil {
-		return fmt.Errorf("failed to update spam sample: %w", err)
+	if !mediaOnly {
+		if err := a.bot.UpdateSpam(msgTxt); err != nil {
+			return fmt.Errorf("failed to update spam sample: %w", err)
+		}
 	}
 
 	// delete message
@@ -264,10 +310,18 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 	}
 
 	if err := errs.ErrorOrNil(); err != nil {
+		if mediaOnly {
+			log.Printf("[WARN] admin report media failed: outcome=media_failed admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
+				update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
+		}
 		return fmt.Errorf("spam notification failed: %w", err)
 	}
 	log.Printf("[INFO] admin report handled: outcome=moderation_handled admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
 		update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
+	if mediaOnly {
+		log.Printf("[INFO] admin report media handled: outcome=media_handled_without_learning admin_msg_id=%d original_msg_id=%d target_type=%s target_id=%d",
+			update.Message.MessageID, info.MsgID, locatorIdentity.Kind, locatorIdentity.ID)
+	}
 	return nil
 }
 

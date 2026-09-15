@@ -126,6 +126,38 @@ type MsgMeta struct {
 	MsgID    int       `db:"msg_id"`
 }
 
+// MediaKind identifies a supported Telegram media family for locator matching.
+type MediaKind string
+
+const (
+	MediaLocatorVersion           = 1
+	MediaPhoto          MediaKind = "photo"
+	MediaVideo          MediaKind = "video"
+	MediaDocument       MediaKind = "document"
+	MediaAnimation      MediaKind = "animation"
+)
+
+// MediaLocatorKey is a typed, stable media identifier. StableMediaID is never a moderation identity.
+type MediaLocatorKey struct {
+	Version       int
+	Kind          MediaKind
+	StableMediaID string
+}
+
+// LocatorIdentityKind is the storage-level identity namespace.
+type LocatorIdentityKind string
+
+const (
+	LocatorIdentityUser       LocatorIdentityKind = "user"
+	LocatorIdentitySenderChat LocatorIdentityKind = "sender_chat"
+)
+
+// LocatorIdentity binds a locator lookup to an expected Telegram identity.
+type LocatorIdentity struct {
+	Kind LocatorIdentityKind
+	ID   int64
+}
+
 // SpamData stores spam data for a given user
 type SpamData struct {
 	Time   time.Time `db:"time"`
@@ -211,10 +243,28 @@ func (l *Locator) AddMessage(ctx context.Context, msg string, chatID, userID int
 	defer l.Unlock()
 
 	baseHash := l.MsgHash(msg)
+	log.Printf("[DEBUG] add message to locator: %q, hash:%s, userID:%d, user name:%q, chatID:%d, msgID:%d",
+		msg, fmt.Sprintf("%s:%d", baseHash, msgID), userID, userName, chatID, msgID)
+	return l.addMessageRecord(ctx, baseHash, chatID, userID, userName, msgID)
+}
+
+// AddMediaMessage adds a typed captionless-media locator record without logging the raw stable media ID.
+func (l *Locator) AddMediaMessage(ctx context.Context, key MediaLocatorKey, chatID int64, identity LocatorIdentity,
+	userName string, msgID int) error {
+	if err := validateMediaLocatorInput(key, identity); err != nil {
+		return err
+	}
+	l.Lock()
+	defer l.Unlock()
+	baseHash := l.MsgHash(mediaLocatorPreimage(key))
+	log.Printf("[DEBUG] add media to locator: kind:%s version:1 userID:%d user name:%q chatID:%d msgID:%d",
+		key.Kind, identity.ID, userName, chatID, msgID)
+	return l.addMessageRecord(ctx, baseHash, chatID, identity.ID, userName, msgID)
+}
+
+func (l *Locator) addMessageRecord(ctx context.Context, baseHash string, chatID, userID int64, userName string, msgID int) error {
 	// Store a parseable key to allow deterministic duplicate selection by prefix + msg_id.
 	hash := fmt.Sprintf("%s:%d", baseHash, msgID)
-	log.Printf("[DEBUG] add message to locator: %q, hash:%s, userID:%d, user name:%q, chatID:%d, msgID:%d",
-		msg, hash, userID, userName, chatID, msgID)
 
 	query, err := locatorQueries.Pick(l.Type(), CmdAddLocatorMessage)
 	if err != nil {
@@ -241,6 +291,62 @@ func (l *Locator) AddMessage(ctx context.Context, msg string, chatID, userID int
 		return fmt.Errorf("failed to insert message: %w", err)
 	}
 	return l.cleanupMessages(ctx)
+}
+
+// MessageByMedia returns the newest media match scoped to source chat and reliable identity.
+func (l *Locator) MessageByMedia(ctx context.Context, key MediaLocatorKey, chatID int64,
+	identity LocatorIdentity) (MsgMeta, bool) {
+	if err := validateMediaLocatorInput(key, identity); err != nil {
+		log.Printf("[WARN] media locator lookup rejected: kind=%s identity_kind=%s identity_id=%d", key.Kind, identity.Kind, identity.ID)
+		return MsgMeta{}, false
+	}
+	l.RLock()
+	defer l.RUnlock()
+
+	baseHash := l.MsgHash(mediaLocatorPreimage(key))
+	hashPattern := baseHash + ":%"
+	var located MsgMeta
+	query := l.Adopt(`SELECT time, chat_id, user_id, user_name, msg_id
+		FROM messages
+		WHERE gid = ? AND chat_id = ? AND user_id = ? AND (hash = ? OR hash LIKE ?)
+		ORDER BY time DESC, msg_id DESC LIMIT 1`)
+	err := l.GetContext(ctx, &located, query, l.GID(), chatID, identity.ID, baseHash, hashPattern)
+	if err != nil {
+		log.Printf("[DEBUG] media locator miss: kind=%s identity_kind=%s identity_id=%d chat_id=%d", key.Kind, identity.Kind, identity.ID, chatID)
+		return MsgMeta{}, false
+	}
+	return located, true
+}
+
+func mediaLocatorPreimage(key MediaLocatorKey) string {
+	return fmt.Sprintf("media:v%d:%s:%s", key.Version, key.Kind, key.StableMediaID)
+}
+
+func validateMediaLocatorInput(key MediaLocatorKey, identity LocatorIdentity) error {
+	if key.Version != MediaLocatorVersion {
+		return fmt.Errorf("unsupported media locator version %d", key.Version)
+	}
+	if strings.TrimSpace(key.StableMediaID) == "" {
+		return fmt.Errorf("stable media id is empty")
+	}
+	switch key.Kind {
+	case MediaPhoto, MediaVideo, MediaDocument, MediaAnimation:
+	default:
+		return fmt.Errorf("unsupported media kind %q", key.Kind)
+	}
+	switch identity.Kind {
+	case LocatorIdentityUser:
+		if identity.ID <= 0 {
+			return fmt.Errorf("user identity id must be positive")
+		}
+	case LocatorIdentitySenderChat:
+		if identity.ID >= 0 {
+			return fmt.Errorf("sender-chat identity id must be negative")
+		}
+	default:
+		return fmt.Errorf("unsupported identity kind %q", identity.Kind)
+	}
+	return nil
 }
 
 // AddSpam adds spam data to the locator and also cleans up old spam data.

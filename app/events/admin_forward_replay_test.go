@@ -78,6 +78,9 @@ func newAdminForwardReplay(t *testing.T, located storage.MsgMeta, locatorHit boo
 		MessageFunc: func(context.Context, string) (storage.MsgMeta, bool) {
 			return located, locatorHit
 		},
+		MessageByMediaFunc: func(context.Context, storage.MediaLocatorKey, int64, storage.LocatorIdentity) (storage.MsgMeta, bool) {
+			return located, locatorHit
+		},
 		GetUserMessageIDsFunc: func(context.Context, int64, int) ([]int, error) {
 			return nil, nil
 		},
@@ -96,7 +99,7 @@ func newAdminForwardReplay(t *testing.T, located storage.MsgMeta, locatorHit boo
 }
 
 func (r *adminForwardReplay) actions() replayActions {
-	res := replayActions{locatorLookups: len(r.locator.MessageCalls()), feedback: len(r.api.SendCalls())}
+	res := replayActions{locatorLookups: len(r.locator.MessageCalls()) + len(r.locator.MessageByMediaCalls()), feedback: len(r.api.SendCalls())}
 	for _, call := range r.bot.RemoveApprovedUserCalls() {
 		res.approvedRemovals = append(res.approvedRemovals, call.ID)
 	}
@@ -269,7 +272,7 @@ func TestAdminForwardPhase1SafetyLogsAndFeedback(t *testing.T) {
 }
 
 func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
-	locatedUser := storage.MsgMeta{UserID: 501, UserName: "source", MsgID: 701}
+	locatedUser := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: 501, UserName: "source", MsgID: 701}
 
 	t.Run("D personal user locator hit plans full moderation", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
@@ -419,24 +422,25 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		assert.Equal(t, []string{"caption text"}, r.actions().spamUpdates)
 	})
 
-	t.Run("N media without caption exits before locator even when a hit exists", func(t *testing.T) {
+	t.Run("N media without caption uses scoped locator and skips learning", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(userOrigin(501, "source"), "")
-		msg.Photo = []tbapi.PhotoSize{{FileID: "fake-photo"}}
-		err := r.handler.MsgHandler(tbapi.Update{Message: msg})
-		require.EqualError(t, err, "empty message text")
-		assertNoModerationActions(t, r.actions())
-		assert.Zero(t, r.actions().locatorLookups)
+		msg.Photo = []tbapi.PhotoSize{{FileID: "bot-specific", FileUniqueID: "stable-photo", Width: 10, Height: 10}}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		got := r.actions()
+		assert.Equal(t, 1, got.locatorLookups)
+		assert.Empty(t, got.spamUpdates)
+		assert.Equal(t, []int64{501}, got.userBans)
+		assert.Equal(t, []int{701}, got.messageDeletes)
 	})
 
-	t.Run("O media without caption and locator miss has the same pre-locator exit", func(t *testing.T) {
+	t.Run("O media without caption locator miss fails closed", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(userOrigin(501, "source"), "")
-		msg.Video = &tbapi.Video{FileID: "fake-video"}
-		err := r.handler.MsgHandler(tbapi.Update{Message: msg})
-		require.EqualError(t, err, "empty message text")
+		msg.Video = &tbapi.Video{FileID: "bot-specific", FileUniqueID: "stable-video"}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
-		assert.Zero(t, r.actions().locatorLookups)
+		assert.Equal(t, 1, r.actions().locatorLookups)
 	})
 
 	t.Run("P URL entity does not alter locator key or actions", func(t *testing.T) {
@@ -470,6 +474,138 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		assert.Len(t, got.userBans, 2)
 		assert.Len(t, got.messageDeletes, 2)
 	})
+}
+
+func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
+	user := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: 501, UserName: "source", MsgID: 701}
+	media := func(kind storage.MediaKind) *tbapi.Message {
+		msg := replayAdminMessage(userOrigin(501, "source"), "")
+		switch kind {
+		case storage.MediaPhoto:
+			msg.Photo = []tbapi.PhotoSize{{FileUniqueID: "stable-photo", Width: 100, Height: 100}}
+		case storage.MediaVideo:
+			msg.Video = &tbapi.Video{FileUniqueID: "stable-video"}
+		case storage.MediaDocument:
+			msg.Document = &tbapi.Document{FileUniqueID: "stable-document", FileName: "ignored.txt"}
+		case storage.MediaAnimation:
+			msg.Animation = &tbapi.Animation{FileUniqueID: "stable-animation"}
+		}
+		return msg
+	}
+
+	for _, kind := range []storage.MediaKind{storage.MediaPhoto, storage.MediaVideo, storage.MediaDocument, storage.MediaAnimation} {
+		t.Run("matching "+string(kind), func(t *testing.T) {
+			r := newAdminForwardReplay(t, user, true)
+			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(kind)}))
+			got := r.actions()
+			assert.Empty(t, got.spamUpdates)
+			assert.Equal(t, []int64{501}, got.userBans)
+			assert.Equal(t, []int{701}, got.messageDeletes)
+			require.Len(t, r.locator.MessageByMediaCalls(), 1)
+			assert.Equal(t, kind, r.locator.MessageByMediaCalls()[0].Key.Kind)
+			assert.Equal(t, storage.LocatorIdentity{Kind: storage.LocatorIdentityUser, ID: 501}, r.locator.MessageByMediaCalls()[0].Identity)
+		})
+	}
+
+	t.Run("wrong target is blocked after malicious locator result", func(t *testing.T) {
+		r := newAdminForwardReplay(t, storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: 202, MsgID: 702}, true)
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		assertNoModerationActions(t, r.actions())
+		assert.NotEmpty(t, r.api.SendCalls())
+	})
+
+	t.Run("wrong sender chat is blocked after malicious locator result", func(t *testing.T) {
+		located := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: -100999, MsgID: 702}
+		r := newAdminForwardReplay(t, located, true)
+		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
+		msg.Photo = []tbapi.PhotoSize{{FileUniqueID: "stable-channel-photo"}}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		assertNoModerationActions(t, r.actions())
+	})
+
+	t.Run("wrong source chat is blocked", func(t *testing.T) {
+		r := newAdminForwardReplay(t, storage.MsgMeta{ChatID: 999, UserID: 501, MsgID: 702}, true)
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		assertNoModerationActions(t, r.actions())
+	})
+
+	t.Run("approved user and sender chat stay locked", func(t *testing.T) {
+		r := newAdminForwardReplay(t, user, true)
+		r.approved[501] = true
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		assertNoModerationActions(t, r.actions())
+
+		channel := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: -100300, UserName: "channel", MsgID: 703}
+		r = newAdminForwardReplay(t, channel, true)
+		r.approved[-100300] = true
+		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
+		msg.Video = &tbapi.Video{FileUniqueID: "stable-channel-video"}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		assertNoModerationActions(t, r.actions())
+	})
+
+	t.Run("matching sender chat bans sender chat without learning", func(t *testing.T) {
+		channel := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: -100300, UserName: "channel", MsgID: 703}
+		r := newAdminForwardReplay(t, channel, true)
+		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
+		msg.Document = &tbapi.Document{FileUniqueID: "stable-channel-document"}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		got := r.actions()
+		assert.Empty(t, got.spamUpdates)
+		assert.Equal(t, []int64{-100300}, got.channelBans)
+		assert.Equal(t, []int{703}, got.messageDeletes)
+	})
+
+	t.Run("missing id unsupported and album fail closed", func(t *testing.T) {
+		fixtures := []*tbapi.Message{
+			media(storage.MediaPhoto),
+			replayAdminMessage(userOrigin(501, "source"), ""),
+			replayAdminMessage(userOrigin(501, "source"), ""),
+		}
+		fixtures[0].Photo[0].FileUniqueID = ""
+		fixtures[1].Audio = &tbapi.Audio{FileUniqueID: "unsupported-audio"}
+		fixtures[2].Photo = []tbapi.PhotoSize{{FileUniqueID: "album-photo"}}
+		fixtures[2].MediaGroupID = "album"
+		for _, msg := range fixtures {
+			r := newAdminForwardReplay(t, user, true)
+			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			assertNoModerationActions(t, r.actions())
+			assert.Empty(t, r.locator.MessageByMediaCalls())
+		}
+	})
+
+	t.Run("sender chat locator miss fails closed without textual fallback", func(t *testing.T) {
+		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
+		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
+		msg.Animation = &tbapi.Animation{FileUniqueID: "stable-channel-animation"}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		assertNoModerationActions(t, r.actions())
+		assert.Empty(t, r.locator.MessageCalls())
+	})
+
+	t.Run("reply markup is irrelevant to captionless media authority", func(t *testing.T) {
+		r := newAdminForwardReplay(t, user, true)
+		msg := media(storage.MediaVideo)
+		externalURL := "https://example.com"
+		msg.ReplyMarkup = &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{{Text: "button", URL: &externalURL}}}}
+		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		got := r.actions()
+		assert.Empty(t, got.spamUpdates)
+		assert.Equal(t, []int64{501}, got.userBans)
+		assert.Equal(t, []int{701}, got.messageDeletes)
+	})
+
+	for _, kind := range []storage.MediaKind{storage.MediaPhoto, storage.MediaVideo, storage.MediaDocument, storage.MediaAnimation} {
+		t.Run("caption remains textual for "+string(kind), func(t *testing.T) {
+			r := newAdminForwardReplay(t, user, true)
+			msg := media(kind)
+			msg.Caption = "caption text"
+			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			assert.Len(t, r.locator.MessageCalls(), 1)
+			assert.Empty(t, r.locator.MessageByMediaCalls())
+			assert.Equal(t, []string{"caption text"}, r.actions().spamUpdates)
+		})
+	}
 }
 
 func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {

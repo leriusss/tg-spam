@@ -16,6 +16,9 @@ import (
 //
 //		// make and configure a mocked events.Locator
 //		mockedLocator := &LocatorMock{
+//			AddMediaMessageFunc: func(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity, userName string, msgID int) error {
+//				panic("mock out the AddMediaMessage method")
+//			},
 //			AddMessageFunc: func(ctx context.Context, msg string, chatID int64, userID int64, userName string, msgID int) error {
 //				panic("mock out the AddMessage method")
 //			},
@@ -27,6 +30,9 @@ import (
 //			},
 //			MessageFunc: func(ctx context.Context, msg string) (storage.MsgMeta, bool) {
 //				panic("mock out the Message method")
+//			},
+//			MessageByMediaFunc: func(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity) (storage.MsgMeta, bool) {
+//				panic("mock out the MessageByMedia method")
 //			},
 //			MsgHashFunc: func(msg string) string {
 //				panic("mock out the MsgHash method")
@@ -44,6 +50,9 @@ import (
 //
 //	}
 type LocatorMock struct {
+	// AddMediaMessageFunc mocks the AddMediaMessage method.
+	AddMediaMessageFunc func(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity, userName string, msgID int) error
+
 	// AddMessageFunc mocks the AddMessage method.
 	AddMessageFunc func(ctx context.Context, msg string, chatID int64, userID int64, userName string, msgID int) error
 
@@ -56,6 +65,9 @@ type LocatorMock struct {
 	// MessageFunc mocks the Message method.
 	MessageFunc func(ctx context.Context, msg string) (storage.MsgMeta, bool)
 
+	// MessageByMediaFunc mocks the MessageByMedia method.
+	MessageByMediaFunc func(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity) (storage.MsgMeta, bool)
+
 	// MsgHashFunc mocks the MsgHash method.
 	MsgHashFunc func(msg string) string
 
@@ -67,6 +79,21 @@ type LocatorMock struct {
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// AddMediaMessage holds details about calls to the AddMediaMessage method.
+		AddMediaMessage []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Key is the key argument value.
+			Key storage.MediaLocatorKey
+			// ChatID is the chatID argument value.
+			ChatID int64
+			// Identity is the identity argument value.
+			Identity storage.LocatorIdentity
+			// UserName is the userName argument value.
+			UserName string
+			// MsgID is the msgID argument value.
+			MsgID int
+		}
 		// AddMessage holds details about calls to the AddMessage method.
 		AddMessage []struct {
 			// Ctx is the ctx argument value.
@@ -107,6 +134,17 @@ type LocatorMock struct {
 			// Msg is the msg argument value.
 			Msg string
 		}
+		// MessageByMedia holds details about calls to the MessageByMedia method.
+		MessageByMedia []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Key is the key argument value.
+			Key storage.MediaLocatorKey
+			// ChatID is the chatID argument value.
+			ChatID int64
+			// Identity is the identity argument value.
+			Identity storage.LocatorIdentity
+		}
 		// MsgHash holds details about calls to the MsgHash method.
 		MsgHash []struct {
 			// Msg is the msg argument value.
@@ -127,13 +165,74 @@ type LocatorMock struct {
 			UserID int64
 		}
 	}
+	lockAddMediaMessage   sync.RWMutex
 	lockAddMessage        sync.RWMutex
 	lockAddSpam           sync.RWMutex
 	lockGetUserMessageIDs sync.RWMutex
 	lockMessage           sync.RWMutex
+	lockMessageByMedia    sync.RWMutex
 	lockMsgHash           sync.RWMutex
 	lockSpam              sync.RWMutex
 	lockUserNameByID      sync.RWMutex
+}
+
+// AddMediaMessage calls AddMediaMessageFunc.
+func (mock *LocatorMock) AddMediaMessage(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity, userName string, msgID int) error {
+	if mock.AddMediaMessageFunc == nil {
+		panic("LocatorMock.AddMediaMessageFunc: method is nil but Locator.AddMediaMessage was just called")
+	}
+	callInfo := struct {
+		Ctx      context.Context
+		Key      storage.MediaLocatorKey
+		ChatID   int64
+		Identity storage.LocatorIdentity
+		UserName string
+		MsgID    int
+	}{
+		Ctx:      ctx,
+		Key:      key,
+		ChatID:   chatID,
+		Identity: identity,
+		UserName: userName,
+		MsgID:    msgID,
+	}
+	mock.lockAddMediaMessage.Lock()
+	mock.calls.AddMediaMessage = append(mock.calls.AddMediaMessage, callInfo)
+	mock.lockAddMediaMessage.Unlock()
+	return mock.AddMediaMessageFunc(ctx, key, chatID, identity, userName, msgID)
+}
+
+// AddMediaMessageCalls gets all the calls that were made to AddMediaMessage.
+// Check the length with:
+//
+//	len(mockedLocator.AddMediaMessageCalls())
+func (mock *LocatorMock) AddMediaMessageCalls() []struct {
+	Ctx      context.Context
+	Key      storage.MediaLocatorKey
+	ChatID   int64
+	Identity storage.LocatorIdentity
+	UserName string
+	MsgID    int
+} {
+	var calls []struct {
+		Ctx      context.Context
+		Key      storage.MediaLocatorKey
+		ChatID   int64
+		Identity storage.LocatorIdentity
+		UserName string
+		MsgID    int
+	}
+	mock.lockAddMediaMessage.RLock()
+	calls = mock.calls.AddMediaMessage
+	mock.lockAddMediaMessage.RUnlock()
+	return calls
+}
+
+// ResetAddMediaMessageCalls reset all the calls that were made to AddMediaMessage.
+func (mock *LocatorMock) ResetAddMediaMessageCalls() {
+	mock.lockAddMediaMessage.Lock()
+	mock.calls.AddMediaMessage = nil
+	mock.lockAddMediaMessage.Unlock()
 }
 
 // AddMessage calls AddMessageFunc.
@@ -332,6 +431,57 @@ func (mock *LocatorMock) ResetMessageCalls() {
 	mock.lockMessage.Unlock()
 }
 
+// MessageByMedia calls MessageByMediaFunc.
+func (mock *LocatorMock) MessageByMedia(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity) (storage.MsgMeta, bool) {
+	if mock.MessageByMediaFunc == nil {
+		panic("LocatorMock.MessageByMediaFunc: method is nil but Locator.MessageByMedia was just called")
+	}
+	callInfo := struct {
+		Ctx      context.Context
+		Key      storage.MediaLocatorKey
+		ChatID   int64
+		Identity storage.LocatorIdentity
+	}{
+		Ctx:      ctx,
+		Key:      key,
+		ChatID:   chatID,
+		Identity: identity,
+	}
+	mock.lockMessageByMedia.Lock()
+	mock.calls.MessageByMedia = append(mock.calls.MessageByMedia, callInfo)
+	mock.lockMessageByMedia.Unlock()
+	return mock.MessageByMediaFunc(ctx, key, chatID, identity)
+}
+
+// MessageByMediaCalls gets all the calls that were made to MessageByMedia.
+// Check the length with:
+//
+//	len(mockedLocator.MessageByMediaCalls())
+func (mock *LocatorMock) MessageByMediaCalls() []struct {
+	Ctx      context.Context
+	Key      storage.MediaLocatorKey
+	ChatID   int64
+	Identity storage.LocatorIdentity
+} {
+	var calls []struct {
+		Ctx      context.Context
+		Key      storage.MediaLocatorKey
+		ChatID   int64
+		Identity storage.LocatorIdentity
+	}
+	mock.lockMessageByMedia.RLock()
+	calls = mock.calls.MessageByMedia
+	mock.lockMessageByMedia.RUnlock()
+	return calls
+}
+
+// ResetMessageByMediaCalls reset all the calls that were made to MessageByMedia.
+func (mock *LocatorMock) ResetMessageByMediaCalls() {
+	mock.lockMessageByMedia.Lock()
+	mock.calls.MessageByMedia = nil
+	mock.lockMessageByMedia.Unlock()
+}
+
 // MsgHash calls MsgHashFunc.
 func (mock *LocatorMock) MsgHash(msg string) string {
 	if mock.MsgHashFunc == nil {
@@ -459,6 +609,10 @@ func (mock *LocatorMock) ResetUserNameByIDCalls() {
 
 // ResetCalls reset all the calls that were made to all mocked methods.
 func (mock *LocatorMock) ResetCalls() {
+	mock.lockAddMediaMessage.Lock()
+	mock.calls.AddMediaMessage = nil
+	mock.lockAddMediaMessage.Unlock()
+
 	mock.lockAddMessage.Lock()
 	mock.calls.AddMessage = nil
 	mock.lockAddMessage.Unlock()
@@ -474,6 +628,10 @@ func (mock *LocatorMock) ResetCalls() {
 	mock.lockMessage.Lock()
 	mock.calls.Message = nil
 	mock.lockMessage.Unlock()
+
+	mock.lockMessageByMedia.Lock()
+	mock.calls.MessageByMedia = nil
+	mock.lockMessageByMedia.Unlock()
 
 	mock.lockMsgHash.Lock()
 	mock.calls.MsgHash = nil

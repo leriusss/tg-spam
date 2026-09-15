@@ -8,7 +8,6 @@ package events
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 
 	"github.com/umputun/tg-spam/app/bot"
+	"github.com/umputun/tg-spam/app/storage"
 	"github.com/umputun/tg-spam/lib/spamcheck"
 )
 
@@ -304,27 +304,24 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 }
 
 func (l *TelegramListener) procEvents(update tbapi.Update) error {
-	msgJSON, errJSON := json.Marshal(update.Message)
-	if errJSON != nil {
-		return fmt.Errorf("failed to marshal update.Message to json: %w", errJSON)
-	}
 	fromChat := update.Message.Chat.ID
 	// ignore messages from other chats except the one we are monitor and ones from the test list
 	if !l.isChatAllowed(fromChat) {
 		return nil
 	}
 
-	log.Printf("[DEBUG] %s", string(msgJSON))
 	msg := transform(update.Message)
+	textPresent := strings.TrimSpace(msg.Text) != ""
+	mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
+	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward || msg.WithExternalLinkButton
 
 	// External-link buttons must reach the deterministic guard even when Telegram exposes no text/media flag.
-	if strings.TrimSpace(msg.Text) == "" && msg.Image == nil && !msg.WithVideoNote && !msg.WithVideo && !msg.WithForward &&
-		!msg.WithExternalLinkButton {
+	if !textPresent && !legacyContentAdmitted && mediaStatus != mediaLocatorExtracted {
 		return nil
 	}
 	ctx := context.TODO()
-	log.Printf("[DEBUG] incoming msg: %+v", strings.ReplaceAll(msg.Text, "\n", " "))
-	log.Printf("[DEBUG] incoming msg details: %+v", msg)
+	log.Printf("[DEBUG] incoming message: msg_id=%d chat_id=%d sender_id=%d text_present=%t text_length=%d media_status=%s forward=%t external_button=%t",
+		msg.ID, fromChat, msg.From.ID, textPresent, len([]rune(msg.Text)), mediaStatus, msg.WithForward, msg.WithExternalLinkButton)
 
 	// use channel identity for locator when message is sent on behalf of a channel
 	locatorUserID := msg.From.ID
@@ -333,8 +330,27 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		locatorUserID = msg.SenderChat.ID
 		locatorUserName = msg.SenderChat.UserName
 	}
-	if err := l.Locator.AddMessage(ctx, msg.Text, fromChat, locatorUserID, locatorUserName, msg.ID); err != nil {
-		log.Printf("[WARN] failed to add message to locator: %v", err)
+	if textPresent {
+		if err := l.Locator.AddMessage(ctx, msg.Text, fromChat, locatorUserID, locatorUserName, msg.ID); err != nil {
+			log.Printf("[WARN] failed to add message to locator: %v", err)
+		}
+	} else if mediaStatus == mediaLocatorExtracted {
+		identityKind := storage.LocatorIdentityUser
+		if locatorUserID < 0 {
+			identityKind = storage.LocatorIdentitySenderChat
+		}
+		identity := storage.LocatorIdentity{Kind: identityKind, ID: locatorUserID}
+		if err := l.Locator.AddMediaMessage(ctx, mediaKey, fromChat, identity, locatorUserName, msg.ID); err != nil {
+			log.Printf("[WARN] failed to add media message to locator: kind=%s msg_id=%d: %v", mediaKey.Kind, msg.ID, err)
+		} else {
+			log.Printf("[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d", mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID)
+		}
+	}
+
+	// Document and animation are admitted here only to make their captionless source locatable.
+	// Preserve the old direct-moderation path by not sending newly admitted empty content to Bot.OnMessage.
+	if !textPresent && !legacyContentAdmitted {
+		return nil
 	}
 
 	// skip spam check for anonymous admin posts from this group

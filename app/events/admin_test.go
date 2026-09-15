@@ -1189,12 +1189,14 @@ func TestAdmin_MsgHandlerWithEmptyText(t *testing.T) {
 
 			update := tbapi.Update{Message: tt.msg}
 			err := adminHandler.MsgHandler(update)
-			require.Error(t, err)
-			assert.Equal(t, "empty message text", err.Error())
+			require.NoError(t, err)
 
-			// verify no requests were made to ban or delete
+			// Unsupported media and supported media without a stable FileUniqueID fail
+			// closed with admin feedback and without moderation side effects.
 			assert.Empty(t, mockAPI.RequestCalls())
 			assert.Empty(t, botMock.UpdateSpamCalls())
+			assert.Empty(t, botMock.RemoveApprovedUserCalls())
+			assert.Len(t, mockAPI.SendCalls(), 1)
 		})
 	}
 }

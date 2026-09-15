@@ -46,8 +46,10 @@ func (f SpamLoggerFunc) Save(msg *bot.Message, response *bot.Response) {
 // Locator is an interface for message locator
 type Locator interface {
 	AddMessage(ctx context.Context, msg string, chatID, userID int64, userName string, msgID int) error
+	AddMediaMessage(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity, userName string, msgID int) error
 	AddSpam(ctx context.Context, userID int64, checks []spamcheck.Response) error
 	Message(ctx context.Context, msg string) (storage.MsgMeta, bool)
+	MessageByMedia(ctx context.Context, key storage.MediaLocatorKey, chatID int64, identity storage.LocatorIdentity) (storage.MsgMeta, bool)
 	Spam(ctx context.Context, userID int64) (storage.SpamData, bool)
 	MsgHash(msg string) string
 	UserNameByID(ctx context.Context, userID int64) string
