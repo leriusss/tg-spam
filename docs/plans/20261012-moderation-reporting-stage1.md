@@ -8,6 +8,13 @@ Admin forwards (text and captionless media), reliable-user fallback, direct `/sp
 automatic detector moderation, and their cleanup report independent ban and original-delete outcomes.
 Feedback follows API actions; dry/training paths never claim confirmed mutations. Existing origin,
 identity, approval, superuser, channel and anonymous-admin safety gates remain in place.
+Training decision controls are authorized separately by the listener, rather than by a confirmed API
+status. They retain the existing confirm/reject callbacks and user/channel/message IDs. The legacy
+superuser training scenario retains manual learning/deletion controls, with its callback superuser-ban
+protection unchanged. Dry mode, anonymous group posts, missing sender IDs and superusers outside
+training do not gain controls. The `info` button supplies actual detection evidence under its own
+heading; moderation statuses use `moderation results`. Both headings delimit callback learning so
+neither statuses nor appended detection evidence are passed to `UpdateHam`/`UpdateSpam`.
 The shared admin-chat policy remains unchanged: reliable-user locator misses still target each
 instance's own primary chat. No routing switch, persistent receipt, worker or retry is enabled.
 
@@ -77,6 +84,9 @@ golangci-lint run
 Full storage tests require the repository's local PostgreSQL test container. Short tests exercise
 SQLite. Tests cover 48-hour boundaries, unknown dates, missing acknowledgements, lost responses,
 independent ban/delete failures, notification failure, partial cleanup and persisted dates after reopen.
+Training regressions run automatic detection through `info`, confirmation and rejection for users,
+channels and the legacy superuser scenario. They verify no automatic ban/delete, correct callback
+identity and original-message ID, clean learning text, and unchanged manual callback effects.
 Review existing safety replay tests for unchanged destructive action authority. A future rollout
 should be separately approved and should verify sanitized API outcomes, not create real spam users.
 

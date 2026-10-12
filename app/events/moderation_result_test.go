@@ -208,7 +208,7 @@ func TestAutomaticReportPreservesCallbackMessageAndIdentity(t *testing.T) {
 			a := &admin{tbAPI: api, adminChatID: 456}
 			msg := &bot.Message{ID: 701, From: bot.User{ID: 501, Username: "source"}, SenderChat: tc.channel, Text: "original spam", Quote: "quoted spam"}
 			require.NoError(t, a.reportAutomatic("source", msg, actionResult{Status: "confirmed"},
-				actionResult{Status: "failed"}, cleanupResult{}))
+				actionResult{Status: "failed"}, cleanupResult{}, true))
 			clean, err := a.getCleanMessage(text)
 			require.NoError(t, err)
 			assert.Equal(t, "original spam quoted spam", clean, "unban learning must not include reporting statuses")

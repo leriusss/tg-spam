@@ -190,8 +190,9 @@ func (a *admin) startCleanup(userID int64, name string) {
 	}()
 }
 
-// reportAutomatic retains change-ban controls only for a confirmed ban.
-func (a *admin) reportAutomatic(name string, msg *bot.Message, ban, original actionResult, cleanup cleanupResult) error {
+// reportAutomatic renders API outcomes independently of the listener's control authorization.
+func (a *admin) reportAutomatic(name string, msg *bot.Message, ban, original actionResult,
+	cleanup cleanupResult, allowControls bool) error {
 	target := msg.From
 	if msg.SenderChat.ID != 0 {
 		target = bot.User{ID: msg.SenderChat.ID, Username: msg.SenderChat.UserName}
@@ -210,11 +211,15 @@ func (a *admin) reportAutomatic(name string, msg *bot.Message, ban, original act
 		originalText += "\n" + msg.Quote
 	}
 	originalText = strings.ReplaceAll(escapeMarkDownV1Text(originalText), "\n", " ")
-	text := heading + "\n\n" + originalText + "\n\n**spam detection results**" +
+	text := heading + "\n\n" + originalText + "\n\n**moderation results**" +
 		escapeMarkDownV1Text(moderationText(ban, original, cleanup.String()))
 
-	if ban.Status == "confirmed" {
-		if err := a.sendWithUnbanMarkup(text, "change ban", target, msg.ID, a.adminChatID); err != nil {
+	if allowControls {
+		action := "change ban"
+		if a.trainingMode {
+			action = "review detection"
+		}
+		if err := a.sendWithUnbanMarkup(text, action, target, msg.ID, a.adminChatID); err != nil {
 			return fmt.Errorf("notification_failed: %w", err)
 		}
 		return nil

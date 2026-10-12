@@ -406,7 +406,8 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) {
 			if l.TrainingMode && l.adminHandler != nil && l.adminChatID != 0 {
 				if err := l.adminHandler.reportAutomatic(banUserStr, msg,
-					actionResult{Status: "not_attempted", Reason: "superuser safety gate"}, original, cleanupResult{}); err != nil {
+					actionResult{Status: "not_attempted", Reason: "superuser safety gate"}, original,
+					cleanupResult{}, !l.Dry); err != nil {
 					log.Printf("[WARN] training notification: %v", err)
 				}
 			}
@@ -444,7 +445,9 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	log.Printf("[INFO] automatic moderation result: user_id=%d chat_id=%d message_id=%d ban=%s delete=%s cleanup=%s",
 		msg.From.ID, fromChat, msg.ID, ban, original, cleanup)
 	if l.adminHandler != nil && l.adminChatID != 0 && (resp.BanInterval > 0 || canDelete || cleanup.Selected > 0) {
-		if err := l.adminHandler.reportAutomatic(banUserStr, msg, ban, original, cleanup); err != nil {
+		allowControls := !l.Dry && msg.From.ID != 0 &&
+			(ban.Status == "confirmed" || l.TrainingMode && resp.BanInterval > 0)
+		if err := l.adminHandler.reportAutomatic(banUserStr, msg, ban, original, cleanup, allowControls); err != nil {
 			errs = multierror.Append(errs, err)
 		}
 	}
