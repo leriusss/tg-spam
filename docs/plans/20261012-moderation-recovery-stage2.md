@@ -1,6 +1,8 @@
 # Moderation recovery: stage 2 design amendments
 
-Status: design only, not implemented or enabled by the reporting PR.
+Status: implemented locally in the separate stage-2 PR, opt-in and not deployed.
+The stage-1 production reporting PR does not include this worker.
+See [implementation specification](20261012-moderation-recovery-stage2-implementation.md).
 
 ## One receipt/action journal, not two queues
 
@@ -8,7 +10,7 @@ Extend the exact-source receipt design in atlas-antispam commit
 `d7a24847038940166b587418738c664836c5dda1`,
 `docs/architecture/ADMIN_FORWARD_IDEMPOTENCY_DESIGN.md`.
 That design currently forbids automatic resume of `in_progress`/`partial` and leaves cleanup
-best-effort. Replace that contract explicitly before implementation; do not layer an independent
+best-effort. This stage-2 implementation supersedes that no-resume/best-effort-cleanup contract; do not layer an independent
 retry queue on top of it.
 
 Receipt identity is the validated `(gid, source_chat_id, source_message_id, identity_kind, identity_id)`.

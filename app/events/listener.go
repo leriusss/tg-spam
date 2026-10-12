@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 
 	"github.com/umputun/tg-spam/app/bot"
+	"github.com/umputun/tg-spam/app/moderation"
 	"github.com/umputun/tg-spam/app/storage"
 	"github.com/umputun/tg-spam/lib/spamcheck"
 )
@@ -27,29 +28,30 @@ import (
 // TelegramListener listens to tg update, forward to bots and send back responses
 // Not thread safe
 type TelegramListener struct {
-	TbAPI                   TbAPI         // telegram bot API
-	SpamLogger              SpamLogger    // logger to save spam to files and db
-	Bot                     Bot           // bot to handle messages
-	BotUsername             string        // telegram bot username (without "@" prefix)
-	Group                   string        // can be int64 or public group username (without "@" prefix)
-	AdminGroup              string        // can be int64 or public group username (without "@" prefix)
-	IdleDuration            time.Duration // idle timeout to send "idle" message to bots
-	SuperUsers              SuperUsers    // list of superusers, can ban and report spam, can't be banned
-	TestingIDs              []int64       // list of chat IDs to test the bot
-	StartupMsg              string        // message to send on startup to the primary chat
-	WarnMsg                 string        // message to send on warning
-	NoSpamReply             bool          // do not reply on spam messages in the primary chat
-	SuppressJoinMessage     bool          // delete join message when kick out user
-	DeleteJoinMessages      bool          // delete join messages immediately
-	DeleteLeaveMessages     bool          // delete leave messages immediately
-	TrainingMode            bool          // do not ban users, just report and train spam detector
-	SoftBanMode             bool          // do not ban users, but restrict their actions
-	Locator                 Locator       // message locator to get info about messages
-	ReportConfig            ReportConfig  // user spam reporting configuration
-	DisableAdminSpamForward bool          // disable forwarding spam reports to admin chat support
-	Dry                     bool          // dry run, do not ban or send messages
-	AggressiveCleanup       bool          // delete all messages from user when banned via /spam command
-	AggressiveCleanupLimit  int           // max messages to delete in aggressive cleanup mode
+	RecoveryJournal         *moderation.Journal // optional durable stage-2 authority
+	TbAPI                   TbAPI               // telegram bot API
+	SpamLogger              SpamLogger          // logger to save spam to files and db
+	Bot                     Bot                 // bot to handle messages
+	BotUsername             string              // telegram bot username (without "@" prefix)
+	Group                   string              // can be int64 or public group username (without "@" prefix)
+	AdminGroup              string              // can be int64 or public group username (without "@" prefix)
+	IdleDuration            time.Duration       // idle timeout to send "idle" message to bots
+	SuperUsers              SuperUsers          // list of superusers, can ban and report spam, can't be banned
+	TestingIDs              []int64             // list of chat IDs to test the bot
+	StartupMsg              string              // message to send on startup to the primary chat
+	WarnMsg                 string              // message to send on warning
+	NoSpamReply             bool                // do not reply on spam messages in the primary chat
+	SuppressJoinMessage     bool                // delete join message when kick out user
+	DeleteJoinMessages      bool                // delete join messages immediately
+	DeleteLeaveMessages     bool                // delete leave messages immediately
+	TrainingMode            bool                // do not ban users, just report and train spam detector
+	SoftBanMode             bool                // do not ban users, but restrict their actions
+	Locator                 Locator             // message locator to get info about messages
+	ReportConfig            ReportConfig        // user spam reporting configuration
+	DisableAdminSpamForward bool                // disable forwarding spam reports to admin chat support
+	Dry                     bool                // dry run, do not ban or send messages
+	AggressiveCleanup       bool                // delete all messages from user when banned via /spam command
+	AggressiveCleanupLimit  int                 // max messages to delete in aggressive cleanup mode
 
 	adminHandler   *admin
 	reportsHandler *userReports
@@ -122,12 +124,43 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		aggressiveCleanup: l.AggressiveCleanup, aggressiveCleanupLimit: l.AggressiveCleanupLimit,
 		isExplicitlyApproved: isExplicitlyApproved,
 	}
+	if l.RecoveryJournal != nil {
+		if l.adminChatID == 0 {
+			return fmt.Errorf("durable moderation requires an administrator notification destination")
+		}
+		api, ok := l.TbAPI.(contextualTelegram)
+		if !ok {
+			return fmt.Errorf("durable moderation requires context-aware Telegram API")
+		}
+		adapter := &recovery{journal: l.RecoveryJournal, api: api,
+			gate: func(a moderation.Action) bool {
+				if a.Kind == "notice" {
+					return a.ChatID == l.adminChatID && l.adminChatID != 0
+				}
+				return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID) &&
+					!l.SuperUsers.IsSuper("", a.IdentityID) && !isExplicitlyApproved(a.IdentityID) &&
+					(a.IdentityID != a.ChatID || a.Kind == "original_delete")
+			}, superName: l.SuperUsers.IsSuper}
+		l.adminHandler.recovery = adapter
+		workerCtx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			w := moderation.Worker{Journal: l.RecoveryJournal, Executor: adapter}
+			_ = w.Run(workerCtx)
+		}()
+		defer func() { stop(); <-done }()
+	}
 
 	l.reportsHandler = &userReports{
 		ReportConfig: l.ReportConfig,
 		tbAPI:        l.TbAPI, bot: l.Bot, locator: l.Locator, superUsers: l.SuperUsers,
 		primChatID: l.chatID, adminChatID: l.adminChatID,
 		trainingMode: l.TrainingMode, softBanMode: l.SoftBanMode, dry: l.Dry,
+	}
+
+	if l.RecoveryJournal != nil {
+		l.reportsHandler.recoveryAdmin = l.adminHandler
 	}
 
 	adminForwardStatus := "enabled"
@@ -174,7 +207,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				if err := l.adminHandler.MsgHandler(update); err != nil {
 					log.Printf("[WARN] admin report failed: outcome=moderation_failed admin_msg_id=%d error=%v",
 						update.Message.MessageID, err)
-					errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
+					errResp := l.sendBotResponse(
+						bot.Response{Send: true, Text: "error: " + err.Error()},
+						l.adminChatID,
+						NotificationDefault,
+					)
 					if errResp != nil {
 						log.Printf("[WARN] failed to respond on error, %v", errResp)
 					}
@@ -190,7 +227,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				if len(callbackData) >= 3 && callbackData[:1] == "R" {
 					if err := l.reportsHandler.HandleReportCallback(ctx, update.CallbackQuery); err != nil {
 						log.Printf("[WARN] failed to process report callback: %v", err)
-						errResp := l.sendBotResponse(bot.Response{Send: true, Text: "error: " + err.Error()}, l.adminChatID, NotificationDefault)
+						errResp := l.sendBotResponse(
+							bot.Response{Send: true, Text: "error: " + err.Error()},
+							l.adminChatID,
+							NotificationDefault,
+						)
 						if errResp != nil {
 							log.Printf("[WARN] failed to respond on error, %v", errResp)
 						}
@@ -269,7 +310,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 
 			// delete orphaned /report commands (sent without replying to a message)
 			if !fromSuper && l.isReportCommand(update.Message.Text) && update.Message.ReplyToMessage == nil {
-				log.Printf("[DEBUG] deleting orphaned /report command from %s (%d)", update.Message.From.UserName, update.Message.From.ID)
+				log.Printf(
+					"[DEBUG] deleting orphaned /report command from %s (%d)",
+					update.Message.From.UserName,
+					update.Message.From.ID,
+				)
 				_, err := l.TbAPI.Request(tbapi.DeleteMessageConfig{BaseChatMessage: tbapi.BaseChatMessage{
 					MessageID:  update.Message.MessageID,
 					ChatConfig: tbapi.ChatConfig{ChatID: update.Message.Chat.ID},
@@ -313,15 +358,26 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	msg := transform(update.Message)
 	textPresent := strings.TrimSpace(msg.Text) != ""
 	mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
-	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward || msg.WithExternalLinkButton
+	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward ||
+		msg.WithExternalLinkButton
 
 	// external-link buttons must reach the deterministic guard even when Telegram exposes no text/media flag.
 	if !textPresent && !legacyContentAdmitted && mediaStatus != mediaLocatorExtracted {
 		return nil
 	}
 	ctx := context.TODO()
-	log.Printf("[DEBUG] incoming message: msg_id=%d chat_id=%d sender_id=%d text_present=%t text_length=%d media_status=%s forward=%t external_button=%t",
-		msg.ID, fromChat, msg.From.ID, textPresent, len([]rune(msg.Text)), mediaStatus, msg.WithForward, msg.WithExternalLinkButton)
+	log.Printf(
+		"[DEBUG] incoming message: msg_id=%d chat_id=%d sender_id=%d "+
+			"text_present=%t text_length=%d media_status=%s forward=%t external_button=%t",
+		msg.ID,
+		fromChat,
+		msg.From.ID,
+		textPresent,
+		len([]rune(msg.Text)),
+		mediaStatus,
+		msg.WithForward,
+		msg.WithExternalLinkButton,
+	)
 
 	// use channel identity for locator when message is sent on behalf of a channel
 	locatorUserID := msg.From.ID
@@ -378,6 +434,35 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	if !resp.Send { // not spam
 		return nil
 	}
+	if l.RecoveryJournal != nil && !l.Dry && !l.TrainingMode {
+		created, err := l.enqueueAutomatic(update, msg, resp)
+		if created && resp.BanInterval > 0 {
+			l.SpamLogger.Save(msg, &resp)
+			id := msg.From.ID
+			if msg.SenderChat.ID != 0 {
+				id = msg.SenderChat.ID
+			}
+			if e := l.Locator.AddSpam(ctx, id, resp.CheckResults); e != nil {
+				log.Printf("[WARN] durable moderation evidence not saved")
+			}
+		}
+		if created && !l.NoSpamReply {
+			// Acceptance precedes this optional reply; its failure cannot lose durable moderation.
+			callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			_, e := l.adminHandler.recovery.api.RequestWithContext(
+				callCtx,
+				tbapi.NewMessage(
+					fromChat,
+					"Moderation recorded; API outcomes are pending. See the administrator journal summary.",
+				),
+			)
+			cancel()
+			if e != nil {
+				log.Printf("[WARN] optional moderation reply unavailable; durable admin notice retained")
+			}
+		}
+		return err
+	}
 
 	// send response to the channel if allowed
 	if resp.Send && !l.NoSpamReply && !l.TrainingMode {
@@ -415,8 +500,17 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 			return nil
 		}
 
-		banReq := banRequest{duration: resp.BanInterval, userID: resp.User.ID, channelID: resp.ChannelID, userName: banUserStr,
-			chatID: fromChat, dry: l.Dry, training: l.TrainingMode, tbAPI: l.TbAPI, restrict: l.SoftBanMode}
+		banReq := banRequest{
+			duration:  resp.BanInterval,
+			userID:    resp.User.ID,
+			channelID: resp.ChannelID,
+			userName:  banUserStr,
+			chatID:    fromChat,
+			dry:       l.Dry,
+			training:  l.TrainingMode,
+			tbAPI:     l.TbAPI,
+			restrict:  l.SoftBanMode,
+		}
 		var banErr error
 		ban, banErr = banResult(banReq)
 		if banErr != nil {

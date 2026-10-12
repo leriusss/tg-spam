@@ -1,10 +1,19 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
+
+	tbapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 const telegramBotTokenMarker = "REDACTED"
@@ -16,7 +25,10 @@ type httpDoer interface {
 // telegramHTTPClient keeps the default HTTP client behavior while removing bot
 // tokens from URL-bearing errors before they reach the Telegram library logger.
 type telegramHTTPClient struct {
-	client httpDoer
+	client       httpDoer
+	recoveryHTTP bool
+	cooldown     func(context.Context) (time.Time, error)
+	pause        func(context.Context, time.Time) error
 }
 
 func newTelegramHTTPClient() *telegramHTTPClient {
@@ -24,8 +36,101 @@ func newTelegramHTTPClient() *telegramHTTPClient {
 }
 
 func (c *telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	for c.cooldown != nil {
+		until, err := c.cooldown(req.Context())
+		if err != nil {
+			return nil, cooldownUnavailable{}
+		}
+		if wait := time.Until(until); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-req.Context().Done():
+				timer.Stop()
+				return nil, fmt.Errorf("telegram cooldown wait: %w", req.Context().Err())
+			case <-timer.C:
+			}
+		} else {
+			break
+		}
+	}
+	cancel := func() {}
+	if c.recoveryHTTP {
+		timeout := 15 * time.Second
+		if strings.HasSuffix(req.URL.Path, "/getUpdates") {
+			timeout = 90 * time.Second
+		}
+		var bounded context.Context
+		bounded, cancel = context.WithTimeout(req.Context(), timeout)
+		req = req.Clone(bounded)
+	}
 	resp, err := c.client.Do(req)
+	if err != nil {
+		cancel()
+	} else if resp != nil && resp.Body != nil {
+		resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: cancel}
+	} else {
+		cancel()
+	}
+	if err == nil && resp != nil && c.recoveryHTTP &&
+		(resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 502 ||
+			resp.StatusCode == 503 || resp.StatusCode == 504) {
+		// Gateways may send HTML instead of Bot API JSON; preserve the typed HTTP classification.
+		var body tbapi.APIResponse
+		if resp.Body != nil {
+			_ = json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&body)
+			_ = resp.Body.Close()
+		}
+		retry := 0
+		if body.Parameters != nil {
+			retry = body.Parameters.RetryAfter
+		}
+		if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > retry {
+			retry = seconds
+		} else if when, e := http.ParseTime(resp.Header.Get("Retry-After")); e == nil {
+			seconds = int(math.Ceil(time.Until(when).Seconds()))
+			if seconds > retry {
+				retry = seconds
+			}
+		}
+		if resp.StatusCode == 429 && retry <= 0 {
+			retry = 60
+		}
+		if resp.StatusCode == 429 && c.pause != nil {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			e := c.pause(persistCtx, time.Now().Add(time.Duration(retry)*time.Second))
+			cancel()
+			if e != nil {
+				return nil, cooldownUnavailable{}
+			}
+		}
+		return nil, &tbapi.Error{
+			Code:               resp.StatusCode,
+			Message:            "Telegram HTTP request refused",
+			ResponseParameters: tbapi.ResponseParameters{RetryAfter: retry},
+		}
+	}
 	return resp, sanitizeTelegramHTTPError(err)
+}
+
+// Failure of the durable rate limiter fails closed and remains retryable, without exposing SQL errors.
+type cooldownUnavailable struct{}
+
+func (cooldownUnavailable) Error() string   { return "durable Telegram cooldown unavailable" }
+func (cooldownUnavailable) Timeout() bool   { return false }
+func (cooldownUnavailable) Temporary() bool { return true }
+
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelBody) Close() error {
+	defer b.cancel()
+	err := b.ReadCloser.Close()
+	if err != nil {
+		return fmt.Errorf("telegram response close: %w", err)
+	}
+	return nil
 }
 
 func sanitizeTelegramHTTPError(err error) error {

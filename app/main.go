@@ -30,6 +30,7 @@ import (
 
 	"github.com/umputun/tg-spam/app/bot"
 	"github.com/umputun/tg-spam/app/events"
+	"github.com/umputun/tg-spam/app/moderation"
 	"github.com/umputun/tg-spam/app/storage"
 	"github.com/umputun/tg-spam/app/storage/engine"
 	"github.com/umputun/tg-spam/app/webapi"
@@ -38,8 +39,9 @@ import (
 )
 
 type options struct {
-	InstanceID  string `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
-	DataBaseURL string `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
+	ModerationRecovery bool   `long:"moderation-recovery" env:"MODERATION_RECOVERY" description:"enable durable moderation recovery"`
+	InstanceID         string `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
+	DataBaseURL        string `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
 
 	Telegram struct {
 		Token        string        `long:"token" env:"TOKEN" description:"telegram bot token"`
@@ -338,6 +340,15 @@ func execute(ctx context.Context, opts options) error {
 		}
 	}
 
+	// Initialize the journal before entering optional offline web mode.
+	var recoveryJournal *moderation.Journal
+	if opts.ModerationRecovery {
+		recoveryJournal, err = moderation.NewJournal(ctx, dataDB, moderation.DefaultLimits())
+		if err != nil {
+			return fmt.Errorf("can't initialize durable moderation: %w", err)
+		}
+	}
+
 	// activate web server if enabled
 	if opts.Server.Enabled {
 		// server starts in background goroutine
@@ -353,7 +364,13 @@ func execute(ctx context.Context, opts options) error {
 	}
 
 	// make telegram bot
-	tbAPI, err := tbapi.NewBotAPIWithClient(opts.Telegram.Token, tbapi.APIEndpoint, newTelegramHTTPClient())
+	telegramClient := newTelegramHTTPClient()
+	if recoveryJournal != nil {
+		telegramClient.recoveryHTTP = true
+		telegramClient.cooldown = recoveryJournal.Cooldown
+		telegramClient.pause = recoveryJournal.Pause
+	}
+	tbAPI, err := tbapi.NewBotAPIWithClient(opts.Telegram.Token, tbapi.APIEndpoint, telegramClient)
 	if err != nil {
 		return fmt.Errorf("can't make telegram bot, %w", err)
 	}
@@ -374,6 +391,7 @@ func execute(ctx context.Context, opts options) error {
 
 	// make telegram listener
 	tgListener := events.TelegramListener{
+		RecoveryJournal:     recoveryJournal,
 		TbAPI:               tbAPI,
 		BotUsername:         tbAPI.Self.UserName,
 		Group:               opts.Telegram.Group,
