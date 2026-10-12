@@ -69,7 +69,9 @@ Tests simulate min/max jitter, request time and retry_after across the full 24 h
 One rate-limited notice action per instance/destination summarizes independent receipt results.
 Transport failure updates a pending signal rather than producing a message on every attempt.
 Terminal/deadline/budget/manual-review events remain queryable even if delivery fails. Notice
-delivery has its own bounded period that can outlive the delete deadline. Generation fencing
+delivery has its own bounded period that can outlive the delete deadline. A new terminal
+outcome starts a fresh 24-hour/320-attempt delivery window; ordinary retry failures do not renew it.
+An older in-flight notification cannot consume the new terminal generation's delivery budget. Generation fencing
 preserves newer changes while an older digest is in flight. Lost send acknowledgements may cause
 duplicates; known notification message IDs allow later edits. No message bodies, tokens or raw
 URL-bearing errors are persisted. Operator queries document undelivered signals and pending IDs.

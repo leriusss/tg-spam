@@ -568,3 +568,59 @@ func TestSimultaneousActionClaimsAcrossSQLHandles(t *testing.T) {
 	}
 	require.Equal(t, 1, winners, "one pending API action has exactly one active SQL owner")
 }
+
+func TestTerminalNoticeOutlivesIncompleteWarningBudget(t *testing.T) {
+	j, _ := testJournal(t, DefaultLimits())
+	now := time.Now()
+	p := plan(1601, "ban")
+	p.Learn = false
+	_, _, _, err := j.Accept(testCtx, p, now)
+	require.NoError(t, err)
+	_, err = j.db.Exec("UPDATE moderation_actions SET attempts=200,next_at=? WHERE kind='notice'", now.Add(24*time.Hour).UnixMilli())
+	require.NoError(t, err)
+	now = now.Add(23*time.Hour + 59*time.Minute)
+	a, ok, err := j.Claim(testCtx, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "ban", a.Kind)
+	require.NoError(t, j.Finish(testCtx, a, Outcome{State: Expired, Code: "deadline_manual_action_required"}, now, now))
+	notice := find(t, j, "notice", 0)
+	require.Equal(t, now.Add(24*time.Hour).UnixMilli(), notice.Deadline, "final warning has an independent recovery window")
+	require.Zero(t, notice.Attempts)
+	now = now.Add(2 * time.Minute)
+	delivered := false
+	w := Worker{Journal: j, Now: func() time.Time { return now }, Executor: executeFunc(func(_ context.Context, a Action) Outcome {
+		require.Equal(t, "notice", a.Kind)
+		delivered = true
+		return Outcome{State: Confirmed, NotificationID: 700}
+	})}
+	drive(t, &w)
+	require.True(t, delivered, "final signal can be delivered after moderation's original 24h horizon")
+	require.Equal(t, Expired, find(t, j, "ban", 1601).State)
+}
+
+func TestOlderNoticeFailureCannotConsumeNewTerminalGeneration(t *testing.T) {
+	j, _ := testJournal(t, DefaultLimits())
+	now := time.Now()
+	p := plan(1701, "ban")
+	p.Learn = false
+	_, _, _, err := j.Accept(testCtx, p, now)
+	require.NoError(t, err)
+	_, err = j.db.Exec("UPDATE moderation_actions SET attempts=319 WHERE kind='notice'")
+	require.NoError(t, err)
+	old, ok, err := j.Claim(testCtx, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "notice", old.Kind)
+	ban, ok, err := j.Claim(testCtx, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, "ban", ban.Kind)
+	require.NoError(t, j.Finish(testCtx, ban, Outcome{State: Failed, Code: "telegram_403"}, now, now))
+	require.NoError(t, j.Finish(testCtx, old, Outcome{State: Undelivered, Code: "attempt_budget_exhausted"}, now.Add(time.Minute), now))
+	fresh := find(t, j, "notice", 0)
+	require.Equal(t, Pending, fresh.State)
+	require.Zero(t, fresh.Attempts)
+	require.Greater(t, fresh.Generation, old.Generation)
+	require.Equal(t, now.Add(24*time.Hour).UnixMilli(), fresh.Deadline)
+}

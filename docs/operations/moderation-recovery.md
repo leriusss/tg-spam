@@ -51,7 +51,9 @@ Notice generation>delivered is an undelivered signal even after retries end. Per
 an explicit operator-reviewed recovery procedure. This PR exposes no automatic permission bypass,
 manual claim reset or bulk replay command. Export pending IDs/results privately before rollback.
 The digest is one evolving message per destination, <=one attempt/minute, with counts and ten latest
-non-confirmed IDs; detailed per-item state remains in SQL. Lost send ack can duplicate a notification.
+non-confirmed IDs; detailed per-item state remains in SQL. A new terminal result receives its own
+24-hour/320-attempt delivery window, even if the earlier incomplete-warning window was consumed.
+Repeated delivery failures alone never extend that window. Lost send ack can duplicate a notification.
 
 ## Runtime rollback, keep current DB
 

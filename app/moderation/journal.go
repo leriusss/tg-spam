@@ -449,21 +449,21 @@ func (j *Journal) notice(ctx context.Context, tx journalTx, destination int64, n
 	if err := j.exec(ctx, tx, `INSERT INTO moderation_actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(gid,id) DO NOTHING`, j.db.GID(), a.ID, a.Receipt, a.Kind, a.ChatID, 0, "system", 0, 0, 0, a.State, "", 0, a.Deadline, a.NextAt, "", 0, false, 1, 0, 0); err != nil {
 		return journalError(err)
 	}
-	// Pending notifications retain their budget. Terminal changes can renew an exhausted period.
+	// A new terminal outcome gets its own delivery window, even if an outage consumed
+	// the incomplete-warning window. Retry failures themselves never renew this budget.
 	return j.exec(ctx, tx, `UPDATE moderation_actions SET generation=generation+1,
  deadline=CASE WHEN state='notification_undelivered' AND code IN
-('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
-'unclassified_permanent_error','notification_destination_changed') THEN deadline
- WHEN state NOT IN ('pending','running') OR (deadline<=? AND ?) THEN ? ELSE deadline END,
+ ('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
+ 'unclassified_permanent_error','notification_destination_changed') THEN deadline
+ WHEN ? OR state NOT IN ('pending','running') THEN ? ELSE deadline END,
  attempts=CASE WHEN state='notification_undelivered' AND code IN
-('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
-'unclassified_permanent_error','notification_destination_changed') THEN attempts
- WHEN state NOT IN ('pending','running') OR (deadline<=? AND ?) THEN 0 ELSE attempts END,
+ ('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
+ 'unclassified_permanent_error','notification_destination_changed') THEN attempts
+ WHEN ? OR state NOT IN ('pending','running') THEN 0 ELSE attempts END,
  state=CASE WHEN state='running' OR (state='notification_undelivered' AND code IN
-('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
-'unclassified_permanent_error','notification_destination_changed'))
- THEN state ELSE 'pending' END WHERE gid=? AND id=?`, now.UnixMilli(), terminal, a.Deadline, now.UnixMilli(),
-		terminal, j.db.GID(), id)
+ ('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
+ 'unclassified_permanent_error','notification_destination_changed'))
+ THEN state ELSE 'pending' END WHERE gid=? AND id=?`, terminal, a.Deadline, terminal, j.db.GID(), id)
 }
 
 // Claim uses fenced SQL ownership, including restart reconciliation after an expired lease.
@@ -614,12 +614,14 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 			}
 		}
 		if a.Kind == "notice" {
-			if state == Confirmed {
+			if state == Confirmed || state == Undelivered &&
+				(o.Code == "attempt_budget_exhausted" || o.Code == "deadline_manual_action_required" ||
+					o.Code == "retry_after_or_deadline_manual_action_required") {
 				return j.exec(
 					ctx,
 					tx,
-					`UPDATE moderation_actions SET state=CASE WHEN generation>delivered THEN 'pending' ELSE state END,attempts=CASE WHEN generation>delivered THEN 0 ELSE attempts END,next_at=? WHERE gid=? AND id=?`,
-					now.Add(time.Minute).UnixMilli(),
+					`UPDATE moderation_actions SET state=CASE WHEN generation>? THEN 'pending' ELSE state END,attempts=CASE WHEN generation>? THEN 0 ELSE attempts END,next_at=? WHERE gid=? AND id=?`,
+					a.Generation, a.Generation, now.Add(time.Minute).UnixMilli(),
 					j.db.GID(),
 					a.ID,
 				)
