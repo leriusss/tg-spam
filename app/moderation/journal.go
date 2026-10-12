@@ -459,7 +459,7 @@ func (j *Journal) notice(ctx context.Context, tx journalTx, destination int64, n
 ('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
 'unclassified_permanent_error','notification_destination_changed') THEN attempts
  WHEN state NOT IN ('pending','running') OR (deadline<=? AND ?) THEN 0 ELSE attempts END,
- state=CASE WHEN state='running' OR (state='notification_undelivered' AND code IN 
+ state=CASE WHEN state='running' OR (state='notification_undelivered' AND code IN
 ('telegram_400','telegram_401','telegram_403','telegram_404','telegram_501',
 'unclassified_permanent_error','notification_destination_changed'))
  THEN state ELSE 'pending' END WHERE gid=? AND id=?`, now.UnixMilli(), terminal, a.Deadline, now.UnixMilli(),
@@ -471,9 +471,9 @@ func (j *Journal) Claim(ctx context.Context, now time.Time) (a Action, ok bool, 
 	// Idle workers read only; do not fsync a control-row write every five seconds.
 	var due int
 	err = j.db.GetContext(ctx, &due, j.db.Adopt(`SELECT
- (SELECT count(*) FROM moderation_actions WHERE gid=? AND ((state='pending' AND next_at<=?) OR 
+ (SELECT count(*) FROM moderation_actions WHERE gid=? AND ((state='pending' AND next_at<=?) OR
 (state='running' AND lease_until<?))) +
- (SELECT count(*) FROM moderation_receipts WHERE gid=? AND state IN ('preparing','preparing_optional') AND 
+ (SELECT count(*) FROM moderation_receipts WHERE gid=? AND state IN ('preparing','preparing_optional') AND
 lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli(), j.db.GID(),
 		now.Add(-15*time.Second).UnixMilli())
 	if err != nil || due == 0 {
