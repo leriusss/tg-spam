@@ -596,6 +596,17 @@ In this mode admin can ban users manually by clicking the "confirm ban" button o
 
 Pls note: Missed spam messages forwarded to the admin chat will be banned and removed from the primary chat group when possible. If the original message can't be located (e.g. after a bot restart), the bot will still ban the user when the sender's identity is available via Telegram's forward origin, and warn the admin to delete the original message manually.
 
+Moderation feedback reports ban, original deletion and cleanup independently after the API actions.
+A confirmed ban does not imply a successful deletion. Cleanup reports partial results, including
+zero deletions and failure counts. Telegram send dates are stored separately from observation time;
+legacy dates remain unknown. Originals outside the 48-hour Bot API window require manual deletion.
+Transport failures have an unknown outcome, and notification delivery failures are separate from
+moderation failures. These reports do not add retries or recover interrupted work after restart.
+The existing reliable-user fallback and shared-admin-chat moderation policy remain unchanged.
+See [stage 1 verification and rollback](docs/plans/20261012-moderation-reporting-stage1.md) and
+[stage 2 recovery design](docs/plans/20261012-moderation-recovery-stage2.md).
+
+
 ## Running with webapi server
 
 The bot can be run with a webapi server. This is useful for integration with other tools. The server is disabled by default, to enable it pass `--server.enabled [$SERVER_ENABLED]`. The server will listen on the port specified by `--server.listen [$SERVER_LISTEN]` parameter (default is `:8080`).

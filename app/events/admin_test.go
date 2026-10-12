@@ -346,7 +346,7 @@ func TestAdmin_DirectCommands(t *testing.T) {
 		adminMsg := mockAPI.SendCalls()[0].C.(tbapi.MessageConfig)
 		assert.Equal(t, int64(456), adminMsg.ChatID) // should be sent to admin chat
 		assert.Contains(t, adminMsg.Text, "original detection results for spammer (222)")
-		assert.Contains(t, adminMsg.Text, "the user banned by")
+		assert.Contains(t, adminMsg.Text, "ban: confirmed")
 
 		// check that appropriate bot methods were called
 		require.Len(t, botMock.RemoveApprovedUserCalls(), 1)
@@ -1753,11 +1753,11 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		assert.GreaterOrEqual(t, len(mockAPI.RequestCalls()), 1, "should make ban request")
 
 		// verify detection results and warning messages sent
-		require.Len(t, sentMessages, 2, "should send detection results and fallback warning")
+		require.Len(t, sentMessages, 1, "should send detection results and fallback warning")
 		assert.Contains(t, sentMessages[0], `original detection results for "spammer" (555)`)
-		assert.Contains(t, sentMessages[1], "locator fallback")
-		assert.Contains(t, sentMessages[1], "manual deletion")
-		assert.Contains(t, sentMessages[1], "spammer")
+		assert.Contains(t, sentMessages[0], "locator fallback")
+		assert.Contains(t, sentMessages[0], "manual deletion")
+		assert.Contains(t, sentMessages[0], "spammer")
 	})
 
 	t.Run("hidden user is blocked before locator", func(t *testing.T) {
@@ -1872,10 +1872,10 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 		assert.Empty(t, botMock.UpdateSpamCalls(), "should not update spam in dry mode")
 
 		// detection results and warning still sent
-		require.Len(t, sentMessages, 2)
+		require.Len(t, sentMessages, 1)
 		assert.Contains(t, sentMessages[0], "original detection results")
-		assert.Contains(t, sentMessages[1], "locator fallback")
-		assert.Contains(t, sentMessages[1], "dry mode")
+		assert.Contains(t, sentMessages[0], "locator fallback")
+		assert.Contains(t, sentMessages[0], "dry mode")
 	})
 
 	t.Run("locator fails, ForwardOrigin has user ID, training mode", func(t *testing.T) {
@@ -2262,7 +2262,7 @@ func TestAdmin_DirectReportWithAggressiveCleanup(t *testing.T) {
 		var notificationMsg string
 		for _, call := range sendCalls {
 			if msg, ok := call.C.(tbapi.MessageConfig); ok {
-				if strings.Contains(msg.Text, "deleted 3 messages from spammer") {
+				if strings.Contains(msg.Text, "deleted=3") {
 					foundNotification = true
 					notificationMsg = msg.Text
 					break
@@ -2270,7 +2270,7 @@ func TestAdmin_DirectReportWithAggressiveCleanup(t *testing.T) {
 			}
 		}
 		assert.True(t, foundNotification, "Should send notification about deleted messages")
-		assert.Contains(t, notificationMsg, "deleted 3 messages from spammer \"spammer\" (666)", "Notification should include username and ID")
+		assert.Contains(t, notificationMsg, "cleanup for \"spammer\" (666)", "Notification should include username and ID")
 	})
 
 	t.Run("aggressive cleanup disabled", func(t *testing.T) {
@@ -2330,9 +2330,9 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.NoError(t, err)
-		assert.Equal(t, 3, deleted)
+		assert.Equal(t, 3, result.Deleted)
 
 		// verify all messages were attempted to be deleted
 		requestCalls := mockAPI.RequestCalls()
@@ -2357,10 +2357,10 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to get user messages")
-		assert.Equal(t, 0, deleted)
+		assert.Contains(t, err.Error(), "cleanup_lookup_failed")
+		assert.Equal(t, 0, result.Deleted)
 	})
 
 	t.Run("partial deletion success", func(t *testing.T) {
@@ -2389,9 +2389,9 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.NoError(t, err)
-		assert.Equal(t, 2, deleted) // only 2 successful deletions
+		assert.Equal(t, 2, result.Deleted) // only 2 successful deletions
 
 		// verify all 3 were attempted
 		assert.Len(t, mockAPI.RequestCalls(), 3)
@@ -2422,9 +2422,9 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.NoError(t, err)
-		assert.Equal(t, 2, deleted)
+		assert.Equal(t, 2, result.Deleted)
 		assert.Len(t, mockAPI.RequestCalls(), 7) // stale IDs should not stop scanning
 	})
 
@@ -2450,10 +2450,10 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "stopped after 5 consecutive failures")
-		assert.Equal(t, 0, deleted)
+		assert.Equal(t, 0, result.Deleted)
 		assert.Len(t, mockAPI.RequestCalls(), 5) // stopped after 5 failures
 	})
 
@@ -2469,9 +2469,9 @@ func TestAdmin_DeleteUserMessages(t *testing.T) {
 			aggressiveCleanupLimit: 100,
 		}
 
-		deleted, err := adm.deleteUserMessages(666)
+		result, err := adm.deleteUserMessages(666)
 		require.NoError(t, err)
-		assert.Equal(t, 0, deleted)
+		assert.Equal(t, 0, result.Deleted)
 	})
 }
 
