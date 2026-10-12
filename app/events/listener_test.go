@@ -560,7 +560,7 @@ func TestTelegramListener_DoDeleteMessages(t *testing.T) {
 			Chat:      tbapi.Chat{ID: 123},
 			Text:      "text 123",
 			From:      &tbapi.User{UserName: "user"},
-			Date:      int(time.Date(2020, 2, 11, 19, 35, 55, 9, time.UTC).Unix()),
+			Date:      int(time.Now().Unix()),
 			ReplyToMessage: &tbapi.Message{
 				SenderChat: &tbapi.Chat{
 					ID: 54321,
@@ -928,7 +928,7 @@ func TestTelegramListener_DoWithDirectSpamReport(t *testing.T) {
 	require.Len(t, mockAPI.SendCalls(), 2)
 	assert.Equal(t, "startup", mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text)
 	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, "detection results")
-	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, `the user banned by "superuser1"`)
+	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, `requested by "superuser1"`)
 
 	require.Len(t, botMock.OnMessageCalls(), 1)
 	assert.Equal(t, "text 123", botMock.OnMessageCalls()[0].Msg.Text)

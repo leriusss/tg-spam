@@ -315,7 +315,7 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
 	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward || msg.WithExternalLinkButton
 
-	// External-link buttons must reach the deterministic guard even when Telegram exposes no text/media flag.
+	// external-link buttons must reach the deterministic guard even when Telegram exposes no text/media flag.
 	if !textPresent && !legacyContentAdmitted && mediaStatus != mediaLocatorExtracted {
 		return nil
 	}
@@ -347,8 +347,14 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		}
 	}
 
-	// Document and animation are admitted here only to make their captionless source locatable.
-	// Preserve the old direct-moderation path by not sending newly admitted empty content to Bot.OnMessage.
+	if dated, ok := l.Locator.(messageDateLocator); ok {
+		if err := dated.RecordMessageDate(ctx, fromChat, msg.ID, int64(update.Message.Date)); err != nil {
+			log.Printf("[WARN] failed to record message date: chat_id=%d message_id=%d: %v", fromChat, msg.ID, err)
+		}
+	}
+
+	// document and animation are admitted here only to make their captionless source locatable.
+	// preserve the old direct-moderation path by not sending newly admitted empty content to Bot.OnMessage.
 	if !textPresent && !legacyContentAdmitted {
 		return nil
 	}
@@ -360,7 +366,7 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		return nil
 	}
 
-	// Telegram group administrators are loaded into SuperUsers by updateSupers. They are exempt from
+	// telegram group administrators are loaded into SuperUsers by updateSupers. They are exempt from
 	// this guard; approved/trusted non-admin users are deliberately not exempt.
 	if msg.WithExternalLinkButton && l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) {
 		log.Printf("[DEBUG] external inline button guard bypassed for administrator %s (%d)", msg.From.Username, msg.From.ID)
@@ -381,6 +387,9 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	}
 
 	errs := new(multierror.Error)
+	ban := actionResult{Status: "not_attempted", Reason: "not requested"}
+	original := actionResult{Status: "not_attempted", Reason: "not requested or safety gate"}
+	banUserStr := l.getBanUsername(resp, update)
 
 	// ban user if requested by bot
 	if resp.Send && resp.BanInterval > 0 {
@@ -393,11 +402,14 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if err := l.Locator.AddSpam(ctx, spamUserID, resp.CheckResults); err != nil {
 			log.Printf("[WARN] failed to add spam to locator: %v", err)
 		}
-		banUserStr := l.getBanUsername(resp, update)
 
 		if l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) {
-			if l.TrainingMode {
-				l.adminHandler.ReportBan(banUserStr, msg)
+			if l.TrainingMode && l.adminHandler != nil && l.adminChatID != 0 {
+				if err := l.adminHandler.reportAutomatic(banUserStr, msg,
+					actionResult{Status: "not_attempted", Reason: "superuser safety gate"}, original,
+					cleanupResult{}, !l.Dry); err != nil {
+					log.Printf("[WARN] training notification: %v", err)
+				}
 			}
 			log.Printf("[DEBUG] superuser %s requested ban, ignored", banUserStr)
 			return nil
@@ -405,25 +417,38 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 
 		banReq := banRequest{duration: resp.BanInterval, userID: resp.User.ID, channelID: resp.ChannelID, userName: banUserStr,
 			chatID: fromChat, dry: l.Dry, training: l.TrainingMode, tbAPI: l.TbAPI, restrict: l.SoftBanMode}
-		if err := banUserOrChannel(banReq); err != nil {
-			errs = multierror.Append(errs, fmt.Errorf("failed to ban %s: %w", banUserStr, err))
-		} else if l.adminChatID != 0 && msg.From.ID != 0 {
-			l.adminHandler.ReportBan(banUserStr, msg)
+		var banErr error
+		ban, banErr = banResult(banReq)
+		if banErr != nil {
+			errs = multierror.Append(errs, banErr)
 		}
+
 	}
 
 	// delete extra messages if spam detected (e.g., duplicates)
-	l.deleteExtraMessages(resp.CheckResults, msg.From.ID, msg.From.Username, fromChat)
+	cleanup := l.deleteExtraMessages(resp.CheckResults, msg.From.ID, msg.From.Username, fromChat)
 
 	// delete message if requested by bot
 	canDelete := resp.DeleteReplyTo && resp.ReplyTo != 0 && !l.Dry &&
 		!l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID) && !l.TrainingMode
 	if canDelete {
-		if _, err := l.TbAPI.Request(tbapi.DeleteMessageConfig{BaseChatMessage: tbapi.BaseChatMessage{
-			MessageID:  resp.ReplyTo,
-			ChatConfig: tbapi.ChatConfig{ChatID: l.chatID},
-		}}); err != nil {
-			errs = multierror.Append(errs, fmt.Errorf("failed to delete message %d: %w", resp.ReplyTo, err))
+		sentAt := int64(update.Message.Date)
+		if resp.ReplyTo != msg.ID {
+			sentAt = locatorMessageDate(l.Locator, fromChat, resp.ReplyTo)
+		}
+		var deleteErr error
+		original, deleteErr = deleteOriginal(l.TbAPI, l.chatID, resp.ReplyTo, sentAt, time.Now())
+		if deleteErr != nil {
+			errs = multierror.Append(errs, deleteErr)
+		}
+	}
+	log.Printf("[INFO] automatic moderation result: user_id=%d chat_id=%d message_id=%d ban=%s delete=%s cleanup=%s",
+		msg.From.ID, fromChat, msg.ID, ban, original, cleanup)
+	if l.adminHandler != nil && l.adminChatID != 0 && (resp.BanInterval > 0 || canDelete || cleanup.Selected > 0) {
+		allowControls := !l.Dry && msg.From.ID != 0 &&
+			(ban.Status == "confirmed" || l.TrainingMode && resp.BanInterval > 0)
+		if err := l.adminHandler.reportAutomatic(banUserStr, msg, ban, original, cleanup, allowControls); err != nil {
+			errs = multierror.Append(errs, err)
 		}
 	}
 
@@ -720,35 +745,27 @@ func (l *TelegramListener) updateSupers() error {
 }
 
 // deleteExtraMessages deletes additional messages specified in check results (e.g., duplicate messages)
-func (l *TelegramListener) deleteExtraMessages(checkResults []spamcheck.Response, userID int64, username string, chatID int64) {
-	if len(checkResults) == 0 || l.Dry || l.TrainingMode {
-		return
+func (l *TelegramListener) deleteExtraMessages(checkResults []spamcheck.Response, userID int64,
+	username string, chatID int64) cleanupResult {
+	result := cleanupResult{}
+	if len(checkResults) == 0 || l.Dry || l.TrainingMode || l.SuperUsers.IsSuper(username, userID) {
+		return result
 	}
-
-	// don't delete messages from superusers
-	if l.SuperUsers.IsSuper(username, userID) {
-		log.Printf("[DEBUG] skip extra deletions for superuser %s (%d)", username, userID)
-		return
-	}
-
-	for _, checkResult := range checkResults {
-		if !checkResult.Spam || len(checkResult.ExtraDeleteIDs) == 0 {
+	for _, check := range checkResults {
+		if !check.Spam {
 			continue
 		}
-
-		log.Printf("[INFO] deleting %d extra messages from user %d", len(checkResult.ExtraDeleteIDs), userID)
-		for _, msgID := range checkResult.ExtraDeleteIDs {
-			// add small delay to avoid rate limiting
+		for _, id := range check.ExtraDeleteIDs {
+			result.Selected++
 			time.Sleep(35 * time.Millisecond)
-			if _, err := l.TbAPI.Request(tbapi.DeleteMessageConfig{BaseChatMessage: tbapi.BaseChatMessage{
-				MessageID:  msgID,
-				ChatConfig: tbapi.ChatConfig{ChatID: chatID},
-			}}); err != nil {
-				// don't fail the whole operation if some messages can't be deleted
-				log.Printf("[WARN] failed to delete extra message %d: %v", msgID, err)
+			item, err := deleteOriginal(l.TbAPI, chatID, id, locatorMessageDate(l.Locator, chatID, id), time.Now())
+			result.add(item)
+			if err != nil {
+				log.Printf("[WARN] extra_delete_failed: %v", err)
 			}
 		}
 	}
+	return result
 }
 
 // SuperUsers for moderators. Can be either username or user ID.

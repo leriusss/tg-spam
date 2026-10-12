@@ -293,7 +293,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		assert.Equal(t, []string{"text"}, got.spamUpdates)
 		assert.Equal(t, []int64{501}, got.userBans)
 		assert.Empty(t, got.messageDeletes)
-		assert.Equal(t, 2, got.feedback, "fallback sends results and manual-delete warning")
+		assert.Equal(t, 1, got.feedback, "fallback combines factual results and manual-delete warning")
 	})
 
 	t.Run("E approved user locator miss is blocked before fallback mutations", func(t *testing.T) {

@@ -181,6 +181,9 @@ func NewLocator(ctx context.Context, ttl time.Duration, minSize int, db *engine.
 	if err := engine.InitTable(ctx, db, cfg); err != nil {
 		return nil, fmt.Errorf("failed to init locator storage: %w", err)
 	}
+	if err := res.initMessageDates(ctx); err != nil {
+		return nil, err
+	}
 	return res, nil
 }
 
@@ -263,7 +266,7 @@ func (l *Locator) AddMediaMessage(ctx context.Context, key MediaLocatorKey, chat
 }
 
 func (l *Locator) addMessageRecord(ctx context.Context, baseHash string, chatID, userID int64, userName string, msgID int) error {
-	// Store a parseable key to allow deterministic duplicate selection by prefix + msg_id.
+	// store a parseable key to allow deterministic duplicate selection by prefix + msg_id.
 	hash := fmt.Sprintf("%s:%d", baseHash, msgID)
 
 	query, err := locatorQueries.Pick(l.Type(), CmdAddLocatorMessage)

@@ -1,0 +1,38 @@
+name: moderation-reporting-checks
+
+on:
+  push:
+    branches: [codex/moderation-reporting-stage1]
+  pull_request:
+    paths:
+      - app/events/**
+      - app/storage/**
+      - .github/workflows/moderation-reporting.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reporting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      - name: Reporting, safety replay and SQLite race checks
+        run: go test -race -short -timeout=180s ./app/events ./app/storage
+      - name: Full project checks including PostgreSQL
+        run: go test -race -timeout=180s ./...
+      - name: Compile with race instrumentation
+        if: always()
+        run: go build -race ./...
+      - name: Lint changed code
+        if: always()
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+          golangci-lint run --new-from-rev=e2817510648e67d88270247cf267a0a56adb7013
