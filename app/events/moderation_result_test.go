@@ -59,6 +59,13 @@ func TestDeleteOriginalAgeAndAPIOutcomes(t *testing.T) {
 	}
 }
 
+func TestBanWithoutAcknowledgementIsUnknown(t *testing.T) {
+	api := &mocks.TbAPIMock{RequestFunc: func(tbapi.Chattable) (*tbapi.APIResponse, error) { return nil, nil }}
+	result, err := banResult(banRequest{tbAPI: api, chatID: 123, userID: 501, duration: time.Hour})
+	require.Error(t, err)
+	assert.Equal(t, "unknown", result.Status)
+}
+
 func TestAdminReportingIndependentActionsAndNotification(t *testing.T) {
 	for _, tc := range []struct {
 		name                       string

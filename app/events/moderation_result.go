@@ -23,6 +23,8 @@ type actionResult struct {
 	Reason    string
 }
 
+var errUnconfirmedAPIResponse = errors.New("API success not confirmed")
+
 type cleanupResult struct {
 	Selected  int
 	Deleted   int
@@ -63,6 +65,9 @@ func (r actionResult) String() string {
 }
 
 func failedAction(err error) actionResult {
+	if errors.Is(err, errUnconfirmedAPIResponse) {
+		return actionResult{Status: "unknown", Reason: "API success not confirmed"}
+	}
 	var apiErr *tbapi.Error
 	if errors.As(err, &apiErr) {
 		status := "failed"

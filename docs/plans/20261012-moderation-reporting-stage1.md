@@ -91,8 +91,13 @@ Local Windows verification on 12 October:
   both full runs. No tests were skipped or weakened to conceal these baseline/platform failures.
 - Full Windows lint reported 116 issues versus 124 in the clean base, including existing formatting,
   long lines and detector/test warnings. Unrelated files were not reformatted or repaired.
-- Windows CGO is disabled and no C compiler is installed. Linux race/PostgreSQL checks belong to
-  the existing CI job; local short tests are not a substitute for those checks.
+- Windows CGO is disabled and no C compiler is installed. Linux CI separately passed reporting/safety
+  replay/SQLite race tests, full project race tests including PostgreSQL, race-instrumented compilation
+  and example tests. Local short tests are not a substitute for those checks.
+- The PR adds `.github/workflows/moderation-reporting.yml` with explicit branch/PR triggers for those
+  checks and changed-code lint. The existing full CI lint reports 47 baseline warnings; its e2e job
+  fails installing `playwright-go@latest` because the upstream module declares another import path.
+  These unrelated checks are not disabled or relaxed by this PR.
 
 Raw local verification output remains with the external backup directory and is not committed.
 
