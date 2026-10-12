@@ -138,3 +138,8 @@ not a claim about production total DB size, CPU, disk latency, or WAL/retained-h
 The full Windows suite has pre-existing Linux filesystem/server assumptions, and the full storage
 suite has a timeout expectation failure also reproduced on the unmodified base. Those tests are
 not weakened; full Linux/race/PostgreSQL results must be checked on the feature PR.
+
+The full race checks exposed a pre-existing polling-log test cleanup race: it waited for the first
+of two SDK log lines and restored a global logger before the polling goroutine stopped. The test now
+waits for the retry line and joins the SDK's closed updates channel before logger restoration. This
+changes test synchronization only; no SDK/vendor code, assertions or production polling policy changed.
