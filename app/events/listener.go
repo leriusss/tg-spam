@@ -434,7 +434,7 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	if !resp.Send { // not spam
 		return nil
 	}
-	if l.RecoveryJournal != nil && !l.Dry && !l.TrainingMode {
+	if l.RecoveryJournal != nil && !l.Dry && !l.TrainingMode && needsRecovery(resp) {
 		created, err := l.enqueueAutomatic(update, msg, resp)
 		if created && resp.BanInterval > 0 {
 			l.SpamLogger.Save(msg, &resp)

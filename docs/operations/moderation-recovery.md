@@ -37,7 +37,7 @@ Open an offline snapshot or use SQLite read-only mode. Do not print owner tokens
 ```sql
 SELECT gid,kind,state,code,uncertain,count(*) FROM moderation_actions
 GROUP BY gid,kind,state,code,uncertain;
-SELECT gid,receipt,kind,chat_id,message_id,message_date,state,code,attempts,
+SELECT gid,receipt,kind,chat_id,identity_kind,identity_id,message_id,message_date,state,code,attempts,
        deadline,next_at,lease_until,uncertain
 FROM moderation_actions WHERE state NOT IN ('confirmed','absent') ORDER BY next_at;
 SELECT gid,generation,delivered,state,code,attempts,notification_id

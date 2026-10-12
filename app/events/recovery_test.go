@@ -12,6 +12,7 @@ import (
 
 	tbapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/stretchr/testify/require"
+	"github.com/umputun/tg-spam/app/bot"
 	"github.com/umputun/tg-spam/app/moderation"
 	"github.com/umputun/tg-spam/app/storage"
 	"github.com/umputun/tg-spam/app/storage/engine"
@@ -290,4 +291,20 @@ func TestRecoveryAdminSafetyRejectCreatesNoReceipt(t *testing.T) {
 	require.Empty(t, rows)
 	require.Empty(t, r.bot.UpdateSpamCalls())
 	require.Empty(t, r.api.RequestCalls())
+}
+
+func TestRecoveryNonModerationResponsePreservesOrdinaryReply(t *testing.T) {
+	l, api, b, _, update := trainingReportFixture(t, false)
+	l.TrainingMode = false
+	l.NoSpamReply = false
+	l.RecoveryJournal = recoveryJournal(t)
+	l.adminHandler.recovery = &recovery{journal: l.RecoveryJournal}
+	b.OnMessageFunc = func(bot.Message, bool) bot.Response { return bot.Response{Send: true, Text: "ordinary response"} }
+	require.NoError(t, l.procEvents(update))
+	require.Len(t, api.SendCalls(), 1)
+	require.Equal(t, "ordinary response", api.SendCalls()[0].C.(tbapi.MessageConfig).Text)
+	require.Empty(t, api.RequestCalls())
+	rows, err := l.RecoveryJournal.Snapshot(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, rows)
 }

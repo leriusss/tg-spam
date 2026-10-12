@@ -512,3 +512,16 @@ func (r *userReports) enqueueThresholdRecovery(ctx context.Context, report stora
 	}
 	return nil
 }
+
+// needsRecovery leaves ordinary bot responses on their established notification path.
+func needsRecovery(resp bot.Response) bool {
+	if resp.BanInterval > 0 || resp.DeleteReplyTo && resp.ReplyTo > 0 {
+		return true
+	}
+	for _, check := range resp.CheckResults {
+		if check.Spam && len(check.ExtraDeleteIDs) > 0 {
+			return true
+		}
+	}
+	return false
+}
