@@ -513,3 +513,58 @@ func TestUndeliveredTerminalNoticeSurvivesPruning(t *testing.T) {
 	require.NoError(t, j.Prune(testCtx, now.Add(40*24*time.Hour)))
 	require.Equal(t, Failed, find(t, j, "ban", 800).State)
 }
+
+func TestSimultaneousActionClaimsAcrossSQLHandles(t *testing.T) {
+	j, db := testJournal(t, DefaultLimits())
+	var files []struct {
+		Name string `db:"name"`
+		File string `db:"file"`
+		Seq  int    `db:"seq"`
+	}
+	require.NoError(t, db.Select(&files, "PRAGMA database_list"))
+	otherDB, err := engine.NewSqlite(files[0].File, "test")
+	require.NoError(t, err)
+	defer otherDB.Close()
+	other, err := NewJournal(testCtx, otherDB, DefaultLimits())
+	require.NoError(t, err)
+	now := time.Now()
+	p := plan(1501, "ban")
+	p.Destination = 0
+	p.Learn = false
+	_, _, _, err = j.Accept(testCtx, p, now)
+	require.NoError(t, err)
+	type claimed struct {
+		Action Action
+		OK     bool
+		Err    error
+	}
+	results := make(chan claimed, 8)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			store := j
+			if i%2 == 0 {
+				store = other
+			}
+			a, ok, e := store.Claim(testCtx, now)
+			results <- claimed{a, ok, e}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners := 0
+	for result := range results {
+		require.NoError(t, result.Err)
+		if result.OK {
+			winners++
+			require.NotEmpty(t, result.Action.Owner)
+			require.Equal(t, 1, result.Action.Attempts)
+		}
+	}
+	require.Equal(t, 1, winners, "one pending API action has exactly one active SQL owner")
+}

@@ -480,6 +480,8 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 		return a, false, journalError(err)
 	}
 	err = j.transaction(ctx, func(tx journalTx) error {
+		// A rolled-back attempt must not leak a prior owner through a successful SQL retry.
+		a, ok = Action{}, false
 		// Preparation cannot safely resume non-idempotent classifier learning.
 		var stale []struct {
 			ID          string `db:"id"`
