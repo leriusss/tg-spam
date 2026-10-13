@@ -25,6 +25,7 @@ type ReportConfig struct {
 
 // userReports handles user spam reporting functionality
 type userReports struct {
+	recoveryAdmin *admin
 	ReportConfig
 	tbAPI        TbAPI
 	bot          Bot
@@ -63,7 +64,11 @@ func (r *userReports) DirectUserReport(ctx context.Context, update tbapi.Update)
 
 	// validate reporter is not super user (super users should use /spam instead)
 	if r.superUsers.IsSuper(update.Message.From.UserName, update.Message.From.ID) {
-		return fmt.Errorf("report from super-user %s (%d), use /spam instead", update.Message.From.UserName, update.Message.From.ID)
+		return fmt.Errorf(
+			"report from super-user %s (%d), use /spam instead",
+			update.Message.From.UserName,
+			update.Message.From.ID,
+		)
 	}
 
 	// validate reported user is not super user (check both username and ID)
@@ -141,7 +146,7 @@ func (r *userReports) DirectUserReport(ctx context.Context, update tbapi.Update)
 	}
 
 	// check if threshold reached
-	if err := r.checkReportThreshold(ctx, origMsg.MessageID, r.primChatID); err != nil {
+	if err := r.checkReportThreshold(ctx, origMsg.MessageID, r.primChatID, int64(origMsg.Date)); err != nil {
 		log.Printf("[WARN] failed to check report threshold: %v", err)
 	}
 
@@ -174,7 +179,7 @@ func (r *userReports) checkReportRateLimit(ctx context.Context, reporterID int64
 }
 
 // checkReportThreshold checks if report threshold is reached and sends admin notification if needed
-func (r *userReports) checkReportThreshold(ctx context.Context, msgID int, chatID int64) error {
+func (r *userReports) checkReportThreshold(ctx context.Context, msgID int, chatID int64, dates ...int64) error {
 	if r.Storage == nil {
 		return fmt.Errorf("reports storage not initialized")
 	}
@@ -191,7 +196,7 @@ func (r *userReports) checkReportThreshold(ctx context.Context, msgID int, chatI
 	if r.AutoBanThreshold > 0 && reportCount >= r.AutoBanThreshold {
 		log.Printf("[INFO] auto-ban threshold reached for msgID:%d, chatID:%d: %d reports (threshold: %d)",
 			msgID, chatID, reportCount, r.AutoBanThreshold)
-		return r.executeAutoBan(ctx, reports)
+		return r.executeAutoBan(ctx, reports, dates...)
 	}
 
 	// check if manual approval threshold reached
@@ -218,13 +223,20 @@ func (r *userReports) checkReportThreshold(ctx context.Context, msgID int, chatI
 }
 
 // executeAutoBan executes automatic ban when auto-ban threshold is reached
-func (r *userReports) executeAutoBan(ctx context.Context, reports []storage.Report) error {
+func (r *userReports) executeAutoBan(ctx context.Context, reports []storage.Report, dates ...int64) error {
 	if len(reports) == 0 {
 		return fmt.Errorf("no reports provided")
 	}
 
 	// extract info from first report
 	firstReport := reports[0]
+	if r.recoveryAdmin != nil && !r.dry && !r.trainingMode {
+		date := locatorMessageDate(r.locator, firstReport.ChatID, firstReport.MsgID)
+		if len(dates) > 0 {
+			date = dates[0]
+		}
+		return r.enqueueThresholdRecovery(ctx, firstReport, date)
+	}
 	msgID := firstReport.MsgID
 	chatID := firstReport.ChatID
 	reportedUserID := firstReport.ReportedUserID
@@ -565,6 +577,9 @@ func (r *userReports) updateReportNotification(_ context.Context, reports []stor
 // callbackReportBan handles the callback when admin approves a user report and bans the reported user
 // callback data: R+reportedUserID:msgID
 func (r *userReports) callbackReportBan(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryReportDecision(ctx, query, true)
+	}
 	// parse callback data
 	reportedUserID, msgID, err := parseCallbackData(query.Data)
 	if err != nil {
@@ -645,6 +660,9 @@ func (r *userReports) callbackReportBan(ctx context.Context, query *tbapi.Callba
 // callbackReportReject handles the callback when admin rejects a user report
 // callback data: R-reportedUserID:msgID
 func (r *userReports) callbackReportReject(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryReportDecision(ctx, query, false)
+	}
 	// parse callback data
 	_, msgID, err := parseCallbackData(query.Data)
 	if err != nil {
@@ -737,6 +755,9 @@ func (r *userReports) callbackReportBanReporterAsk(ctx context.Context, query *t
 // callbackReportBanReporterConfirm handles the callback when admin confirms banning a specific reporter
 // callback data: R!reporterID:msgID
 func (r *userReports) callbackReportBanReporterConfirm(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryBanReporter(ctx, query)
+	}
 	// parse callback data
 	reporterID, msgID, err := parseCallbackData(query.Data)
 	if err != nil {

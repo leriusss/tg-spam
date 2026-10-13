@@ -214,10 +214,19 @@ func TestTelegramPollingLoggerDoesNotReceiveToken(t *testing.T) {
 
 	bot, err := tbapi.NewBotAPIWithClient(fakeTelegramToken, tbapi.APIEndpoint, client)
 	require.NoError(t, err)
-	bot.GetUpdatesChan(tbapi.NewUpdate(0))
-	t.Cleanup(bot.StopReceivingUpdates)
+	updates := bot.GetUpdatesChan(tbapi.NewUpdate(0))
+	t.Cleanup(func() {
+		bot.StopReceivingUpdates()
+		// Join the SDK polling goroutine before restoring its global logger.
+		select {
+		case _, open := <-updates:
+			require.False(t, open, "polling channel must close after cancellation")
+		case <-time.After(5 * time.Second):
+			t.Error("polling goroutine did not stop before logger cleanup")
+		}
+	})
 
-	logs := logger.waitFor(t, "/botREDACTED/getUpdates")
+	logs := logger.waitFor(t, "Failed to get updates")
 	assert.NotContains(t, logs, fakeTelegramToken)
 	assert.Contains(t, logs, "Failed to get updates")
 }
