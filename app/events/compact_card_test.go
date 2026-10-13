@@ -2,9 +2,12 @@ package events
 
 import (
 	"context"
+	"html"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	tbapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/stretchr/testify/require"
@@ -110,4 +113,24 @@ func TestCompactCardDetailsAndReturnStayBound(t *testing.T) {
 	q := cardQuery(c, "MB", "wrong")
 	q.Message.MessageID++
 	require.Error(t, a.recoveryCardCallback(q))
+}
+
+func TestCompactTelegramUTF16Limit(t *testing.T) {
+	text := truncateTelegramText(strings.Repeat("😀", 4000), 4000)
+	require.LessOrEqual(t, len(utf16.Encode([]rune(text))), 4000)
+	require.True(t, strings.HasSuffix(text, "…"))
+	require.Equal(t, "короткий текст", truncateTelegramText("короткий текст", 4000))
+	for n, expected := range map[int]string{1: "1 сообщение", 3: "3 сообщения", 5: "5 сообщений", 11: "11 сообщений"} {
+		require.Equal(t, expected, messageCount(n))
+	}
+	c := moderation.Card{DisplayName: strings.Repeat("😀", 200), IdentityID: 501, IdentityKind: "user",
+		Text: strings.Repeat("😀<&>", 1000)}
+	for range 5000 {
+		c.Actions = append(c.Actions, moderation.Action{Kind: "original_delete", State: moderation.Expired,
+			MessageDate: time.Now().Add(-49 * time.Hour).Unix()})
+	}
+	markup := compactCardText(c, strings.Repeat("😀", 150))
+	visible := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(markup, ""))
+	require.LessOrEqual(t, len(utf16.Encode([]rune(visible))), 4096)
+	require.Contains(t, markup, "Остальные результаты")
 }

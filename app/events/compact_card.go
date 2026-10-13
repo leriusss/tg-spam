@@ -124,7 +124,7 @@ func compactAction(a moderation.Action) string {
 	case moderation.Pending, moderation.Running:
 		if deleting {
 			if a.State == moderation.Pending && a.Attempts > 0 && a.Attempts < 320 && a.NextAt > 0 &&
-				a.NextAt+15000 < a.Deadline && a.Deadline > time.Now().UnixMilli() {
+				a.NextAt+15000 < a.Deadline && a.Deadline > time.Now().Add(15*time.Second).UnixMilli() {
 				return "⏳ Удаление не подтверждено. Повторим автоматически"
 			}
 			return "⏳ Удаление ожидает выполнения"
@@ -219,4 +219,19 @@ func messageCount(n int) string {
 		}
 	}
 	return fmt.Sprintf("%d %s", n, word)
+}
+
+func truncateTelegramText(s string, limit int) string {
+	units := 0
+	for i, r := range s {
+		width := 1
+		if r > 0xffff {
+			width = 2
+		}
+		if units+width > limit-1 {
+			return s[:i] + "…"
+		}
+		units += width
+	}
+	return s
 }

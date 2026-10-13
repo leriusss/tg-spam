@@ -37,7 +37,7 @@ func cardDetails(c moderation.Card) string {
 	fmt.Fprintf(&text, "Основания: %v\nРучных решений: %d; незавершённых решений: %d\n",
 		origins, len(c.Resolved), c.IncompleteDecisions)
 	text.WriteString("Отмена повторов не отменяет уже отправленный запрос. Ручное закрытие не подтверждает успех API.")
-	return truncateRunes(text.String(), 2800)
+	return truncateTelegramText(text.String(), 2800)
 }
 
 func truncateRunes(s string, n int) string {
@@ -397,7 +397,7 @@ func (a *admin) recoveryCardInfo(ctx context.Context, q *tbapi.CallbackQuery, c 
 	msg := tbapi.NewEditMessageText(
 		q.Message.Chat.ID,
 		q.Message.MessageID,
-		truncateRunes(cardDetails(c)+"\n\n"+inertSpamText(strings.Join(details, "\n")), 4000),
+		truncateTelegramText(cardDetails(c)+"\n\n"+inertSpamText(strings.Join(details, "\n")), 4000),
 	)
 	authority := moderation.Action{
 		Kind:         "ban",
