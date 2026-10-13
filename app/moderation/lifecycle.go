@@ -93,9 +93,11 @@ func (j *Journal) matching(ctx context.Context, tx journalTx, p Plan, a Action, 
 	return j.matchRows(ctx, tx, p, a, rows, now)
 }
 
-func (j *Journal) matchRows(ctx context.Context, tx journalTx, p Plan, a Action, rows []Action, now time.Time) (Action, bool, error) {
+func (j *Journal) matchRows(
+	ctx context.Context, tx journalTx, p Plan, a Action, rows []Action, now time.Time,
+) (Action, bool, error) {
 	for _, old := range rows {
-		if old.MessageID != a.MessageID || old.Kind != a.Kind && !(deleteKind(old.Kind) && deleteKind(a.Kind)) {
+		if old.MessageID != a.MessageID || old.Kind != a.Kind && (!deleteKind(old.Kind) || !deleteKind(a.Kind)) {
 			continue
 		}
 		if !deleteKind(a.Kind) && old.State == Confirmed {
