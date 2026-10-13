@@ -86,11 +86,18 @@ func permanent(until int64, now time.Time) bool {
 
 func (j *Journal) matching(ctx context.Context, tx journalTx, p Plan, a Action, now time.Time) (Action, bool, error) {
 	var rows []Action
-	q := `SELECT id,receipt,kind,chat_id,identity_id,identity_kind,message_id,message_date,until_date,state,code,attempts,deadline,next_at,owner,lease_until,uncertain,generation,delivered,notification_id FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY id`
+	q := `SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY id`
 	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(q), j.db.GID(), p.Key, a.Kind, a.Kind, a.MessageID); err != nil {
 		return Action{}, false, journalError(err)
 	}
+	return j.matchRows(ctx, tx, p, a, rows, now)
+}
+
+func (j *Journal) matchRows(ctx context.Context, tx journalTx, p Plan, a Action, rows []Action, now time.Time) (Action, bool, error) {
 	for _, old := range rows {
+		if old.MessageID != a.MessageID || old.Kind != a.Kind && !(deleteKind(old.Kind) && deleteKind(a.Kind)) {
+			continue
+		}
 		if !deleteKind(a.Kind) && old.State == Confirmed {
 			var undone int
 			if err := tx.GetContext(ctx, &undone, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND identity_id=? AND kind IN ('unban','restore') AND state!='canceled' AND next_at>=?`), j.db.GID(), a.ChatID, a.IdentityID, old.NextAt); err != nil {
@@ -192,8 +199,12 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 	if err := tx.GetContext(ctx, &held, j.db.Adopt(`SELECT count(*) FROM moderation_holds WHERE gid=? AND chat_id=? AND identity_id=? AND created_at>=?`), j.db.GID(), p.ChatID, p.IdentityID, now.UnixMilli()); err != nil {
 		return journalError(err)
 	}
+	var rows []Action
+	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY id`), j.db.GID(), p.Key); err != nil {
+		return journalError(err)
+	}
 	for _, a := range p.Actions {
-		old, ok, err := j.matching(ctx, tx, p, a, now)
+		old, ok, err := j.matchRows(ctx, tx, p, a, rows, now)
 		if err != nil {
 			return err
 		}

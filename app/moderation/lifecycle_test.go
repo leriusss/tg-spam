@@ -376,3 +376,15 @@ func TestLifecycleNewReportBatchAfterRejectedVotesIsNewAuthority(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, Pending, find(t, j, "original_delete", 3001).State)
 }
+
+func TestLifecycleCommandReceiptCannotChangeTarget(t *testing.T) {
+	j, _ := testJournal(t, DefaultLimits())
+	now := time.Now()
+	p := Plan{Key: "command:immutable", CommandID: "immutable", ChatID: -100, IdentityID: 7, IdentityKind: "user", Actions: []Action{{Kind: "ban", ChatID: -100, IdentityID: 7, IdentityKind: "user"}}}
+	_, _, _, err := j.Accept(testCtx, p, now)
+	require.NoError(t, err)
+	p.IdentityID = 8
+	p.Actions[0].IdentityID = 8
+	_, _, _, err = j.Accept(testCtx, p, now)
+	require.ErrorContains(t, err, "target is immutable")
+}

@@ -306,6 +306,18 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 		}
 		if !overflow {
 			if count > 0 {
+				var target struct {
+					ChatID     int64  `db:"chat_id"`
+					IdentityID int64  `db:"identity_id"`
+					Kind       string `db:"identity_kind"`
+				}
+				if targetErr := tx.GetContext(ctx, &target, j.db.Adopt(`SELECT chat_id,identity_id,identity_kind FROM moderation_receipts WHERE gid=? AND id=?`), j.db.GID(), p.Key); targetErr != nil {
+					return journalError(targetErr)
+				}
+				if target.ChatID != p.ChatID || target.IdentityID != p.IdentityID || target.Kind != p.IdentityKind {
+					return errors.New("receipt target is immutable")
+				}
+
 				if e := j.mergePlan(ctx, tx, p, now); e != nil {
 					return e
 				}

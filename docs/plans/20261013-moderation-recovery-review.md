@@ -76,3 +76,9 @@ Worst-case raw original bodies: 5000 * 32 KiB = 156.25 MiB per instance on disk,
 backups; worker does not load all bodies into RAM. Disk capacity must be checked before a separately
 approved rollout. Actual VPS load was not benchmarked in this local review task. Individual cards
 are bounded per receipt; network-warning storms still coalesce into one digest per destination.
+
+The 5000-action constructor probe additionally exposed excessive per-action SQL reads under race
+instrumentation. Plan registration now reads the minimal matching columns once per receipt in its
+transaction, rather than issuing 50 full-row reads for a 50-action plan. Local native probe improved
+from 5.26s to 1.25s; the fixture size and the existing 180s project timeout remain unchanged. Existing
+receipt target identity is immutable, including command receipts; mismatch has a regression test.
