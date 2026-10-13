@@ -476,9 +476,9 @@ func (r *userReports) sendReportNotification(ctx context.Context, reports []stor
 	// callback format: R+reportedUserID:msgID, R-reportedUserID:msgID, R?reportedUserID:msgID
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporter", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Подтвердить", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Отклонить жалобу", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Заблокировать автора жалобы", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
 		),
 	)
 
@@ -553,9 +553,9 @@ func (r *userReports) updateReportNotification(_ context.Context, reports []stor
 	// create inline keyboard with 3 buttons (same as sendReportNotification)
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporter", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Подтвердить", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Отклонить жалобу", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Заблокировать автора жалобы", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
 		),
 	)
 
@@ -861,9 +861,9 @@ func (r *userReports) callbackReportBanReporterConfirm(ctx context.Context, quer
 		// restore original buttons
 		keyboard := tbapi.NewInlineKeyboardMarkup(
 			tbapi.NewInlineKeyboardRow(
-				tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-				tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-				tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporter", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("Подтвердить", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("Отклонить жалобу", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
+				tbapi.NewInlineKeyboardButtonData("Заблокировать автора жалобы", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
 			),
 		)
 
@@ -891,9 +891,9 @@ func (r *userReports) callbackReportCancel(_ context.Context, query *tbapi.Callb
 	// restore original button layout
 	keyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("✅ Approve Ban", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("❌ Reject", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
-			tbapi.NewInlineKeyboardButtonData("⛔️ Ban Reporter", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Подтвердить", fmt.Sprintf("R+%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Отклонить жалобу", fmt.Sprintf("R-%d:%d", reportedUserID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Заблокировать автора жалобы", fmt.Sprintf("R?%d:%d", reportedUserID, msgID)),
 		),
 	)
 

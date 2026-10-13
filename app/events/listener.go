@@ -132,7 +132,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		if !ok {
 			return fmt.Errorf("durable moderation requires context-aware Telegram API")
 		}
-		adapter := &recovery{journal: l.RecoveryJournal, api: api,
+		chatName := ""
+		if chat, err := l.TbAPI.GetChat(tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{ChatID: l.chatID}}); err == nil {
+			chatName = chat.Title
+		}
+		adapter := &recovery{chatName: chatName, journal: l.RecoveryJournal, api: api,
 			gate: func(a moderation.Action) bool {
 				if a.Kind == "notice" || a.Kind == "card" {
 					return a.ChatID == l.adminChatID && l.adminChatID != 0
@@ -450,7 +454,7 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 			}
 		}
 		if created && !l.NoSpamReply {
-			// Acceptance precedes this optional reply; its failure cannot lose durable moderation.
+			// acceptance precedes this optional reply; its failure cannot lose durable moderation.
 			callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			_, e := l.adminHandler.recovery.api.RequestWithContext(
 				callCtx,

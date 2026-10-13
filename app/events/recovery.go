@@ -22,6 +22,7 @@ type contextualTelegram interface {
 }
 
 type recovery struct {
+	chatName  string
 	journal   *moderation.Journal
 	api       contextualTelegram
 	gate      func(moderation.Action) bool
@@ -87,7 +88,7 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		(a.Kind == "original_delete" || a.Kind == "cleanup_delete") && a.MessageID <= 0 {
 		return moderation.Outcome{State: moderation.Blocked, Code: "invalid_persisted_authority", Uncertain: a.Uncertain}
 	}
-	// Resolve current usernames/admin status rather than persisting names with delayed work.
+	// resolve current usernames/admin status rather than persisting names with delayed work.
 	if out := r.authorization(ctx, a); out != nil {
 		return *out
 	}
@@ -257,33 +258,13 @@ func (r *recovery) notify(ctx context.Context, a moderation.Action) moderation.O
 	if err != nil {
 		return moderation.Outcome{Retry: true, Code: "journal_summary_unavailable"}
 	}
-	var details strings.Builder
-	for _, row := range rows {
-		if row.Kind == "notice" {
-			continue
+	text := warningSummary(counts, rows, rejected)
+	if text == "" {
+		if a.NotificationID <= 0 {
+			return moderation.Outcome{State: moderation.Confirmed}
 		}
-		if details.Len() < 1800 && row.State != moderation.Confirmed {
-			fmt.Fprintf(
-				&details,
-				"\n%s chat=%d message=%d status=%s reason=%s date_known=%t",
-				row.Kind,
-				row.ChatID,
-				row.MessageID,
-				row.State,
-				row.Code,
-				row.MessageDate > 0,
-			)
-		}
+		text = "✅ Проблемы модерации устранены. Результаты — в карточках"
 	}
-	text := fmt.Sprintf(
-		"moderation journal summary (generation %d): %v capacity_rejected=%d%s\nConfirmed ban "+
-			"may be reconciled current membership, not a new API call. "+
-			"Unfinished/failed deletions may require manual action. Complete IDs/results: moderation journal operator query.",
-		a.Generation,
-		counts,
-		rejected,
-		details.String(),
-	)
 	var request tbapi.Chattable = tbapi.NewMessage(a.ChatID, text)
 	if a.NotificationID > 0 {
 		request = tbapi.NewEditMessageText(a.ChatID, a.NotificationID, text)
