@@ -74,10 +74,10 @@ func compactCardText(c moderation.Card, chatName string) string {
 		text.WriteString("\nОстальные результаты — в подробностях")
 	}
 	if deleted > 0 {
-		fmt.Fprintf(&text, "\nДополнительно удалено: %d сообщ.", deleted)
+		fmt.Fprintf(&text, "\nДополнительно удалено: %s", messageCount(deleted))
 	}
 	if remaining > 0 {
-		fmt.Fprintf(&text, "\n⚠️ Дополнительная очистка не завершена: %d сообщ. Подробнее — в деталях", remaining)
+		fmt.Fprintf(&text, "\n⚠️ Дополнительная очистка не завершена: %s. Подробнее — в деталях", messageCount(remaining))
 	}
 	if c.Held {
 		text.WriteString("\n⏸ Повторы отменены")
@@ -111,6 +111,9 @@ func compactAction(a moderation.Action) string {
 		if a.Kind == "unban" {
 			return "✅ Блокировка снята"
 		}
+		if a.Kind != "ban" {
+			return "✅ Действие выполнено"
+		}
 		if a.Code == "reconciled_membership" {
 			return "✅ " + subject + " уже заблокирован"
 		}
@@ -126,7 +129,14 @@ func compactAction(a moderation.Action) string {
 			}
 			return "⏳ Удаление ожидает выполнения"
 		}
-		return "⏳ Действие ожидает выполнения"
+		switch a.Kind {
+		case "ban":
+			return "⏳ Блокировка ожидает выполнения"
+		case "restrict":
+			return "⏳ Ограничение сообщений ожидает выполнения"
+		default:
+			return "⏳ Действие ожидает выполнения"
+		}
 	case moderation.Absent:
 		return "ℹ️ Сообщение отсутствует или недоступно; удаление ботом не подтверждено"
 	case moderation.Expired:
@@ -170,7 +180,7 @@ func warningSummary(counts map[string]int, rows []moderation.Action, rejected in
 	}
 	for _, a := range rows {
 		if a.Kind != "card" && a.Kind != "notice" && (a.State == moderation.Pending || a.State == moderation.Running) &&
-			(a.Attempts > 1 || a.Uncertain) {
+			(a.Attempts > 0 && a.State == moderation.Pending || a.Attempts > 1 || a.Uncertain) {
 			problems++
 		}
 	}
@@ -196,4 +206,17 @@ func russianActionLabel(action string) string {
 	default:
 		return action
 	}
+}
+
+func messageCount(n int) string {
+	word := "сообщений"
+	if n%100 < 11 || n%100 > 14 {
+		switch n % 10 {
+		case 1:
+			word = "сообщение"
+		case 2, 3, 4:
+			word = "сообщения"
+		}
+	}
+	return fmt.Sprintf("%d %s", n, word)
 }

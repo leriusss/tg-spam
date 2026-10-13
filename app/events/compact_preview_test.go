@@ -59,7 +59,7 @@ color:#e9eef5;border-radius:6px;padding:12px 6px;font:14px Arial}small{color:#8d
 		document.WriteString("</nav></section>")
 	}
 	fmt.Fprintf(&document, "<section><h2>Подробнее</h2><article>%s</article><nav><button>К карточке</button></nav></section>",
-		html.EscapeString(cardDetails(moderation.Card{IdentityID: 501, IdentityKind: "user", ChatID: 123, MessageID: 701,
+		html.EscapeString(cardDetails(moderation.Card{Ref: "example", IdentityID: 501, IdentityKind: "user", ChatID: 123, MessageID: 701,
 			Actions: []moderation.Action{ban, deleteOp}})))
 	document.WriteString("</main>")
 	require.NoError(t, os.WriteFile(path, []byte(document.String()), 0o600))
