@@ -678,8 +678,8 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 			return j.stopTargetTX(ctx, tx, c, "", id, now)
 		case "unban", "restore":
 			// A new explicit undo supersedes terminal undo work, preserving its API outcome.
-			if e := j.exec(ctx, tx, `INSERT INTO moderation_resolutions SELECT gid,id,receipt,?,? FROM moderation_actions WHERE gid=? AND chat_id=? AND identity_id=? AND kind IN ('unban','restore') AND state IN ('failed','manual_review','expired') ON CONFLICT(gid,action_id) DO NOTHING`, operator, now.UnixMilli(), j.db.GID(), c.ChatID, c.IdentityID); e != nil {
-				return e
+			if resolutionErr := j.exec(ctx, tx, `INSERT INTO moderation_resolutions SELECT gid,id,receipt,?,? FROM moderation_actions WHERE gid=? AND chat_id=? AND identity_id=? AND kind IN ('unban','restore') AND state IN ('failed','manual_review','expired') ON CONFLICT(gid,action_id) DO NOTHING`, operator, now.UnixMilli(), j.db.GID(), c.ChatID, c.IdentityID); resolutionErr != nil {
+				return resolutionErr
 			}
 			return j.stopTargetTX(ctx, tx, c, verb, id, now)
 		case "close":
