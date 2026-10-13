@@ -73,8 +73,8 @@ delivery has its own bounded period that can outlive the delete deadline. A new 
 outcome starts a fresh 24-hour/320-attempt delivery window; ordinary retry failures do not renew it.
 An older in-flight notification cannot consume the new terminal generation's delivery budget. Generation fencing
 preserves newer changes while an older digest is in flight. Lost send acknowledgements may cause
-duplicates; known notification message IDs allow later edits. No message bodies, tokens or raw
-URL-bearing errors are persisted. Operator queries document undelivered signals and pending IDs.
+duplicates; known notification message IDs allow later edits. No tokens or raw URL-bearing errors are persisted. Original text is stored only in the bounded
+card-context table, separately from statuses and digests. Operator queries document undelivered signals and pending IDs.
 
 ## Files and checks
 
@@ -105,10 +105,12 @@ by the probe. Scripts: tools/moderation-migrate-probe and tools/verify_moderatio
 Durable mode is opt-in, MODERATION_RECOVERY=false by default. Missing admin destination fails startup
 when enabled. Training/dry retain the existing synchronous review buttons and their original text,
 callback IDs, confirmation/rejection/info contract; destructive journal admission is skipped.
-Enabled normal moderation uses a coalesced plain-text digest rather than the previous per-original
-rich notification. It carries factual counts/IDs, not corpus-changing review/unban buttons: attaching
-those callbacks to a digest would mistakenly learn digest text. Direct/manual commands remain usable.
-This UI tradeoff must be reviewed before enabling; routing and global-ban policy are unchanged.
+Enabled normal moderation restores an individual persistent card for each receipt, with original
+text/user context, factual action states and bound controls. A separate coalesced digest carries
+incomplete/final warnings. Original text is retained separately in moderation_cards (maximum 32 KiB)
+and UpdateHam/UpdateSpam read that stored original, including when presentation is truncated.
+Training/dry retain their existing review workflow; source/routing/global-ban policy is unchanged.
+See the [review corrections](20261013-moderation-recovery-review.md).
 
 No recovery guarantee when the journal cannot be written, when capacity is exhausted, after the
 first deadline/budget limit, for permanent Telegram refusal, or for learning that cannot safely be
@@ -133,7 +135,7 @@ not an entitlement: schedule simulations cover 24h jitter extremes and time spen
 See [operations runbook](../operations/moderation-recovery.md) for the deployment and rollback gate.
 
 Local focused moderation/event tests and new transport/config tests passed. The 5,000-action SQLite
-load probe used 1,531,904 bytes of database pages (~1.46 MiB) for metadata; this is a local fixture,
+load probe used 2,592,768 bytes of database pages (~2.47 MiB), including demand provenance for metadata; this is a local fixture,
 not a claim about production total DB size, CPU, disk latency, or WAL/retained-history footprint.
 The full Windows suite has pre-existing Linux filesystem/server assumptions, and the full storage
 suite has a timeout expectation failure also reproduced on the unmodified base. Those tests are

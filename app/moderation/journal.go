@@ -54,6 +54,9 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		db.Adopt(`INSERT INTO moderation_control(gid) VALUES (?) ON CONFLICT(gid) DO NOTHING`),
 		db.GID(),
 	)
+	if err == nil {
+		err = j.migrateLifecycle(ctx)
+	}
 	return j, journalError(err)
 }
 
@@ -150,8 +153,16 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 	sourceKey := fmt.Sprintf("source:%d:%d:%s:%d", p.ChatID, p.MessageID, p.IdentityKind, p.IdentityID)
 	deliveryKey := fmt.Sprintf("delivery:%d:%d", p.DeliveryChat, p.DeliveryMessage)
 	if len(p.Actions) == 0 ||
-		((p.Key != sourceKey || p.MessageID <= 0) && (p.Key != deliveryKey || p.DeliveryChat == 0 || p.DeliveryMessage <= 0)) {
+		((p.Key != sourceKey || p.MessageID <= 0) &&
+			(p.Key != deliveryKey || p.DeliveryChat == 0 || p.DeliveryMessage <= 0) &&
+			(p.CommandID == "" || p.Key != "command:"+p.CommandID || p.MessageID != 0)) {
 		return "", "", false, errors.New("invalid exact-source or delivery-scoped identity")
+	}
+	if len(p.SourceText) > 32768 {
+		return "", "", false, errors.New("original context exceeds card storage limit")
+	}
+	if p.Origin == "" {
+		p.Origin = "legacy"
 	}
 	id = p.Key
 	if p.Learn {
@@ -288,11 +299,22 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 				if e := j.notice(ctx, tx, p.Destination, now, false); e != nil {
 					return journalError(e)
 				}
-				if e := j.exec(ctx, tx, `UPDATE moderation_receipts SET state='finished' WHERE gid=? AND id=? AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND receipt=? AND state IN ('pending','running'))`, j.db.GID(), id, j.db.GID(), id); e != nil {
+				if e := j.exec(ctx, tx, `UPDATE moderation_receipts SET state='finished' WHERE gid=? AND id=? AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND receipt=? AND state IN ('pending','running') AND kind NOT IN ('notice','card'))`, j.db.GID(), id, j.db.GID(), id); e != nil {
 					return journalError(e)
 				}
 			}
 		}
+		if !overflow {
+			if count > 0 {
+				if e := j.mergePlan(ctx, tx, p, now); e != nil {
+					return e
+				}
+			}
+			if e := j.registerPlan(ctx, tx, p, now); e != nil {
+				return e
+			}
+		}
+
 		if p.DeliveryMessage != 0 {
 			return j.exec(
 				ctx,
@@ -404,7 +426,9 @@ func (j *Journal) Activate(ctx context.Context, id, owner string, now time.Time,
 				}
 			} else {
 				if err = j.exec(ctx, tx, "UPDATE moderation_actions SET state=?,code='learning_uncertain' WHERE gid=? AND "+
-					"receipt=? AND state='pending'", Manual, j.db.GID(), id); err != nil {
+					"receipt=? AND state='pending' AND NOT EXISTS (SELECT 1 FROM moderation_demands d "+
+					"WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id "+
+					"AND d.origin='detector' AND d.active=TRUE)", Manual, j.db.GID(), id); err != nil {
 					return journalError(err)
 				}
 			}
@@ -414,6 +438,9 @@ func (j *Journal) Activate(ctx context.Context, id, owner string, now time.Time,
 			j.db.GID(), id); err != nil {
 			return journalError(err)
 		}
+		if cardErr := j.dirtyCard(ctx, tx, id, now); cardErr != nil {
+			return cardErr
+		}
 		if err = j.notice(ctx, tx, destination, now, !learningOK); err != nil {
 			return journalError(err)
 		}
@@ -422,7 +449,7 @@ func (j *Journal) Activate(ctx context.Context, id, owner string, now time.Time,
 			tx,
 			"UPDATE moderation_receipts SET state='finished' WHERE gid=? AND id=? AND "+
 				"state='ready' AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE "+
-				"gid=? AND receipt=? AND state IN ('pending','running'))",
+				"gid=? AND receipt=? AND state IN ('pending','running') AND kind NOT IN ('notice','card'))",
 			j.db.GID(),
 			id,
 			j.db.GID(),
@@ -500,6 +527,9 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 				if e := j.learningNote(ctx, tx, r.ID, "learning_interrupted_core_resumed"); e != nil {
 					return journalError(e)
 				}
+				if cardErr := j.dirtyCard(ctx, tx, r.ID, now); cardErr != nil {
+					return cardErr
+				}
 				if e := j.notice(ctx, tx, r.Destination, now, true); e != nil {
 					return journalError(e)
 				}
@@ -508,8 +538,11 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 			if e := j.exec(ctx, tx, `UPDATE moderation_receipts SET state='manual_review',owner='' WHERE gid=? AND id=?`, j.db.GID(), r.ID); e != nil {
 				return journalError(e)
 			}
-			if e := j.exec(ctx, tx, `UPDATE moderation_actions SET state='manual_review',code='learning_uncertain' WHERE gid=? AND receipt=? AND state='pending'`, j.db.GID(), r.ID); e != nil {
+			if e := j.exec(ctx, tx, `UPDATE moderation_actions SET state='manual_review',code='learning_uncertain' WHERE gid=? AND receipt=? AND state='pending' AND NOT EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id AND d.origin='detector' AND d.active=TRUE)`, j.db.GID(), r.ID); e != nil {
 				return journalError(e)
+			}
+			if cardErr := j.dirtyCard(ctx, tx, r.ID, now); cardErr != nil {
+				return cardErr
 			}
 			if e := j.notice(ctx, tx, r.Destination, now, true); e != nil {
 				return journalError(e)
@@ -522,7 +555,7 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 		if cooldown > now.UnixMilli() {
 			return nil
 		}
-		q := `SELECT a.id,a.receipt,a.kind,a.chat_id,a.identity_id,a.identity_kind,a.message_id,a.message_date,a.until_date,a.state,a.code,a.attempts,a.deadline,a.next_at,a.owner,a.lease_until,a.uncertain,a.generation,a.delivered,a.notification_id FROM moderation_actions a LEFT JOIN moderation_receipts r ON a.gid=r.gid AND a.receipt=r.id WHERE a.gid=? AND (a.kind='notice' OR r.state='ready') AND ((a.state='pending' AND a.next_at<=?) OR (a.state='running' AND a.lease_until<?)) ORDER BY a.next_at,a.id LIMIT 1`
+		q := `SELECT a.id,a.receipt,a.kind,a.chat_id,a.identity_id,a.identity_kind,a.message_id,a.message_date,a.until_date,a.state,a.code,a.attempts,a.deadline,a.next_at,a.owner,a.lease_until,a.uncertain,a.generation,a.delivered,a.notification_id FROM moderation_actions a LEFT JOIN moderation_receipts r ON a.gid=r.gid AND a.receipt=r.id WHERE a.gid=? AND (a.kind IN ('notice','card') OR r.state='ready' OR EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=a.gid AND d.action_id=a.id AND d.active=TRUE AND d.origin='detector')) AND ((a.state='pending' AND a.next_at<=?) OR (a.state='running' AND a.lease_until<?)) AND (a.kind NOT IN ('ban','restrict','unban','restore') OR NOT EXISTS (SELECT 1 FROM moderation_actions running WHERE running.gid=a.gid AND running.chat_id=a.chat_id AND running.identity_id=a.identity_id AND running.kind IN ('ban','restrict','unban','restore') AND running.state='running' AND running.id!=a.id)) ORDER BY a.next_at,a.id LIMIT 1`
 		e := tx.GetContext(ctx, &a, j.db.Adopt(q), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli())
 		if errors.Is(e, sqlNoRows) {
 			return nil
@@ -530,7 +563,7 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 		if e != nil {
 			return journalError(e)
 		}
-		if a.State == Running && a.Kind != "notice" {
+		if a.State == Running && a.Kind != "notice" && a.Kind != "card" {
 			a.Uncertain = true
 		}
 		if deleteKind(a.Kind) && a.MessageID > 0 {
@@ -575,6 +608,9 @@ func (j *Journal) Owned(ctx context.Context, a Action, now time.Time) (bool, err
 // Finish conditionally commits independent outcomes and their notification generation.
 func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now time.Time) error {
 	return j.transaction(ctx, func(tx journalTx) error {
+		if e := j.finishWithdrawal(ctx, tx, a, &o, now); e != nil {
+			return e
+		}
 		state := o.State
 		if o.Retry {
 			state = Pending
@@ -582,7 +618,7 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 		r, e := tx.ExecContext(
 			ctx,
 			j.db.Adopt(
-				`UPDATE moderation_actions SET state=?,code=?,uncertain=?,next_at=?,owner='',lease_until=0,notification_id=CASE WHEN ?<0 THEN 0 WHEN ?>0 THEN ? ELSE notification_id END,delivered=CASE WHEN kind='notice' AND ?='confirmed' THEN ? ELSE delivered END WHERE gid=? AND id=? AND owner=? AND state='running'`,
+				`UPDATE moderation_actions SET state=?,code=?,uncertain=?,next_at=?,owner='',lease_until=0,notification_id=CASE WHEN ?<0 THEN 0 WHEN ?>0 THEN ? ELSE notification_id END,delivered=CASE WHEN kind IN ('notice','card') AND ?='confirmed' THEN ? ELSE delivered END WHERE gid=? AND id=? AND owner=? AND state='running'`,
 			),
 			state,
 			o.Code,
@@ -613,7 +649,7 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 				return journalError(e)
 			}
 		}
-		if a.Kind == "notice" {
+		if a.Kind == "notice" || a.Kind == "card" {
 			if state == Confirmed || state == Undelivered &&
 				(o.Code == "attempt_budget_exhausted" || o.Code == "deadline_manual_action_required" ||
 					o.Code == "retry_after_or_deadline_manual_action_required") {
@@ -628,6 +664,11 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 			}
 			return nil
 		}
+		if final(state) || a.Attempts == 1 || a.Code != o.Code {
+			if cardErr := j.dirtyCard(ctx, tx, a.Receipt, now); cardErr != nil {
+				return cardErr
+			}
+		}
 		// Only changed states/first failures dirty the digest; retry attempts do not create a storm.
 		var destination int64
 		if e = tx.GetContext(ctx, &destination, j.db.Adopt(`SELECT destination FROM moderation_receipts WHERE gid=? AND id=?`), j.db.GID(), a.Receipt); e != nil {
@@ -641,7 +682,7 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 		return j.exec(
 			ctx,
 			tx,
-			`UPDATE moderation_receipts SET state='finished' WHERE gid=? AND id=? AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND receipt=? AND state IN ('pending','running'))`,
+			`UPDATE moderation_receipts SET state='finished' WHERE gid=? AND id=? AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND receipt=? AND state IN ('pending','running') AND kind NOT IN ('notice','card'))`,
 			j.db.GID(),
 			a.Receipt,
 			j.db.GID(),
@@ -715,13 +756,16 @@ func (j *Journal) Pause(ctx context.Context, until time.Time) error {
 // Prune only acknowledged terminal receipts; pending work and undelivered signals survive retention.
 func (j *Journal) Prune(ctx context.Context, now time.Time) error {
 	return j.transaction(ctx, func(tx journalTx) error {
-		q := `SELECT id FROM moderation_receipts WHERE gid=? AND state='finished' AND created_at<? AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND kind='notice' AND (state!='confirmed' OR generation>delivered))`
+		q := `SELECT id FROM moderation_receipts WHERE gid=? AND state='finished' AND created_at<? AND NOT EXISTS (SELECT 1 FROM moderation_actions card WHERE card.gid=moderation_receipts.gid AND card.receipt=moderation_receipts.id AND card.kind='card' AND (card.state!='confirmed' OR card.generation>card.delivered)) AND NOT EXISTS (SELECT 1 FROM moderation_actions unresolved WHERE unresolved.gid=moderation_receipts.gid AND unresolved.receipt=moderation_receipts.id AND (unresolved.state IN ('manual_review','failed','expired','blocked') OR unresolved.uncertain=TRUE) AND NOT EXISTS (SELECT 1 FROM moderation_resolutions resolution WHERE resolution.gid=unresolved.gid AND resolution.action_id=unresolved.id)) AND NOT EXISTS (SELECT 1 FROM moderation_decisions decision WHERE decision.gid=moderation_receipts.gid AND decision.receipt=moderation_receipts.id AND decision.state='started') AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND kind='notice' AND (state!='confirmed' OR generation>delivered))`
 		var ids []string
 		if e := tx.SelectContext(ctx, &ids, j.db.Adopt(q), j.db.GID(), now.Add(-30*24*time.Hour).UnixMilli(), j.db.GID()); e != nil {
 			return journalError(e)
 		}
 		for _, id := range ids {
-			for _, table := range []string{"moderation_deliveries", "moderation_actions"} {
+			for _, table := range []string{
+				"moderation_deliveries", "moderation_demands", "moderation_decisions", "moderation_cards",
+				"moderation_withdrawals", "moderation_resolutions", "moderation_actions",
+			} {
 				if e := j.exec(ctx, tx, `DELETE FROM `+table+` WHERE gid=? AND receipt=?`, j.db.GID(), id); e != nil {
 					return journalError(e)
 				}

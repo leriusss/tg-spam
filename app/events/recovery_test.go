@@ -200,7 +200,7 @@ func TestRecoveryFallbackKeepsOwnChatAndManualOriginal(t *testing.T) {
 	rows, err := j.Snapshot(context.Background())
 	require.NoError(t, err)
 	for _, a := range rows {
-		if a.Kind == "notice" {
+		if a.Kind == "notice" || a.Kind == "card" {
 			continue
 		}
 		require.EqualValues(t, 123, a.ChatID)

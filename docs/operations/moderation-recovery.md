@@ -21,7 +21,8 @@ executable with local web auth and pruning disabled. No customer rows are printe
 1. Check logs, polling, git/image identity, free space and archive checksums. Preserve old image,
    current configs, compose file AND tracked diff, full logs, consistent SQLite backups of all instances.
 2. Verify old binary/new schema on copies and inspect all CI checks. Identify exact gid per instance.
-3. Enable MODERATION_RECOVERY=true explicitly only after review of the digest UI tradeoff. Keep
+3. Enable MODERATION_RECOVERY=true explicitly only after reviewing individual cards, callback authority
+   and retained-work operations. Keep
    existing shared-admin reliable-user fallback: each instance can still act in its own primary chat.
    Feature flag off is legacy behavior, not a retry guarantee.
 4. Publish reviewed image once, restart only docker-compose down / docker-compose up -d.
@@ -74,5 +75,49 @@ no longer disappears into a log: the exact action is persisted, separately from 
 and retried after recovery/restart before its deadline. Cleanup items and incomplete/final notices
 have independent outcomes. It does not extend Telegram's deletion window, reconstruct unknown
 original IDs, retry permanent refusal, backfill the old incident, or promise exactly-once API effects.
-Routing/global-ban decisions, normal digest UI approval and manual recovery after permanent failure
+Routing/global-ban decisions and explicit manual resolution after permanent failure
 remain explicit review/policy choices; this implementation does not disable reliable-user fallback.
+
+## Review revision: individual cards and operator decisions
+
+Individual cards use opaque callback references bound to gid/admin chat/notification message ID;
+original text is in moderation_cards, not recovered from rendered statuses. The digest remains for
+coalescing warnings. Info shows original detection evidence when still available, otherwise says it
+is unavailable. Display truncation does not truncate UpdateHam/UpdateSpam input. Commands without
+an exact original ID explicitly say so; a locator candidate is not an exact forward identity.
+
+Reject report removes current report authority, not detector/forward authority. Report votes are
+cleared as before while durable original context remains usable after report-storage TTL. A later
+report batch has a new database report-row identity. Approve and reporter-ban confirmations enter
+the same action journal; reporter commands do not invent an original message ID or learn metadata.
+Manual-threshold card binding is adopted; original reports/cards do not assert API success when queued.
+
+Cancel retries withdraws existing authorities for that target in the current primary chat/gid.
+The cutoff persists across restart; later independent originals remain subject to the existing
+moderation policy. Unban additionally queues the undo in the journal and retains the existing explicit
+user-approval/ham contract. Running effects may already have reached Telegram. Undo cannot overtake
+running ban/restrict; a new requirement waits for unfinished undo/local operator preparation. No global
+ban or cross-instance routing is introduced. Explicit approvals are new authorities, not replay of
+old delivered callbacks. The prior temporary ban stays recorded when a permanent requirement is added.
+
+Mark manually resolved work only after checking the actual chat/API situation. Close is refused for
+pending/running core actions, retains actual failed/expired/manual/uncertain results, and records the
+operator ID/time in moderation_resolutions. Notification delivery never closes work. After 30 days,
+pruning requires no unresolved manual/failed/expired/blocked/uncertain actions, no started local
+operator decisions and acknowledged card/warning delivery. Retained receipts still count toward the
+5000 cap until eligible for pruning; unresolved work is never discarded to free capacity.
+
+```sql
+SELECT receipt,action_id,origin,active,accepted_at FROM moderation_demands WHERE gid=?;
+SELECT receipt,operator_id,verb,state FROM moderation_decisions WHERE gid=?;
+SELECT receipt,action_id,operator_id,closed_at FROM moderation_resolutions WHERE gid=?;
+SELECT chat_id,identity_id,created_at FROM moderation_holds WHERE gid=?;
+```
+
+accepted_at/hold cutoff are processing authority times, not Telegram Message.Date. Raw body text
+must not be included in public logs or review artifacts. New tables are additive. Prototype jobs
+without provenance become manual review rather than guessing report-vs-detector origin. Do not run
+the old b06d36ba worker against this extended lifecycle: for code rollback disable recovery, preserve
+runtime DB/holds/pending decisions and export manual work. The production stage-1 binary remains the
+separately approved image rollback target and ignores the extra tables; ensure existing approved-user
+policy remains enforced while the new worker is disabled. No rollback/deploy has been performed here.

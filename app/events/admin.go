@@ -762,6 +762,13 @@ func (a *admin) directReport(update tbapi.Update, updateSamples bool) error {
 // InlineCallbackHandler handles a callback from Telegram, which is a response to a message with inline keyboard.
 // The callback contains user info, which is used to unban the user.
 func (a *admin) InlineCallbackHandler(query *tbapi.CallbackQuery) error {
+	if a.recovery != nil && strings.HasPrefix(query.Data, "M") {
+		return a.recoveryCardCallback(query)
+	}
+	if a.recovery != nil && !a.trainingMode && !a.dry && query.Message != nil && query.Message.Chat.ID == a.adminChatID &&
+		!strings.HasPrefix(query.Data, "?") && !strings.HasPrefix(query.Data, "!") {
+		return a.recoveryLegacyCallback(query)
+	}
 	callbackData := query.Data
 	chatID := query.Message.Chat.ID // this is ID of admin chat
 	if chatID != a.adminChatID {    // ignore callbacks from other chats, only admin chat is allowed

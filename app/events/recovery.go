@@ -72,6 +72,9 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 	if ctx.Err() != nil {
 		return moderation.Outcome{Retry: true, Code: "request_not_started"}
 	}
+	if a.Kind == "card" {
+		return r.notifyCard(ctx, a)
+	}
 	if a.Kind == "notice" {
 		return r.notify(ctx, a)
 	}
@@ -85,6 +88,10 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		return moderation.Outcome{State: moderation.Blocked, Code: "invalid_persisted_authority", Uncertain: a.Uncertain}
 	}
 	// Resolve current usernames/admin status rather than persisting names with delayed work.
+	if out := r.authorization(ctx, a); out != nil {
+		return *out
+	}
+
 	var member tbapi.ChatMember
 	if a.IdentityKind == "user" {
 		resp, err := r.api.RequestWithContext(ctx, tbapi.NewGetChatMember(a.ChatID, a.IdentityID))
@@ -133,7 +140,8 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 				Uncertain: true,
 			}
 		}
-		expiryMatches := member.UntilDate == 0 || member.UntilDate >= a.UntilDate
+		requestedPermanent := a.UntilDate == 0 || a.UntilDate >= time.Now().Add(366*24*time.Hour).Unix()
+		expiryMatches := member.UntilDate == 0 || !requestedPermanent && member.UntilDate >= a.UntilDate
 		fullyRestricted := !member.CanSendMessages && !member.CanSendAudios && !member.CanSendDocuments &&
 			!member.CanSendPhotos &&
 			!member.CanSendVideos &&
@@ -148,6 +156,10 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 			(a.Kind == "ban" && member.Status == "kicked" || a.Kind == "restrict" && member.Status == "restricted" && fullyRestricted) {
 			return moderation.Outcome{State: moderation.Confirmed, Code: "reconciled_membership"}
 		}
+	}
+	if a.IdentityKind == "user" &&
+		((a.Kind == "unban" && member.Status != "kicked") || (a.Kind == "restore" && member.Status != "restricted")) {
+		return moderation.Outcome{State: moderation.Confirmed, Code: "reconciled_unbanned_membership"}
 	}
 	var request tbapi.Chattable
 	switch a.Kind {
@@ -164,6 +176,36 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 				UntilDate:        a.UntilDate,
 			}
 		}
+	case "unban":
+		if a.IdentityKind == "sender_chat" {
+			request = tbapi.UnbanChatSenderChatConfig{
+				ChatConfig:   tbapi.ChatConfig{ChatID: a.ChatID},
+				SenderChatID: a.IdentityID,
+			}
+		} else {
+			request = tbapi.UnbanChatMemberConfig{
+				ChatMemberConfig: tbapi.ChatMemberConfig{ChatConfig: tbapi.ChatConfig{ChatID: a.ChatID}, UserID: a.IdentityID},
+				OnlyIfBanned:     true,
+			}
+		}
+	case "restore":
+		request = tbapi.RestrictChatMemberConfig{
+			ChatMemberConfig: tbapi.ChatMemberConfig{ChatConfig: tbapi.ChatConfig{ChatID: a.ChatID}, UserID: a.IdentityID},
+			Permissions: &tbapi.ChatPermissions{
+				CanSendMessages:   true,
+				CanSendAudios:     true,
+				CanSendDocuments:  true,
+				CanSendPhotos:     true,
+				CanSendVideos:     true,
+				CanSendVideoNotes: true,
+				CanSendVoiceNotes: true,
+
+				CanSendOtherMessages: true,
+
+				CanInviteUsers: true,
+				CanChangeInfo:  true, CanPinMessages: true,
+			},
+		}
 	case "restrict":
 		request = tbapi.RestrictChatMemberConfig{
 			ChatMemberConfig: tbapi.ChatMemberConfig{ChatConfig: tbapi.ChatConfig{ChatID: a.ChatID}, UserID: a.IdentityID},
@@ -177,6 +219,10 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 	default:
 		return moderation.Outcome{State: moderation.Blocked, Code: "invalid_action_kind"}
 	}
+	if out := r.authorization(ctx, a); out != nil {
+		return *out
+	}
+
 	resp, err := r.api.RequestWithContext(ctx, request)
 	out := telegramOutcome(resp, err)
 	if out.State != moderation.Confirmed {
@@ -328,6 +374,7 @@ func (a *admin) enqueueForward(
 		key = fmt.Sprintf("source:%d:%d:%s:%d", a.primChatID, msgID, kind, identityID)
 	}
 	p := moderation.Plan{
+		Origin: "forward", Card: true, SourceText: learnText,
 		Key:             key,
 		ChatID:          a.primChatID,
 		MessageID:       msgID,
@@ -337,6 +384,9 @@ func (a *admin) enqueueForward(
 		DeliveryChat:    update.Message.Chat.ID,
 		DeliveryMessage: update.Message.MessageID,
 	}
+	p.Origin = fmt.Sprintf("forward:%d:%d", p.DeliveryChat, p.DeliveryMessage)
+	identity := adminForwardOriginIdentity(update.Message.ForwardOrigin)
+	p.UserName = identity.Name
 	base := moderation.Action{ChatID: a.primChatID, IdentityID: identityID, IdentityKind: kind}
 	if identityID != a.primChatID {
 		ban := base
@@ -410,6 +460,8 @@ func (l *TelegramListener) enqueueAutomatic(update tbapi.Update, msg *bot.Messag
 		return false, nil
 	}
 	p := moderation.Plan{
+		Origin: "detector", Card: true, SourceText: msg.Text + sourceQuote(msg),
+		UserName: msg.From.Username, DisplayName: msg.From.DisplayName,
 		Key:          fmt.Sprintf("source:%d:%d:%s:%d", update.Message.Chat.ID, msg.ID, kind, id),
 		ChatID:       update.Message.Chat.ID,
 		MessageID:    msg.ID,
@@ -466,6 +518,7 @@ func (r *userReports) enqueueThresholdRecovery(ctx context.Context, report stora
 		return fmt.Errorf("community auto-ban safety gate blocked durable admission")
 	}
 	p := moderation.Plan{
+		Origin: reportBatchOrigin(report), Card: true, SourceText: report.MsgText, UserName: report.ReportedUserName,
 		Key:              fmt.Sprintf("source:%d:%d:user:%d", report.ChatID, report.MsgID, report.ReportedUserID),
 		ChatID:           report.ChatID,
 		MessageID:        report.MsgID,
@@ -502,6 +555,11 @@ func (r *userReports) enqueueThresholdRecovery(ctx context.Context, report stora
 	if !created {
 		return nil
 	}
+	if report.AdminMsgID > 0 {
+		if err = j.BindCard(ctx, id, report.AdminMsgID); err != nil {
+			return fmt.Errorf("bind threshold report card: %w", err)
+		}
+	}
 	_ = r.bot.RemoveApprovedUser(report.ReportedUserID)
 	learningOK := true
 	if report.MsgText != "" {
@@ -524,4 +582,38 @@ func needsRecovery(resp bot.Response) bool {
 		}
 	}
 	return false
+}
+
+func sourceQuote(msg *bot.Message) string {
+	if msg.Quote != "" {
+		return "\n" + msg.Quote
+	}
+	return ""
+}
+
+func (r *recovery) authorization(ctx context.Context, a moderation.Action) *moderation.Outcome {
+	if r.journal == nil {
+		return nil
+	}
+	mode, err := r.journal.Authorize(ctx, a)
+	if err != nil {
+		return &moderation.Outcome{Retry: true, Uncertain: a.Uncertain, Code: "authority_store_unavailable"}
+	}
+	if mode == "waiting_for_undo" || mode == "waiting_for_operator" {
+		return &moderation.Outcome{Retry: true, Uncertain: a.Uncertain, Code: "operator_undo_pending"}
+	}
+	if mode == "withdrawn" {
+		if a.Uncertain {
+			return &moderation.Outcome{State: moderation.Manual, Uncertain: true, Code: "withdrawn_request_outcome_unknown"}
+		}
+		return &moderation.Outcome{State: moderation.Canceled, Code: "withdrawn_before_execution"}
+	}
+	return nil
+}
+
+func reportBatchOrigin(report storage.Report) string {
+	if report.ID > 0 {
+		return fmt.Sprintf("report:%d", report.ID)
+	}
+	return "report"
 }

@@ -48,7 +48,24 @@ func (w *Worker) Step(ctx context.Context) (bool, error) {
 			}
 			return true, ErrLease
 		}
-		result = w.Executor.Execute(callCtx, a)
+		mode := "allowed"
+		if a.Kind != "notice" && a.Kind != "card" {
+			mode, e = w.Journal.Authorize(callCtx, a)
+		}
+		switch {
+		case e != nil:
+			result = Outcome{Retry: true, Uncertain: a.Uncertain, Code: "authority_store_unavailable"}
+		case mode == "waiting_for_undo" || mode == "waiting_for_operator":
+			result = Outcome{Retry: true, Uncertain: a.Uncertain, Code: "operator_undo_pending"}
+		case mode == "withdrawn":
+			if a.Uncertain {
+				result = Outcome{State: Manual, Uncertain: true, Code: "withdrawn_request_outcome_unknown"}
+			} else {
+				result = Outcome{State: Canceled, Code: "withdrawn_before_execution"}
+			}
+		default:
+			result = w.Executor.Execute(callCtx, a)
+		}
 		cancel()
 	}
 	now = w.clock()
@@ -70,7 +87,7 @@ func (w *Worker) Step(ctx context.Context) (bool, error) {
 			result.Retry = false
 		}
 	}
-	if a.Kind == "notice" {
+	if a.Kind == "notice" || a.Kind == "card" {
 		if !result.Retry && result.State != Confirmed {
 			result.State = Undelivered
 		}

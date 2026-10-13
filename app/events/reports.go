@@ -577,6 +577,9 @@ func (r *userReports) updateReportNotification(_ context.Context, reports []stor
 // callbackReportBan handles the callback when admin approves a user report and bans the reported user
 // callback data: R+reportedUserID:msgID
 func (r *userReports) callbackReportBan(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryReportDecision(ctx, query, true)
+	}
 	// parse callback data
 	reportedUserID, msgID, err := parseCallbackData(query.Data)
 	if err != nil {
@@ -657,6 +660,9 @@ func (r *userReports) callbackReportBan(ctx context.Context, query *tbapi.Callba
 // callbackReportReject handles the callback when admin rejects a user report
 // callback data: R-reportedUserID:msgID
 func (r *userReports) callbackReportReject(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryReportDecision(ctx, query, false)
+	}
 	// parse callback data
 	_, msgID, err := parseCallbackData(query.Data)
 	if err != nil {
@@ -749,6 +755,9 @@ func (r *userReports) callbackReportBanReporterAsk(ctx context.Context, query *t
 // callbackReportBanReporterConfirm handles the callback when admin confirms banning a specific reporter
 // callback data: R!reporterID:msgID
 func (r *userReports) callbackReportBanReporterConfirm(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && !r.trainingMode && !r.dry {
+		return r.recoveryBanReporter(ctx, query)
+	}
 	// parse callback data
 	reporterID, msgID, err := parseCallbackData(query.Data)
 	if err != nil {

@@ -134,8 +134,11 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		}
 		adapter := &recovery{journal: l.RecoveryJournal, api: api,
 			gate: func(a moderation.Action) bool {
-				if a.Kind == "notice" {
+				if a.Kind == "notice" || a.Kind == "card" {
 					return a.ChatID == l.adminChatID && l.adminChatID != 0
+				}
+				if a.Kind == "unban" || a.Kind == "restore" {
+					return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID)
 				}
 				return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID) &&
 					!l.SuperUsers.IsSuper("", a.IdentityID) && !isExplicitlyApproved(a.IdentityID) &&

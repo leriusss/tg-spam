@@ -39,7 +39,9 @@ func run() error {
 	}
 	// Both boolean values and unfinished work exercise the old backup/export code path.
 	p := moderation.Plan{
-		Key:          "source:-1:900001:user:7",
+		Key:    "source:-1:900001:user:7",
+		Origin: "detector", Card: true, Destination: -2,
+		SourceText: "original fixture with a quote ' and newline\nsource", UserName: "fixture",
 		ChatID:       -1,
 		MessageID:    900001,
 		IdentityID:   7,
@@ -54,6 +56,16 @@ func run() error {
 	}
 	if _, err = db.Exec(`UPDATE moderation_actions SET uncertain=TRUE WHERE kind='original_delete'`); err != nil {
 		return fmt.Errorf("offline fixture failed")
+	}
+	c, err := j.CardView(ctx, p.Key)
+	if err != nil {
+		return fmt.Errorf("offline card fixture failed")
+	}
+	if err = j.StopTarget(ctx, c, "", time.Now()); err != nil {
+		return fmt.Errorf("offline override fixture failed")
+	}
+	if err = j.Close(ctx, p.Key, 1, time.Now()); err != nil {
+		return fmt.Errorf("offline closure fixture failed")
 	}
 	fmt.Println("offline migration fixture ready; no worker/API started")
 	return nil

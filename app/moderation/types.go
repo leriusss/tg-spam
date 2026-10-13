@@ -23,6 +23,7 @@ const (
 	Expired     = "expired"
 	Manual      = "manual_review"
 	Blocked     = "blocked"
+	Canceled    = "canceled"
 	Undelivered = "notification_undelivered"
 )
 
@@ -32,17 +33,21 @@ type Limits struct{ Receipts, Actions, RetainedReceipts int }
 // DefaultLimits bounds each instance independently.
 func DefaultLimits() Limits { return Limits{Receipts: 500, Actions: 5000, RetainedReceipts: 5000} }
 
-// Plan contains validated identity/authority only, never content or Telegram credentials.
+// Plan contains validated authority and original card context; never Telegram credentials.
 type Plan struct {
-	Key                             string
-	ChatID, IdentityID, Destination int64
-	MessageID                       int
-	IdentityKind                    string
-	DeliveryChat                    int64
-	DeliveryMessage                 int
-	Learn                           bool
-	LearningOptional                bool
-	Actions                         []Action
+	CommandID                         string
+	Origin                            string
+	Card                              bool
+	SourceText, UserName, DisplayName string
+	Key                               string
+	ChatID, IdentityID, Destination   int64
+	MessageID                         int
+	IdentityKind                      string
+	DeliveryChat                      int64
+	DeliveryMessage                   int
+	Learn                             bool
+	LearningOptional                  bool
+	Actions                           []Action
 }
 
 // Action is an independent API operation; times are Unix milliseconds except MessageDate/UntilDate.
