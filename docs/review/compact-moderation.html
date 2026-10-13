@@ -2,8 +2,7 @@
 <style>body{background:#0e1621;color:#e9eef5;font:16px/1.45 Arial;margin:30px}main{display:grid;
 grid-template-columns:repeat(3,minmax(280px,1fr));gap:24px;max-width:1450px}section{min-width:0}
 h2{font-size:17px;color:#9bb2c7}article{background:#182533;border-radius:14px;padding:18px;
-white-space:pre-wrap;overflow-wrap:anywhere}a{color:#55baff;text-decoration:none}nav{display:grid;
-grid-template-columns:1fr 1fr;gap:3px;margin-top:4px}button{background:#203343;border:0;
+white-space:pre-wrap;overflow-wrap:anywhere}a{color:#55baff;text-decoration:none}nav{display:flex;flex-direction:column;gap:3px;margin-top:4px}nav div{display:flex;gap:3px}nav button{flex:1}button{background:#203343;border:0;
 color:#e9eef5;border-radius:6px;padding:12px 6px;font:14px Arial}small{color:#8da3b7}</style>
 <h1>Карточки модерации</h1><p>Синтетические примеры из Go renderer. Кнопки в этом макете не выполняют операции.</p><main><section><h2>Успех</h2><article>🛡 Спам — Балтия
 
@@ -11,19 +10,19 @@ color:#e9eef5;border-radius:6px;padding:12px 6px;font:14px Arial}small{color:#8d
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
 
 ✅ Пользователь заблокирован навсегда
-✅ Сообщение удалено</article><nav><button>Подробнее</button><button>Закрыть ручную работу</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Промежуточное состояние</h2><article>🛡 Спам — Балтия
+✅ Сообщение удалено</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div></nav></section><section><h2>Промежуточное состояние</h2><article>🛡 Спам — Балтия
 
 <a href="tg://user?id=501">Анна Примерова</a>
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
 
 ✅ Пользователь заблокирован навсегда
-⏳ Удаление ожидает выполнения</article><nav><button>Подробнее</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Автоматический повтор</h2><article>🛡 Спам — Балтия
+⏳ Удаление ожидает выполнения</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Отменить повторы</button></div></nav></section><section><h2>Автоматический повтор</h2><article>🛡 Спам — Балтия
 
 <a href="tg://user?id=501">Анна Примерова</a>
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
 
 ✅ Пользователь заблокирован навсегда
-⏳ Удаление не подтверждено. Повторим автоматически</article><nav><button>Подробнее</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Частичная очистка</h2><article>🛡 Спам — Балтия
+⏳ Удаление не подтверждено. Повторим автоматически</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Отменить повторы</button></div></nav></section><section><h2>Частичная очистка</h2><article>🛡 Спам — Балтия
 
 <a href="tg://user?id=501">Анна Примерова</a>
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
@@ -31,26 +30,54 @@ color:#e9eef5;border-radius:6px;padding:12px 6px;font:14px Arial}small{color:#8d
 ✅ Пользователь заблокирован навсегда
 ✅ Сообщение удалено
 Дополнительно удалено: 3 сообщения
-⚠️ Дополнительная очистка не завершена: 1 сообщение. Подробнее — в деталях</article><nav><button>Подробнее</button><button>Закрыть ручную работу</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Истекло окно удаления</h2><article>🛡 Спам — Балтия
+⚠️ Дополнительная очистка не завершена: 1 сообщение. Подробнее — в деталях</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Закрыть ручную работу</button></div></nav></section><section><h2>Истекло окно удаления</h2><article>🛡 Спам — Балтия
 
 <a href="tg://user?id=501">Анна Примерова</a>
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
 
 ✅ Пользователь заблокирован навсегда
-⚠️ Требуется ручное удаление: окно удаления ботом истекло</article><nav><button>Подробнее</button><button>Закрыть ручную работу</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Сообщение недоступно</h2><article>🛡 Спам — Балтия
+⚠️ Требуется ручное удаление: окно удаления ботом истекло</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Закрыть ручную работу</button></div></nav></section><section><h2>Сообщение недоступно</h2><article>🛡 Спам — Балтия
 
 <a href="tg://user?id=501">Анна Примерова</a>
 «Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
 
 ✅ Пользователь уже заблокирован
-ℹ️ Сообщение отсутствует или недоступно; удаление ботом не подтверждено</article><nav><button>Подробнее</button><button>Закрыть ручную работу</button><button>Отменить повторы</button><button>Изменить бан</button><button>Подтвердить</button></nav></section><section><h2>Подробнее</h2><article>Подробности модерации
-Оригинал: chat=123 message=701
+ℹ️ Сообщение отсутствует или недоступно; удаление ботом не подтверждено</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div></nav></section><section><h2>Успешный повторный Approve</h2><article>🛡 Спам — Балтия
+
+<a href="tg://user?id=501">Анна Примерова</a>
+«Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
+
+✅ Пользователь заблокирован навсегда
+✅ Сообщение удалено</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Закрыть ручную работу</button></div></nav></section><section><h2>После разбанивания</h2><article>🛡 Спам — Балтия
+
+<a href="tg://user?id=501">Анна Примерова</a>
+«Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
+
+✅ Блокировка снята
+✅ Сообщение удалено</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div></nav></section><section><h2>Требуется решение по жалобе</h2><article>🛡 Спам — Балтия
+
+<a href="tg://user?id=501">Анна Примерова</a>
+«Добрый день, набираем людей на временную подработку… https:​/​/​example.​com»
+
+⚠️ Результат не установлен; требуется ручная проверка</article><nav><div><button>Изменить бан</button><button>Подробнее</button></div><div><button>Закрыть ручную работу</button></div><div><button>Отклонить жалобу</button></div><div><button>Подтвердить модерацию</button></div></nav></section><section><h2>Подробнее</h2><article>Подробности модерации
+Чат: 123
+Оригинал: 701
 Объект: user ID=501
 Карточка: example
-ban message=0: confirmed; причина=; неизвестный результат=false
-ID=; попытки=0; дата=0; deadline=0; повтор=0; бан до=0
-original_delete message=0: confirmed; причина=; неизвестный результат=false
-ID=; попытки=0; дата=0; deadline=0; повтор=0; бан до=0
-Основания: map[]
-Ручных решений: 0; незавершённых решений: 0
+
+ban: failed
+Причина: telegram_403
+ID: old-ban
+Попыток: 1
+Срок выполнения: 13.10.2026 23:30:16 (Калининград)
+
+ban: confirmed
+ID: ban
+Попыток: 1
+
+original_delete: confirmed
+Сообщение: 701
+ID: delete
+Попыток: 1
+Дата сообщения: 13.10.2026 22:30:16 (Калининград)
 Отмена повторов не отменяет уже отправленный запрос. Ручное закрытие не подтверждает успех API.</article><nav><button>К карточке</button></nav></section></main>

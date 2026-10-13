@@ -268,7 +268,7 @@ func TestRecoveryConcreteCardDeliveryIncludesContextAndFactualStatuses(t *testin
 	require.Contains(t, rendered.Text, inertSpamText(c.Text))
 	require.Contains(t, rendered.Text, "Удаление ожидает выполнения")
 	require.NotNil(t, rendered.ReplyMarkup)
-	require.Contains(t, fmt.Sprint(rendered.ReplyMarkup), "Отклонить жалобу")
+	require.NotContains(t, fmt.Sprint(rendered.ReplyMarkup), "Подтвердить модерацию")
 }
 
 func TestRecoveryReportCallbackAfterStorageTTLAndInfo(t *testing.T) {

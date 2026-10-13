@@ -98,3 +98,35 @@ training/dry, отмену, reconciliation и worker.
 C compiler, локальный Docker daemon недоступен). Более широкий Windows-прогон
 выявляет ошибки Unix mount/имён backup с двоеточиями/открытых DB файлов и storage timeout;
 они не являются основанием ослаблять проверки.
+
+## State-based UI revision in PR #3
+
+Before this revision: clean feature HEAD b885999c998ef84a38afa6d6bc22c95cd9f708bb.
+Tracked source backup: Documents/Codex/backups/compact-antispam-20261013/pr3-b885999c-before-state-ui.zip.
+Rollback preserves feature commits and returns to that revision; no DB/config rollback.
+
+Buttons reflect core work, ignoring internal notification actions. A clean success has only
+Изменить бан and Подробнее. Pending/running core work exposes cancellation; unclosed manual
+records expose manual closure only when core work has settled, preserving the existing worker
+refusal to close live actions. Подтвердить модерацию requires a current actionable decision,
+no live work, no incomplete local decision and no unfinished undo. An expired known deletion
+window does not offer a pointless new approval. Existing authority checks and mutation callback
+IDs are retained. Historically failed records remain available for explicit manual closure even
+when a later approval succeeded, since success does not close the journal's manual records.
+
+The compact projection groups deletion outcomes by exact chat/message pair and membership
+operations by target. Recorded next_at ordering identifies successive worker outcomes; canceled
+future retries do not override later independent work. A later successful approval replaces the
+old failure in the compact text, and confirmed unban replaces the old ban. A pending/failed undo
+keeps the last confirmed membership fact visible. Confirmed deletion remains a fact after absent
+replay. All original rows remain unchanged; Подробнее pages through the complete action history
+(two records per page, new read-only MP callbacks bound to the same card).
+
+Detail timestamps use Europe/Kaliningrad with bundled IANA timezone data. Empty reasons and
+irrelevant zero IDs/dates are omitted; attempt count remains a relevant field even before the
+first attempt. Mutation policy, journal, retry scheduling, training and original text are unchanged.
+
+Additional tests cover exact keyboard composition and callback refs, real-journal refusal →
+Approve success → unban, preserved history and bound pagination, canceled future retries,
+manual closure, pending/undo/safety states and readable timezone-specific dates. Preview HTML/PNG
+now include successful re-approval, unban and a report requiring a new decision.

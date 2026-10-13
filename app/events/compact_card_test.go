@@ -51,8 +51,8 @@ func TestCompactCardEscapingLimitsAndPartialCleanup(t *testing.T) {
 	c := moderation.Card{DisplayName: "<Анна & Иван>", IdentityKind: "user", IdentityID: 501,
 		Text: strings.Repeat("<>& https://t.me/spam @spam example.com\n", 1000),
 		Actions: []moderation.Action{{Kind: "ban", State: moderation.Confirmed},
-			{Kind: "original_delete", State: moderation.Pending}, {Kind: "card", State: moderation.Pending},
-			{Kind: "cleanup_delete", State: moderation.Confirmed}, {Kind: "cleanup_delete", State: moderation.Absent}}}
+			{Kind: "original_delete", MessageID: 701, State: moderation.Pending}, {Kind: "card", State: moderation.Pending},
+			{Kind: "cleanup_delete", MessageID: 702, State: moderation.Confirmed}, {Kind: "cleanup_delete", MessageID: 703, State: moderation.Absent}}}
 	original := c.Text
 	text := compactCardText(c, "Балтия")
 	require.Contains(t, text, "🛡 Спам — Балтия")
@@ -103,13 +103,13 @@ func TestCompactCardDetailsAndReturnStayBound(t *testing.T) {
 	})
 	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "M?", "info")))
 	require.Contains(t, edited.Text, "ID=501")
-	require.Contains(t, edited.Text, "deadline=")
+	require.Contains(t, edited.Text, "Срок выполнения:")
 	require.Contains(t, edited.Text, "Данные детекции")
 	require.Contains(t, edited.ReplyMarkup.InlineKeyboard[0][0].Text, "К карточке")
 	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "MB", "back")))
 	require.Equal(t, tbapi.ModeHTML, edited.ParseMode)
 	require.True(t, edited.LinkPreviewOptions.IsDisabled)
-	require.NotContains(t, edited.Text, "deadline=")
+	require.NotContains(t, edited.Text, "Срок выполнения:")
 	q := cardQuery(c, "MB", "wrong")
 	q.Message.MessageID++
 	require.Error(t, a.recoveryCardCallback(q))
@@ -125,8 +125,8 @@ func TestCompactTelegramUTF16Limit(t *testing.T) {
 	}
 	c := moderation.Card{DisplayName: strings.Repeat("😀", 200), IdentityID: 501, IdentityKind: "user",
 		Text: strings.Repeat("😀<&>", 1000)}
-	for range 5000 {
-		c.Actions = append(c.Actions, moderation.Action{Kind: "original_delete", State: moderation.Expired,
+	for i := range 5000 {
+		c.Actions = append(c.Actions, moderation.Action{MessageID: i + 1, Kind: "original_delete", State: moderation.Expired,
 			MessageDate: time.Now().Add(-49 * time.Hour).Unix()})
 	}
 	markup := compactCardText(c, strings.Repeat("😀", 150))

@@ -53,7 +53,7 @@ func compactCardText(c moderation.Card, chatName string) string {
 	fmt.Fprintf(&text, "%s\n\n%s\n«%s»\n", html.EscapeString(heading), name,
 		html.EscapeString(truncateRunes(inertSpamText(c.Text), 650)))
 	deleted, remaining, shown := 0, 0, 0
-	for _, op := range c.Actions {
+	for _, op := range currentCardActions(c) {
 		if op.Kind == "card" || op.Kind == "notice" {
 			continue
 		}
@@ -120,7 +120,7 @@ func compactAction(a moderation.Action) string {
 		if a.UntilDate == 0 || a.UntilDate > time.Now().Add(366*24*time.Hour).Unix() {
 			return "✅ " + subject + " заблокирован навсегда"
 		}
-		return "✅ " + subject + " заблокирован до " + time.Unix(a.UntilDate, 0).UTC().Format("02.01.2006 15:04 UTC")
+		return "✅ " + subject + " заблокирован до " + cardDate(a.UntilDate)
 	case moderation.Pending, moderation.Running:
 		if deleting {
 			if a.State == moderation.Pending && a.Attempts > 0 && a.Attempts < 320 && a.NextAt > 0 &&
