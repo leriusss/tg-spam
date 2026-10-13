@@ -374,3 +374,45 @@ func TestRecoveryReporterConfirmationUsesCommandJournalWithoutInventedOriginal(t
 	q.Data = "R!778:701"
 	require.Error(t, r.callbackReportBanReporterConfirm(context.Background(), q))
 }
+
+func TestRecoveryFirstReportApproveRunsBanAndDelete(t *testing.T) {
+	a, _, c := cardFixture(t, "report")
+	j := recoveryJournal(t)
+	a.recovery.journal = j
+	r := &userReports{ReportConfig: ReportConfig{Storage: &mocks.ReportsMock{GetByMessageFunc: func(context.Context, int, int64) ([]storage.Report, error) {
+		return []storage.Report{{MsgID: 701, ChatID: 123, ReportedUserID: 501, ReportedUserName: "subject", MsgText: c.Text, AdminMsgID: 600}}, nil
+	}}}, recoveryAdmin: a, primChatID: 123, adminChatID: 456, bot: a.bot, locator: &mocks.LocatorMock{}}
+	q := cardQuery(c, "M+", "first-approve")
+	q.Data = "R+501:701"
+	require.NoError(t, r.callbackReportBan(context.Background(), q))
+	calls := map[string]int{}
+	w := moderation.Worker{Journal: j, Executor: executeRecoveryFunc(func(_ context.Context, op moderation.Action) moderation.Outcome {
+		calls[op.Kind]++
+		return moderation.Outcome{State: moderation.Confirmed, NotificationID: 600}
+	})}
+	for range 10 {
+		ok, err := w.Step(context.Background())
+		require.NoError(t, err)
+		if !ok {
+			break
+		}
+	}
+	require.Equal(t, 1, calls["ban"])
+	require.Equal(t, 1, calls["original_delete"])
+	require.NoError(t, r.callbackReportBan(context.Background(), q))
+	for range 10 {
+		ok, err := w.Step(context.Background())
+		require.NoError(t, err)
+		if !ok {
+			break
+		}
+	}
+	require.Equal(t, 1, calls["ban"])
+	require.Equal(t, 1, calls["original_delete"])
+}
+
+type executeRecoveryFunc func(context.Context, moderation.Action) moderation.Outcome
+
+func (f executeRecoveryFunc) Execute(ctx context.Context, a moderation.Action) moderation.Outcome {
+	return f(ctx, a)
+}

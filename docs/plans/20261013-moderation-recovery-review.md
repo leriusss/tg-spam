@@ -82,3 +82,35 @@ instrumentation. Plan registration now reads the minimal matching columns once p
 transaction, rather than issuing 50 full-row reads for a 50-action plan. Local native probe improved
 from 5.26s to 1.25s; the fixture size and the existing 180s project timeout remain unchanged. Existing
 receipt target identity is immutable, including command receipts; mismatch has a regression test.
+
+## Follow-up: explicit approval and undo identity (review of 25fec60)
+
+First ordinary report approval selects new runnable ban/delete actions instead of adopting the
+manual_report_pending_decision placeholder. Explicit operator/report approval may accept a new
+attempt after manual/failed/expired/blocked/canceled outcomes; old rows and codes remain unchanged.
+Automatic plan redelivery continues to match terminal failures and never restarts them. Confirmed
+operations and in-flight/pending operations are reused. The selected row ID is carried to demand
+registration, including newly expired actions, avoiding ambiguous matching against historical rows.
+
+Every fresh approval rechecks the existing event/adapter safety gates; actual API execution still
+requires current authorization, membership and permission checks. Delete admission recalculates the
+48h minus safety-margin deadline from Message.Date. Already expired deletes are recorded as expired
+with deadline_manual_action_required and never sent; ban remains independent. Unknown dates keep
+the documented bounded operation-horizon policy, never substituting observed_at for Message.Date.
+
+Undo identity includes the callback decision ID; exact callback redelivery is fenced by the same
+transactional decisions ledger, including after restart. New callbacks create independent undo
+attempts after success or terminal failure; target serialization remains enforced. Explicit undo
+supersedes terminal old undo work through operator-attributed resolution records, preserving old
+API states/codes; the replacement pending/failed undo continues to block subsequent bans until
+settled/resolved. Admission observes the shared action-capacity limit. No schema migration added.
+
+Regressions cover first report R+ without R-, worker ban/delete, manual/failed/expired history,
+ban/unban/new ban/second unban, failed undo then repaired confirmation, callback redelivery after
+restart and already expired delete. Existing race tests cover callback/worker overlap.
+
+Backup: Documents/Codex/backups/antispam-review2-followup-20261013/engine-25fec60.zip,
+original files and clean Git state. Code rollback: separate clean checkout at 25fec60; do not reset
+the shared working tree or restore runtime DB. Runtime rollback remains separately approved,
+recovery-disabled old binary with DB/config/compose preserved as documented above. No production
+changes, build/prune on VPS, merge or deployment performed.

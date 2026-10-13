@@ -388,3 +388,143 @@ func TestLifecycleCommandReceiptCannotChangeTarget(t *testing.T) {
 	_, _, _, err = j.Accept(testCtx, p, now)
 	require.ErrorContains(t, err, "target is immutable")
 }
+
+func TestExplicitApprovalCreatesFreshAttemptAndKeepsHistory(t *testing.T) {
+	for _, previous := range []string{Manual, Failed, Expired} {
+		t.Run(previous, func(t *testing.T) {
+			j, db := testJournal(t, DefaultLimits())
+			now := time.Now()
+			p := lifecyclePlan(3101, "report", now)
+			for i := range p.Actions {
+				p.Actions[i].State = Manual
+				p.Actions[i].Code = "manual_report_pending_decision"
+			}
+			accept(t, j, p, now)
+			_, err := db.Exec("UPDATE moderation_actions SET state=?,code='old_result' WHERE kind NOT IN ('notice','card')", previous)
+			require.NoError(t, err)
+			c, err := j.CardView(testCtx, p.Key)
+			require.NoError(t, err)
+			fresh, err := j.Decide(testCtx, "approve-first", c, "approve_report", 42, now.Add(time.Second))
+			require.NoError(t, err)
+			require.True(t, fresh)
+			require.NoError(t, j.EndDecision(testCtx, "approve-first"))
+			restarted, err := NewJournal(testCtx, db, DefaultLimits())
+			require.NoError(t, err)
+			fresh, err = restarted.Decide(testCtx, "approve-first", c, "approve_report", 42, now.Add(2*time.Second))
+			require.NoError(t, err)
+			require.False(t, fresh)
+			calls := map[string]int{}
+			w := Worker{Journal: restarted, Now: func() time.Time { return now.Add(2 * time.Second) }, Executor: executeFunc(func(_ context.Context, a Action) Outcome {
+				calls[a.Kind]++
+				return Outcome{State: Confirmed, NotificationID: 990}
+			})}
+			drive(t, &w)
+			require.Equal(t, 1, calls["ban"])
+			require.Equal(t, 1, calls["original_delete"])
+			c, err = restarted.CardView(testCtx, p.Key)
+			require.NoError(t, err)
+			old := 0
+			for _, a := range c.Actions {
+				if a.Code == "old_result" {
+					old++
+					require.Equal(t, previous, a.State)
+				}
+			}
+			require.Equal(t, 2, old)
+		})
+	}
+}
+
+func TestExplicitUndoIdentityAcrossDecisionsAndRestart(t *testing.T) {
+	for _, undoResult := range []string{Confirmed, Failed} {
+		t.Run(undoResult, func(t *testing.T) {
+			j, db := testJournal(t, DefaultLimits())
+			now := time.Now()
+			p := lifecyclePlan(3201, "detector", now)
+			accept(t, j, p, now)
+			calls := map[string]int{}
+			failUndo := false
+			w := Worker{Journal: j, Now: func() time.Time { return now }, Executor: executeFunc(func(_ context.Context, a Action) Outcome {
+				calls[a.Kind]++
+				if a.Kind == "unban" && failUndo {
+					return Outcome{State: Failed, Code: "telegram_403"}
+				}
+				return Outcome{State: Confirmed, NotificationID: 991}
+			})}
+			drive(t, &w)
+			decide := func(id, verb string) {
+				t.Helper()
+				now = now.Add(time.Second)
+				c, err := j.CardView(testCtx, p.Key)
+				require.NoError(t, err)
+				fresh, err := j.Decide(testCtx, id, c, verb, 42, now)
+				require.NoError(t, err)
+				require.True(t, fresh)
+				require.NoError(t, j.EndDecision(testCtx, id))
+				drive(t, &w)
+			}
+			failUndo = undoResult == Failed
+			decide("undo-one", "unban")
+			j2, err := NewJournal(testCtx, db, DefaultLimits())
+			require.NoError(t, err)
+			j = j2
+			w.Journal = j
+			c, err := j.CardView(testCtx, p.Key)
+			require.NoError(t, err)
+			fresh, err := j.Decide(testCtx, "undo-one", c, "unban", 42, now)
+			require.NoError(t, err)
+			require.False(t, fresh)
+			failUndo = false
+			if undoResult == Confirmed {
+				decide("ban-two", "approve")
+			}
+			decide("undo-two", "unban")
+			require.Equal(t, 2, calls["unban"])
+			if undoResult == Confirmed {
+				require.Equal(t, 2, calls["ban"])
+			}
+			c, err = j.CardView(testCtx, p.Key)
+			require.NoError(t, err)
+			undoCount := 0
+			for _, a := range c.Actions {
+				if a.Kind == "unban" {
+					undoCount++
+					if a.State == Failed {
+						require.Equal(t, "telegram_403", a.Code)
+					}
+				}
+			}
+			require.Equal(t, 2, undoCount)
+		})
+	}
+}
+
+func TestExplicitApprovalRechecksDeleteDeadline(t *testing.T) {
+	j, _ := testJournal(t, DefaultLimits())
+	now := time.Now()
+	p := lifecyclePlan(3301, "report", now)
+	p.Actions[1].MessageDate = now.Add(-49 * time.Hour).Unix()
+	p.Actions[1].State = Manual
+	accept(t, j, p, now)
+	c, err := j.CardView(testCtx, p.Key)
+	require.NoError(t, err)
+	_, err = j.Decide(testCtx, "expired-approval", c, "approve_report", 42, now.Add(time.Second))
+	require.NoError(t, err)
+	require.NoError(t, j.EndDecision(testCtx, "expired-approval"))
+	deletes := 0
+	w := Worker{Journal: j, Now: func() time.Time { return now.Add(2 * time.Second) }, Executor: executeFunc(func(_ context.Context, a Action) Outcome {
+		if deleteKind(a.Kind) {
+			deletes++
+		}
+		return Outcome{State: Confirmed, NotificationID: 992}
+	})}
+	drive(t, &w)
+	require.Zero(t, deletes)
+	c, err = j.CardView(testCtx, p.Key)
+	require.NoError(t, err)
+	expired := false
+	for _, a := range c.Actions {
+		expired = expired || (a.Kind == "original_delete" && a.State == Expired && a.Code == "deadline_manual_action_required")
+	}
+	require.True(t, expired)
+}

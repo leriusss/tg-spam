@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -90,6 +91,7 @@ func (j *Journal) matching(ctx context.Context, tx journalTx, p Plan, a Action, 
 	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(q), j.db.GID(), p.Key, a.Kind, a.Kind, a.MessageID); err != nil {
 		return Action{}, false, journalError(err)
 	}
+	a.ID = "" // Admission compares desired semantics; only registration uses the selected row ID.
 	return j.matchRows(ctx, tx, p, a, rows, now)
 }
 
@@ -97,6 +99,14 @@ func (j *Journal) matchRows(
 	ctx context.Context, tx journalTx, p Plan, a Action, rows []Action, now time.Time,
 ) (Action, bool, error) {
 	for _, old := range rows {
+		if a.ID != "" && old.ID == a.ID {
+			return old, true, nil
+		}
+		// Explicit approval is a new demand, not an automatic retry of a terminal result.
+		if (strings.HasPrefix(p.Origin, "operator:") || strings.HasPrefix(p.Origin, "report:approval:")) &&
+			old.State != Pending && old.State != Running && old.State != Confirmed {
+			continue
+		}
 		if old.MessageID != a.MessageID || old.Kind != a.Kind && (!deleteKind(old.Kind) || !deleteKind(a.Kind)) {
 			continue
 		}
@@ -134,17 +144,18 @@ func (j *Journal) mergePlan(ctx context.Context, tx journalTx, p Plan, now time.
 	if err := tx.GetContext(ctx, &queued, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND kind NOT IN ('notice','card') AND state IN ('pending','running')`), j.db.GID()); err != nil {
 		return journalError(err)
 	}
-	for _, a := range p.Actions {
+	for i, a := range p.Actions {
 		if a.ChatID != p.ChatID || a.IdentityID != p.IdentityID || a.IdentityKind != p.IdentityKind ||
 			(!deleteKind(a.Kind) && a.Kind != "ban" && a.Kind != "restrict") ||
 			deleteKind(a.Kind) && a.MessageID <= 0 && a.State != Manual {
 			return errors.New("invalid appended action authority")
 		}
-		_, exists, err := j.matching(ctx, tx, p, a, now)
+		matched, exists, err := j.matching(ctx, tx, p, a, now)
 		if err != nil {
 			return err
 		}
 		if exists {
+			p.Actions[i].ID = matched.ID
 			continue
 		}
 		a.ID = actionKey(p.Key, a)
@@ -155,6 +166,7 @@ func (j *Journal) mergePlan(ctx context.Context, tx journalTx, p Plan, now time.
 		if collision > 0 {
 			a.ID += ":" + token()
 		}
+		p.Actions[i].ID = a.ID
 		a.Receipt = p.Key
 		a.NextAt = now.UnixMilli()
 		a.Deadline = now.Add(24 * time.Hour).UnixMilli()
@@ -180,6 +192,10 @@ func (j *Journal) mergePlan(ctx context.Context, tx journalTx, p Plan, now time.
 			if a.Kind == "cleanup_delete" {
 				a.Code = "cleanup_capacity_manual_required"
 			}
+		}
+		if a.State == Pending && !now.Add(15*time.Second).Before(time.UnixMilli(a.Deadline)) {
+			a.State = Expired
+			a.Code = "deadline_manual_action_required"
 		}
 		if a.State == Pending {
 			queued++
@@ -560,9 +576,9 @@ func (j *Journal) closeTX(ctx context.Context, tx journalTx, receipt string, ope
 // Later independent originals retain their policy; explicit approval/trust still gates them.
 // Running effects remain recorded; an unban waits behind all running bans for the same target.
 func (j *Journal) StopTarget(ctx context.Context, c Card, unbanKind string, now time.Time) error {
-	return j.transaction(ctx, func(tx journalTx) error { return j.stopTargetTX(ctx, tx, c, unbanKind, now) })
+	return j.transaction(ctx, func(tx journalTx) error { return j.stopTargetTX(ctx, tx, c, unbanKind, token(), now) })
 }
-func (j *Journal) stopTargetTX(ctx context.Context, tx journalTx, c Card, unbanKind string, now time.Time) error {
+func (j *Journal) stopTargetTX(ctx context.Context, tx journalTx, c Card, unbanKind, decisionID string, now time.Time) error {
 	if err := j.exec(ctx, tx, `INSERT INTO moderation_holds VALUES (?,?,?,?) ON CONFLICT(gid,chat_id,identity_id) DO NOTHING`, j.db.GID(), c.ChatID, c.IdentityID, now.UnixMilli()); err != nil {
 		return err
 	}
@@ -588,12 +604,19 @@ func (j *Journal) stopTargetTX(ctx context.Context, tx journalTx, c Card, unbanK
 		if unbanKind != "unban" && unbanKind != "restore" {
 			return errors.New("invalid undo action")
 		}
-		id := c.Receipt + ":" + unbanKind
+		id := c.Receipt + ":" + unbanKind + ":" + decisionID
 		var exists int
 		if err := tx.GetContext(ctx, &exists, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND id=?`), j.db.GID(), id); err != nil {
 			return journalError(err)
 		}
 		if exists == 0 {
+			var queued int
+			if err := tx.GetContext(ctx, &queued, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND kind NOT IN ('notice','card') AND state IN ('pending','running')`), j.db.GID()); err != nil {
+				return journalError(err)
+			}
+			if queued >= j.limits.Actions {
+				return ErrCapacity
+			}
 			a := Action{
 				ID:           id,
 				Receipt:      c.Receipt,
@@ -652,9 +675,13 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 		case "reject_report":
 			return j.withdrawTX(ctx, tx, c.Receipt, "report", now)
 		case "cancel":
-			return j.stopTargetTX(ctx, tx, c, "", now)
+			return j.stopTargetTX(ctx, tx, c, "", id, now)
 		case "unban", "restore":
-			return j.stopTargetTX(ctx, tx, c, verb, now)
+			// A new explicit undo supersedes terminal undo work, preserving its API outcome.
+			if e := j.exec(ctx, tx, `INSERT INTO moderation_resolutions SELECT gid,id,receipt,?,? FROM moderation_actions WHERE gid=? AND chat_id=? AND identity_id=? AND kind IN ('unban','restore') AND state IN ('failed','manual_review','expired') ON CONFLICT(gid,action_id) DO NOTHING`, operator, now.UnixMilli(), j.db.GID(), c.ChatID, c.IdentityID); e != nil {
+				return e
+			}
+			return j.stopTargetTX(ctx, tx, c, verb, id, now)
 		case "close":
 			return j.closeTX(ctx, tx, c.Receipt, operator, now)
 		case "approve", "approve_report":
