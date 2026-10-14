@@ -46,7 +46,7 @@ func TestAdmin_reportBan(t *testing.T) {
 		assert.Contains(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text, "permanently banned [testUser](tg://user?id=456)")
 		assert.Contains(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text, "Test  \\_message\\_")
 		assert.NotNil(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).ReplyMarkup)
-		assert.Equal(t, "⛔︎ change ban",
+		assert.Equal(t, "Изменить бан",
 			mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).ReplyMarkup.(tbapi.InlineKeyboardMarkup).InlineKeyboard[0][0].Text)
 	})
 
@@ -60,7 +60,7 @@ func TestAdmin_reportBan(t *testing.T) {
 		assert.Contains(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text, "permanently banned [test\\_User](tg://user?id=456)")
 		assert.Contains(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text, "Test  \\_message\\_")
 		assert.NotNil(t, mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).ReplyMarkup)
-		assert.Equal(t, "⛔︎ change ban",
+		assert.Equal(t, "Изменить бан",
 			mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).ReplyMarkup.(tbapi.InlineKeyboardMarkup).InlineKeyboard[0][0].Text)
 	})
 
@@ -1191,7 +1191,7 @@ func TestAdmin_MsgHandlerWithEmptyText(t *testing.T) {
 			err := adminHandler.MsgHandler(update)
 			require.NoError(t, err)
 
-			// Unsupported media and supported media without a stable FileUniqueID fail
+			// unsupported media and supported media without a stable FileUniqueID fail
 			// closed with admin feedback and without moderation side effects.
 			assert.Empty(t, mockAPI.RequestCalls())
 			assert.Empty(t, botMock.UpdateSpamCalls())
@@ -1497,7 +1497,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		err := adm.MsgHandler(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
-		// An origin without stable numeric identity is not allowed to trust a
+		// an origin without stable numeric identity is not allowed to trust a
 		// content-only locator hit.
 		assert.Empty(t, locatorMock.MessageCalls())
 

@@ -89,7 +89,7 @@ func TestRecoveryLostBanResponseReconcilesWithoutReban(t *testing.T) {
 	require.Equal(t, moderation.Confirmed, out.State)
 	require.Equal(t, "reconciled_membership", out.Code)
 	require.Equal(t, 1, calls)
-	// Sender-chat state is not queryable: do not blindly replay its uncertain ban.
+	// sender-chat state is not queryable: do not blindly replay its uncertain ban.
 	r.api = recoveryAPIFunc(func(_ context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
 		require.IsType(t, tbapi.ChatInfoConfig{}, c)
 		return apiOK(tbapi.ChatFullInfo{Chat: tbapi.Chat{ID: -7, Type: "channel"}}), nil
@@ -232,7 +232,7 @@ func TestRecoveryAutomaticUsesSameJournalAndTrainingStaysLegacy(t *testing.T) {
 		}
 	}
 	require.Len(t, sources, 1)
-	// Training remains outside durable destructive admission and keeps its existing buttons.
+	// training remains outside durable destructive admission and keeps its existing buttons.
 	trainingL, trainingAPI, b, _, trainingUpdate := trainingReportFixture(t, false)
 	l, api, update = trainingL, trainingAPI, trainingUpdate
 	l.RecoveryJournal = recoveryJournal(t)
@@ -244,7 +244,7 @@ func TestRecoveryAutomaticUsesSameJournalAndTrainingStaysLegacy(t *testing.T) {
 	require.NotNil(t, msg.ReplyMarkup)
 	markup, err := json.Marshal(msg.ReplyMarkup)
 	require.NoError(t, err)
-	require.Contains(t, string(markup), "review detection")
+	require.Contains(t, string(markup), "Проверить детекцию")
 	require.Empty(t, b.UpdateSpamCalls())
 	rows, err = l.RecoveryJournal.Snapshot(context.Background())
 	require.NoError(t, err)
@@ -253,6 +253,8 @@ func TestRecoveryAutomaticUsesSameJournalAndTrainingStaysLegacy(t *testing.T) {
 
 func TestRecoveryNotificationLostAckAndKnownMessageEdit(t *testing.T) {
 	j := recoveryJournal(t)
+	_, _, _, err := j.Accept(context.Background(), moderation.Plan{Key: "source:123:701:user:501", MessageID: 701, ChatID: 123, IdentityID: 501, IdentityKind: "user", Destination: -900, Actions: []moderation.Action{{Kind: "original_delete", ChatID: 123, IdentityID: 501, IdentityKind: "user", MessageID: 701, State: moderation.Manual}}}, time.Now())
+	require.NoError(t, err)
 	r := &recovery{
 		journal: j,
 		gate:    func(moderation.Action) bool { return true },

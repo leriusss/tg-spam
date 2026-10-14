@@ -93,8 +93,8 @@ func TestRecoveryCardLearningUsesStoredOriginalAndSafeButtons(t *testing.T) {
 	require.True(t, c.Held)
 	text := cardText(c)
 	require.Contains(t, text, "original text")
-	require.Contains(t, text, "pending")
-	require.Contains(t, text, "cannot undo an in-flight request")
+	require.Contains(t, text, "ожидает выполнения")
+	require.Contains(t, text, "Повторы отменены")
 	require.NotContains(t, text, "successfully banned")
 	keyboard := cardKeyboard(c, false)
 	for _, row := range keyboard.InlineKeyboard {
@@ -161,7 +161,7 @@ func TestRecoveryReportRejectAndApproveUseJournal(t *testing.T) {
 		}
 	}
 	require.True(t, permanent)
-	// Callback path sends only an acknowledgement, no ban/delete API outside the journal.
+	// callback path sends only an acknowledgement, no ban/delete API outside the journal.
 }
 
 func TestRecoveryCallbackWorkerCompetitionAndUnknownResult(t *testing.T) {
@@ -264,11 +264,11 @@ func TestRecoveryConcreteCardDeliveryIncludesContextAndFactualStatuses(t *testin
 			require.Equal(t, moderation.Confirmed, out.State)
 		}
 	}
-	require.Contains(t, rendered.Text, "identity=501")
-	require.Contains(t, rendered.Text, c.Text)
-	require.Contains(t, rendered.Text, "ban message=0: pending")
+	require.NotContains(t, rendered.Text, "identity=501")
+	require.Contains(t, rendered.Text, inertSpamText(c.Text))
+	require.Contains(t, rendered.Text, "Удаление ожидает выполнения")
 	require.NotNil(t, rendered.ReplyMarkup)
-	require.Contains(t, fmt.Sprint(rendered.ReplyMarkup), "Reject report only")
+	require.NotContains(t, fmt.Sprint(rendered.ReplyMarkup), "Подтвердить модерацию")
 }
 
 func TestRecoveryReportCallbackAfterStorageTTLAndInfo(t *testing.T) {
@@ -300,8 +300,8 @@ func TestRecoveryReportCallbackAfterStorageTTLAndInfo(t *testing.T) {
 		return apiOK(true), nil
 	})
 	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "M?", "info")))
-	require.Contains(t, edited, c.Text)
-	require.Contains(t, edited, "Original detection results")
+	require.NotContains(t, edited, c.Text)
+	require.Contains(t, edited, "Данные детекции")
 	require.Contains(t, edited, "canceled")
 	require.Empty(t, a.bot.(*mocks.BotMock).UpdateSpamCalls())
 	require.Empty(t, a.bot.(*mocks.BotMock).UpdateHamCalls())

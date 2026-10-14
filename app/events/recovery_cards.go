@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,54 +14,72 @@ import (
 	"github.com/umputun/tg-spam/app/storage"
 )
 
-func cardText(c moderation.Card) string {
+func cardDetails(c moderation.Card) string {
 	var text strings.Builder
-	scope := "exact original"
-	if strings.HasPrefix(c.Receipt, "delivery:") {
-		scope = "delivery-scoped locator candidate; exact original identity unavailable"
+	text.WriteString("Подробности модерации\n")
+	if c.ChatID != 0 {
+		fmt.Fprintf(&text, "Чат: %d\n", c.ChatID)
 	}
-	if strings.HasPrefix(c.Receipt, "command:") {
-		scope = "admin command; original message ID unavailable"
+	if c.MessageID > 0 {
+		fmt.Fprintf(&text, "Оригинал: %d\n", c.MessageID)
 	}
-	fmt.Fprintf(&text, "Scope: %s\n", scope)
-	fmt.Fprintf(
-		&text,
-		"Moderation for %s %s (identity=%d, kind=%s)\nsource chat=%d message=%d\n\nOriginal text:\n%s\n\nFactual results:\n",
-		c.DisplayName,
-		c.UserName,
-		c.IdentityID,
-		c.IdentityKind,
-		c.ChatID,
-		c.MessageID,
-		truncateRunes(c.Text, 1800),
-	)
-	for i, a := range c.Actions {
+	if c.IdentityID != 0 {
+		fmt.Fprintf(&text, "Объект: %s ID=%d\n", c.IdentityKind, c.IdentityID)
+	}
+	if c.Ref != "" {
+		fmt.Fprintf(&text, "Карточка: %s\n", c.Ref)
+	}
+	if strings.HasPrefix(c.Receipt, "delivery:") || strings.HasPrefix(c.Receipt, "command:") {
+		text.WriteString("Точный оригинал не установлен\n")
+	}
+	for i, op := range c.Actions {
 		if i >= 12 {
-			fmt.Fprintf(&text, "%d further action results in journal\n", len(c.Actions)-i)
+			fmt.Fprintf(&text, "Ещё операций в журнале: %d\n", len(c.Actions)-i)
 			break
 		}
-		fmt.Fprintf(&text, "%s message=%d: %s (%s), uncertain=%t\n", a.Kind, a.MessageID, a.State, a.Code, a.Uncertain)
+		fmt.Fprintf(&text, "\n%s: %s\n", op.Kind, op.State)
+		if op.MessageID > 0 {
+			fmt.Fprintf(&text, "Сообщение: %d\n", op.MessageID)
+		}
+		if op.Code != "" {
+			fmt.Fprintf(&text, "Причина: %s\n", op.Code)
+		}
+		if op.Uncertain {
+			text.WriteString("Результат не подтверждён\n")
+		}
+		if op.ID != "" {
+			fmt.Fprintf(&text, "ID: %s\n", op.ID)
+		}
+		fmt.Fprintf(&text, "Попыток: %d\n", op.Attempts)
+		if op.MessageDate > 0 {
+			fmt.Fprintf(&text, "Дата сообщения: %s\n", cardDate(op.MessageDate))
+		}
+		if op.Deadline > 0 {
+			fmt.Fprintf(&text, "Срок выполнения: %s\n", cardDate(op.Deadline/1000))
+		}
+		if (op.State == moderation.Pending || op.State == moderation.Running) && op.NextAt > 0 {
+			fmt.Fprintf(&text, "Следующее выполнение: %s\n", cardDate(op.NextAt/1000))
+		}
+		if (op.Kind == "ban" || op.Kind == "restrict") && op.UntilDate > 0 {
+			fmt.Fprintf(&text, "Запрошено до: %s\n", cardDate(op.UntilDate))
+		}
+
 	}
-	fmt.Fprintf(
-		&text,
-		"Explicit operator resolutions: %d; unfinished local decisions: %d\n",
-		len(c.Resolved),
-		c.IncompleteDecisions,
-	)
-	originState := map[string]bool{}
+	origins := map[string]bool{}
 	for _, d := range c.Origins {
-		originState[d.Origin] = originState[d.Origin] || d.Active
+		origins[d.Origin] = origins[d.Origin] || d.Active
 	}
-	fmt.Fprintf(&text, "Authorities: %v\n", originState)
-	if c.Held {
-		text.WriteString("Earlier authorities remain stopped. New independent requirements are separate; " +
-			"unfinished undo must settle first.\n")
+	if len(origins) > 0 {
+		fmt.Fprintf(&text, "Основания: %v\n", origins)
 	}
-	text.WriteString(
-		"Running/unknown requests may already have reached Telegram; withdrawal cannot undo an in-flight request. " +
-			"Manual closure records operator resolution, not API success.",
-	)
-	return truncateRunes(text.String(), 3900)
+	if len(c.Resolved) > 0 {
+		fmt.Fprintf(&text, "Ручных решений: %d\n", len(c.Resolved))
+	}
+	if c.IncompleteDecisions > 0 {
+		fmt.Fprintf(&text, "Незавершённых решений: %d\n", c.IncompleteDecisions)
+	}
+	text.WriteString("Отмена повторов не отменяет уже отправленный запрос. Ручное закрытие не подтверждает успех API.")
+	return truncateTelegramText(text.String(), 2800)
 }
 
 func truncateRunes(s string, n int) string {
@@ -72,37 +91,30 @@ func truncateRunes(s string, n int) string {
 }
 
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
-	rows := [][]tbapi.InlineKeyboardButton{
-		tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Info", "M?:"+c.Ref)),
+	live, manual, decision, _ := cardWork(c)
+	rows := [][]tbapi.InlineKeyboardButton{}
+	main := []tbapi.InlineKeyboardButton{}
+	if allowed {
+		main = append(main, tbapi.NewInlineKeyboardButtonData("Изменить бан", "MA:"+c.Ref))
 	}
-	live := false
-	for _, a := range c.Actions {
-		live = live || a.State == moderation.Pending || a.State == moderation.Running
+	main = append(main, tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref))
+	rows = append(rows, main)
+	if allowed && live {
+		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Отменить повторы", "M-:"+c.Ref)))
 	}
-	if !live {
-		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Close manual work", "MC:"+c.Ref)))
+	if manual && !live {
+		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Закрыть ручную работу", "MC:"+c.Ref)))
 	}
-	if !allowed {
-		return tbapi.InlineKeyboardMarkup{InlineKeyboard: rows}
-	}
-	rows = append(
-		rows,
-		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("Cancel retries", "M-:"+c.Ref),
-			tbapi.NewInlineKeyboardButtonData("Unban / restore", "MA:"+c.Ref),
-		),
-	)
 	report := false
 	for _, d := range c.Origins {
-		report = report || (d.Origin == "report" || strings.HasPrefix(d.Origin, "report:"))
+		report = report || d.Active && (d.Origin == "report" || strings.HasPrefix(d.Origin, "report:"))
 	}
-	if report {
-		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Reject report only", "MR:"+c.Ref)))
+	if allowed && report && decision {
+		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Отклонить жалобу", "MR:"+c.Ref)))
 	}
-	if allowed {
-		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Approve moderation", "M+:"+c.Ref)))
+	if allowed && decision {
+		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подтвердить модерацию", "M+:"+c.Ref)))
 	}
-
 	return tbapi.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
@@ -133,11 +145,15 @@ func (r *recovery) notifyCard(ctx context.Context, a moderation.Action) moderati
 	buttons := cardKeyboard(c, allowed)
 	var req tbapi.Chattable
 	if a.NotificationID > 0 {
-		m := tbapi.NewEditMessageText(a.ChatID, a.NotificationID, cardText(c))
+		m := tbapi.NewEditMessageText(a.ChatID, a.NotificationID, compactCardText(c, r.chatName))
+		m.ParseMode = tbapi.ModeHTML
+		m.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
 		m.ReplyMarkup = &buttons
 		req = m
 	} else {
-		m := tbapi.NewMessage(a.ChatID, cardText(c))
+		m := tbapi.NewMessage(a.ChatID, compactCardText(c, r.chatName))
+		m.ParseMode = tbapi.ModeHTML
+		m.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
 		m.ReplyMarkup = buttons
 		req = m
 	}
@@ -183,6 +199,13 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	if !bound {
 		return fmt.Errorf("callback is not bound to this moderation card")
 	}
+	if pageText, historyPage := strings.CutPrefix(parts[0], "MP"); historyPage {
+		page, parseErr := strconv.Atoi(pageText)
+		if parseErr != nil || page < 0 || page >= max(1, (len(c.Actions)+1)/2) {
+			return fmt.Errorf("invalid history page")
+		}
+		return a.recoveryCardInfoPage(ctx, q, c, page)
+	}
 	verb := ""
 	switch parts[0] {
 	case "MA":
@@ -191,8 +214,8 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 		}
 		buttons := tbapi.NewInlineKeyboardMarkup(
 			tbapi.NewInlineKeyboardRow(
-				tbapi.NewInlineKeyboardButtonData("Confirm unban / restore", "MU:"+c.Ref),
-				tbapi.NewInlineKeyboardButtonData("Back to info", "M?:"+c.Ref),
+				tbapi.NewInlineKeyboardButtonData("Подтвердить", "MU:"+c.Ref),
+				tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref),
 			),
 		)
 		_, e := a.recovery.api.RequestWithContext(ctx, tbapi.NewEditMessageReplyMarkup(q.Message.Chat.ID, q.Message.MessageID, buttons))
@@ -202,6 +225,8 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 		return nil
 	case "M?":
 		return a.recoveryCardInfo(ctx, q, c)
+	case "MB":
+		return a.recoveryCardDisplay(ctx, q, c)
 	case "M+":
 		verb = "approve"
 		for _, d := range c.Origins {
@@ -267,7 +292,7 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	return a.answerRecoveryCallback(
 		ctx,
 		q,
-		"Decision recorded; actual API results follow. In-flight requests cannot be recalled",
+		"Решение записано. Карточка обновится после выполнения",
 	)
 }
 
@@ -343,7 +368,7 @@ func (r *userReports) recoveryReportDecision(ctx context.Context, q *tbapi.Callb
 			return fmt.Errorf("bind report card: %w", err)
 		}
 	} else {
-		// Report-storage TTL must not invalidate the durable original context.
+		// report-storage TTL must not invalidate the durable original context.
 		if contextErr != nil {
 			return fmt.Errorf("no durable report context")
 		}
@@ -395,12 +420,24 @@ func (r *userReports) recoveryReportDecision(ctx context.Context, q *tbapi.Callb
 	return a.answerRecoveryCallback(
 		ctx,
 		q,
-		"Report decision recorded; independent detector actions remain. In-flight effects may already have occurred",
+		"Решение по жалобе записано. Независимые действия сохраняются",
 	)
 }
 
 func (a *admin) recoveryCardInfo(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card) error {
-	details := []string{"Original detection results:"}
+	return a.recoveryCardInfoPage(ctx, q, c, 0)
+}
+
+func (a *admin) recoveryCardInfoPage(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card, page int) error {
+	pageCard := c
+	start := min(page*2, len(c.Actions))
+	pageCard.Actions = c.Actions[start:min(start+2, len(c.Actions))]
+	history := cardDetails(pageCard)
+	pages := max(1, (len(c.Actions)+1)/2)
+	if pages > 1 {
+		history += fmt.Sprintf("\nИстория: страница %d из %d", page+1, pages)
+	}
+	details := []string{"Данные детекции:"}
 	if a.locator != nil {
 		if info, found := a.locator.Spam(ctx, c.IdentityID); found {
 			for _, check := range info.Checks {
@@ -409,12 +446,12 @@ func (a *admin) recoveryCardInfo(ctx context.Context, q *tbapi.CallbackQuery, c 
 		}
 	}
 	if len(details) == 1 {
-		details = append(details, "Detection evidence unavailable; original context and API results retained in journal")
+		details = append(details, "Данные детекции недоступны; результаты сохранены в журнале")
 	}
 	msg := tbapi.NewEditMessageText(
 		q.Message.Chat.ID,
 		q.Message.MessageID,
-		truncateRunes(cardText(c)+"\n\n"+strings.Join(details, "\n"), 4000),
+		truncateTelegramText(history+"\n\n"+inertSpamText(strings.Join(details, "\n")), 4000),
 	)
 	authority := moderation.Action{
 		Kind:         "ban",
@@ -424,12 +461,25 @@ func (a *admin) recoveryCardInfo(ctx context.Context, q *tbapi.CallbackQuery, c 
 		MessageID:    c.MessageID,
 	}
 	buttons := cardKeyboard(c, a.recovery.gate == nil || a.recovery.gate(authority))
+	back := tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("К карточке", "MB:"+c.Ref))
+	buttons.InlineKeyboard = append([][]tbapi.InlineKeyboardButton{back}, buttons.InlineKeyboard...)
+	navigation := []tbapi.InlineKeyboardButton{}
+	if page > 0 {
+		navigation = append(navigation, tbapi.NewInlineKeyboardButtonData("← Предыдущие", fmt.Sprintf("MP%d:%s", page-1, c.Ref)))
+	}
+	if page+1 < pages {
+		navigation = append(navigation, tbapi.NewInlineKeyboardButtonData("Следующие →", fmt.Sprintf("MP%d:%s", page+1, c.Ref)))
+	}
+	if len(navigation) > 0 {
+		buttons.InlineKeyboard = append(buttons.InlineKeyboard, navigation)
+	}
+	msg.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
 	msg.ReplyMarkup = &buttons
 	_, err := a.recovery.api.RequestWithContext(ctx, msg)
 	if err != nil {
 		return fmt.Errorf("card info delivery: %w", err)
 	}
-	return a.answerRecoveryCallback(ctx, q, "Original context and current recorded results shown")
+	return a.answerRecoveryCallback(ctx, q, "Показаны подробности")
 }
 
 func (a *admin) recoveryLegacyCallback(q *tbapi.CallbackQuery) error {
@@ -503,7 +553,7 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 		return r.recoveryAdmin.answerRecoveryCallback(
 			ctx,
 			q,
-			"Reporter decision already recorded; actual results in its card",
+			"Решение уже записано; результаты — в карточке",
 		)
 	}
 	reports, err := r.Storage.GetByMessage(ctx, msgID, r.primChatID)
@@ -524,7 +574,7 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 	if !found || uid <= 0 || r.superUsers.IsSuper(name, uid) {
 		return fmt.Errorf("reporter target safety gate")
 	}
-	// This command does not know the reporter's original message ID. Never assign the reported user's ID to it.
+	// this command does not know the reporter's original message ID. Never assign the reported user's ID to it.
 	p := moderation.Plan{
 		Key:          key,
 		CommandID:    q.ID,
@@ -562,7 +612,7 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 		if err = j.Activate(ctx, id, owner, time.Now(), true); err != nil {
 			return fmt.Errorf("activate reporter moderation: %w", err)
 		}
-		// Withdrawal of the false complaint is independent of the ban API result.
+		// withdrawal of the false complaint is independent of the ban API result.
 		if err = r.Storage.DeleteReporter(ctx, uid, msgID, r.primChatID); err != nil {
 			if len(reports) > 0 {
 				_ = j.Withdraw(ctx, fmt.Sprintf("source:%d:%d:user:%d", r.primChatID, msgID, reports[0].ReportedUserID), "report", time.Now())
@@ -582,6 +632,29 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 	return r.recoveryAdmin.answerRecoveryCallback(
 		ctx,
 		q,
-		"Reporter moderation recorded; ban API results follow in a separate card",
+		"Решение записано; результаты появятся в карточке",
 	)
+}
+
+func (a *admin) recoveryCardDisplay(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card) error {
+	authority := moderation.Action{Kind: "ban", ChatID: c.ChatID, IdentityID: c.IdentityID,
+		IdentityKind: c.IdentityKind, MessageID: c.MessageID}
+	allowed := a.recovery.gate == nil || a.recovery.gate(authority)
+	if a.recovery.superName != nil && a.recovery.superName(c.UserName, c.IdentityID) {
+		allowed = false
+	}
+	for _, op := range c.Actions {
+		if op.State == moderation.Blocked {
+			allowed = false
+		}
+	}
+	buttons := cardKeyboard(c, allowed)
+	msg := tbapi.NewEditMessageText(q.Message.Chat.ID, q.Message.MessageID, compactCardText(c, a.recovery.chatName))
+	msg.ParseMode = tbapi.ModeHTML
+	msg.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
+	msg.ReplyMarkup = &buttons
+	if _, err := a.recovery.api.RequestWithContext(ctx, msg); err != nil {
+		return fmt.Errorf("compact card delivery: %w", err)
+	}
+	return a.answerRecoveryCallback(ctx, q, "Показана карточка")
 }

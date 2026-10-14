@@ -818,15 +818,15 @@ func (a *admin) InlineCallbackHandler(query *tbapi.CallbackQuery) error {
 func (a *admin) callbackAskBanConfirmation(query *tbapi.CallbackQuery) error {
 	callbackData := query.Data
 
-	keepBanned := "Keep it banned"
+	keepBanned := "Оставить блокировку"
 	if a.trainingMode {
-		keepBanned = "Confirm ban"
+		keepBanned = "Подтвердить"
 	}
 
 	// replace button with confirmation/rejection buttons
 	confirmationKeyboard := tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
-			tbapi.NewInlineKeyboardButtonData("Unban for real", callbackData[1:]),     // remove "?" prefix
+			tbapi.NewInlineKeyboardButtonData("Подтвердить", callbackData[1:]),        // remove "?" prefix
 			tbapi.NewInlineKeyboardButtonData(keepBanned, banPrefix+callbackData[1:]), // set "+" prefix
 		),
 	)
@@ -1159,9 +1159,9 @@ func (a *admin) sendWithUnbanMarkup(text, action string, user bot.User, msgID in
 	tbMsg.ReplyMarkup = tbapi.NewInlineKeyboardMarkup(
 		tbapi.NewInlineKeyboardRow(
 			// ?userID to request confirmation
-			tbapi.NewInlineKeyboardButtonData("⛔︎ "+action, fmt.Sprintf("%s%d:%d", confirmationPrefix, user.ID, msgID)),
+			tbapi.NewInlineKeyboardButtonData(russianActionLabel(action), fmt.Sprintf("%s%d:%d", confirmationPrefix, user.ID, msgID)),
 			// !userID to request info
-			tbapi.NewInlineKeyboardButtonData("️⚑ info", fmt.Sprintf("%s%d:%d", infoPrefix, user.ID, msgID)),
+			tbapi.NewInlineKeyboardButtonData("Подробнее", fmt.Sprintf("%s%d:%d", infoPrefix, user.ID, msgID)),
 		),
 	)
 

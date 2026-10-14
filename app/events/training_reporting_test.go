@@ -86,7 +86,7 @@ func TestAutomaticTrainingReportCallbacks(t *testing.T) {
 				markup := report.ReplyMarkup.(tbapi.InlineKeyboardMarkup)
 				require.Len(t, markup.InlineKeyboard, 1)
 				require.Len(t, markup.InlineKeyboard[0], 2)
-				assert.Contains(t, markup.InlineKeyboard[0][0].Text, "review detection")
+				assert.Contains(t, markup.InlineKeyboard[0][0].Text, "Проверить детекцию")
 				targetID := int64(501)
 				if tc.channel {
 					targetID = -1001
@@ -118,7 +118,7 @@ func TestAutomaticTrainingReportCallbacks(t *testing.T) {
 				require.Len(t, dialog.ReplyMarkup.InlineKeyboard[0], 2)
 				assert.Equal(t, data, *dialog.ReplyMarkup.InlineKeyboard[0][0].CallbackData)
 				assert.Equal(t, "+"+data, *dialog.ReplyMarkup.InlineKeyboard[0][1].CallbackData)
-				assert.Equal(t, "Confirm ban", dialog.ReplyMarkup.InlineKeyboard[0][1].Text)
+				assert.Equal(t, "Подтвердить", dialog.ReplyMarkup.InlineKeyboard[0][1].Text)
 				assert.Empty(t, api.RequestCalls(), "info and confirmation dialog are not moderation actions")
 
 				query.Data = data
