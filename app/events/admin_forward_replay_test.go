@@ -311,6 +311,10 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		assertNoModerationActions(t, r.actions())
 		assert.Zero(t, r.actions().locatorLookups)
 		assert.Equal(t, 1, r.actions().feedback)
+		feedback := r.api.SendCalls()[0].C.(tbapi.MessageConfig).Text
+		assert.Contains(t, feedback, "Не удалось определить отправителя пересылки")
+		assert.Contains(t, feedback, "только уполномоченному администратору")
+		assert.Contains(t, feedback, "/spam на оригинал в исходном чате")
 	})
 
 	t.Run("G missing ForwardOrigin is a silent no-op with or without text", func(t *testing.T) {
@@ -642,7 +646,7 @@ func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {
 	msg := replayAdminMessage(userOrigin(101, "first"), sameText)
 	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
 
-	// The newest identical-text record belongs to 202, while Telegram's reliable
+	// the newest identical-text record belongs to 202, while Telegram's reliable
 	// ForwardOrigin says 101. Phase 1 must fail closed before every mutation.
 	assertNoModerationActions(t, r.actions())
 	assert.Equal(t, 1, r.actions().feedback)
@@ -660,8 +664,8 @@ func TestAdminForwardOfflineReplaySafetyInvariants(t *testing.T) {
 	r := newAdminForwardReplay(t, storage.MsgMeta{UserID: 501, UserName: "source", MsgID: 701}, true)
 	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 
-	// The only boundaries reachable by the replay are generated in-memory mocks.
-	// No HTTP client, filesystem path, SQL connection, or production credential is present.
+	// the only boundaries reachable by the replay are generated in-memory mocks.
+	// no HTTP client, filesystem path, SQL connection, or production credential is present.
 	assert.NotNil(t, r.api)
 	assert.NotNil(t, r.bot)
 	assert.NotNil(t, r.locator)

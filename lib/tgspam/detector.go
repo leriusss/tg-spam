@@ -187,7 +187,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	d.lock.RLock()
 	defer d.lock.RUnlock()
 
-	// External inline-link buttons are a deterministic production guard. It runs before
+	// external inline-link buttons are a deterministic production guard. It runs before
 	// approved-user handling and before every configurable or statistical content check.
 	if req.Meta.HasExternalLinkButton {
 		cr = append(cr, spamcheck.Response{
@@ -202,6 +202,20 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	// check for duplicate messages FIRST - behavioral check that applies to all users
 	if d.duplicateDetector != nil {
 		cr = append(cr, d.duplicateDetector.check(req))
+	}
+
+	// confirmed exact text uses authored content only and applies before automatic approval bypass.
+	if d.approvedUsers[req.UserID].Source != approved.SourceManual {
+		text := req.Msg
+		if req.AuthoredText != nil {
+			text = *req.AuthoredText
+		}
+		text = normalizeSpaces(cleanEmoji(strings.ToLower(d.cleanText(text))))
+		if matchStopWord(text, "=есть проба 0.5г") {
+			cr = append(cr, spamcheck.Response{Name: "confirmed exact text", Spam: true, Details: "есть проба 0.5г"})
+			d.spamHistory.Push(req)
+			return true, cr
+		}
 	}
 
 	// approved user don't need content analysis checks, but only skip if no spam detected by behavioral checks
@@ -266,7 +280,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		// if we get here, we have a short message but openai should still check it
 	}
 
-	// Similarity and the local classifier use the same tokenized sample corpus. For messages
+	// similarity and the local classifier use the same tokenized sample corpus. For messages
 	// with at most one meaningful token neither result is authoritative on its own: a high
 	// posterior or exact sample match is still sparse, correlated textual evidence.
 	meaningfulTokens := d.tokenize(cleanMsg)

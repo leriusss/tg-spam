@@ -113,6 +113,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	spamReq := spamcheck.Request{Msg: msgText, CheckOnly: checkOnly,
 		UserID: strconv.FormatInt(checkUserID, 10), UserName: checkUserName,
 		FirstName: firstName, LastName: lastName, IsPremium: isPremium}
+	spamReq.AuthoredText = &msg.Text
 	if msg.Image != nil {
 		spamReq.Meta.Images = 1
 	}

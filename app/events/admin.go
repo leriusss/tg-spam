@@ -127,7 +127,9 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		update.Message.MessageID, origin.OriginType, origin.Kind, origin.ID, origin.Reliable)
 	if !origin.Reliable {
 		return a.blockAdminReport(update, "origin_unavailable",
-			"Unable to determine the forwarded message sender reliably. No automatic moderation action was taken.")
+			"Не удалось определить отправителя пересылки.\n"+
+				"Ответьте командой /spam на оригинал в исходном чате.\n"+
+				"Команда доступна только уполномоченному администратору.")
 	}
 
 	// this is a forwarded message from super to admin chat, it is an example of missed spam

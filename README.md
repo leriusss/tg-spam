@@ -22,6 +22,11 @@ TG-Spam's spam detection algorithm is multifaceted, incorporating several criter
 - **Integration with Combot Anti-Spam System (CAS)**: It cross-references users with the Combot Anti-Spam System, a reputable external anti-spam database.
 - **Spam Message Similarity Check**: TG-Spam assesses the overall resemblance of each message to known spam patterns.
 - **Stop Words Comparison**: Messages are compared against a curated list of stop words commonly found in spam.
+
+  The confirmed exact-text rule `=есть проба 0.5г` is built into the detector and requires no dictionary migration.
+  It uses the same exact-match normalization as stop words and checks authored text, excluding quoted/replied content.
+  Automatic approval does not bypass this rule; explicit manual trust and superuser moderation gates remain in force.
+  See [scope and rollback](docs/confirmed-exact-text.md).
 - **OpenAI Integration**: TG-Spam may optionally use OpenAI's GPT models to analyze messages for spam patterns.
 - **Emoji Count**: Messages with an excessive number of emojis are scrutinized, as this is a common trait in spam messages.
 - **Meta checks**: TG-Spam can optionally check the message for the number of links and the presence of images, forwarded messages, etc. If the number of links is greater than the specified limit, or if the message contains images but no text, it will be marked as spam.
