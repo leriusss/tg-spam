@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -273,34 +274,38 @@ func (s *SpamFilter) ReloadSamples() (err error) {
 		return fmt.Errorf("no pesistent spam or ham samples found in the store")
 	}
 
-	if spamReader, err = s.params.SamplesStore.Reader(ctx, storage.SampleTypeSpam, storage.SampleOriginPreset); err != nil {
+	spamReader, err = bufferSampleReader(s.params.SamplesStore.Reader(ctx, storage.SampleTypeSpam, storage.SampleOriginPreset))
+	if err != nil {
 		return fmt.Errorf("failed to get persistent spam samples: %w", err)
 	}
 	defer spamReader.Close()
 
-	if hamReader, err = s.params.SamplesStore.Reader(ctx, storage.SampleTypeHam, storage.SampleOriginPreset); err != nil {
+	hamReader, err = bufferSampleReader(s.params.SamplesStore.Reader(ctx, storage.SampleTypeHam, storage.SampleOriginPreset))
+	if err != nil {
 		return fmt.Errorf("failed to get persistent ham samples: %w", err)
 	}
 	defer hamReader.Close()
 
-	if spamDynamicReader, err = s.params.SamplesStore.Reader(ctx, storage.SampleTypeSpam, storage.SampleOriginUser); err != nil {
+	spamDynamicReader, err = bufferSampleReader(s.params.SamplesStore.Reader(ctx, storage.SampleTypeSpam, storage.SampleOriginUser))
+	if err != nil {
 		return fmt.Errorf("failed to get dynamic spam samples: %w", err)
 	}
 	defer spamDynamicReader.Close()
 
-	if hamDynamicReader, err = s.params.SamplesStore.Reader(ctx, storage.SampleTypeHam, storage.SampleOriginUser); err != nil {
+	hamDynamicReader, err = bufferSampleReader(s.params.SamplesStore.Reader(ctx, storage.SampleTypeHam, storage.SampleOriginUser))
+	if err != nil {
 		return fmt.Errorf("failed to get dynamic ham samples: %w", err)
 	}
 	defer hamDynamicReader.Close()
 
 	// stop-words are optional
-	if stopWordsReader, err = s.params.DictStore.Reader(ctx, storage.DictionaryTypeStopPhrase); err != nil {
+	if stopWordsReader, err = bufferSampleReader(s.params.DictStore.Reader(ctx, storage.DictionaryTypeStopPhrase)); err != nil {
 		return fmt.Errorf("failed to get stop words: %w", err)
 	}
 	defer stopWordsReader.Close()
 
 	// excluded tokens are optional
-	if exclReader, err = s.params.DictStore.Reader(ctx, storage.DictionaryTypeIgnoredWord); err != nil {
+	if exclReader, err = bufferSampleReader(s.params.DictStore.Reader(ctx, storage.DictionaryTypeIgnoredWord)); err != nil {
 		return fmt.Errorf("failed to get excluded tokens: %w", err)
 	}
 	defer exclReader.Close()
@@ -359,4 +364,16 @@ func (s *SpamFilter) RemoveDynamicHamSample(sample string) error {
 		return fmt.Errorf("can't remove hma sample %q: %w", sample, err)
 	}
 	return nil
+}
+
+// bufferSampleReader releases the database connection before another reader is opened.
+func bufferSampleReader(reader io.ReadCloser, err error) (io.ReadCloser, error) {
+	if err != nil {
+		return nil, err
+	}
+	data, readErr := io.ReadAll(reader)
+	if err = errors.Join(readErr, reader.Close()); err != nil {
+		return nil, fmt.Errorf("buffer sample reader: %w", err)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }

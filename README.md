@@ -291,6 +291,12 @@ Updating ham samples dynamically works differently. If any of privileged users u
 
 All samples are stored in the database, which can be specified using the `--db=, [$DB]` parameter.
 
+The built-in database updaters rebuild the classifier and similarity together from a persisted snapshot after learning or deletion.
+Repeated learning does not add weight, relabeling removes the previous class, and deleting an absent sample is a no-op.
+If persistence succeeds but rebuilding fails, learning returns an error and statistical checks report an unavailable model until
+a subsequent check, learning operation, reload, or restart successfully rebuilds it. See [learning consistency](docs/learning-consistency.md)
+for concurrency, compatibility, measurements, and rollback details.
+
 ### User Spam Reporting
 
 Regular users can report potential spam messages to moderators by replying to a suspicious message with `/report` or `report`. This feature provides a crowdsourced approach to spam detection, complementing automated spam filters.

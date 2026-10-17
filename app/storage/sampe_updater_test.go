@@ -202,7 +202,7 @@ func (s *StorageTestSuite) TestSampleUpdater() {
 
 				updater := NewSampleUpdater(samples, SampleTypeSpam, time.Second)
 				err = updater.Remove("non-existent message")
-				s.Require().Error(err)
+				s.Require().NoError(err)
 			})
 		})
 	}
