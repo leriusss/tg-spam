@@ -71,7 +71,9 @@ var samplesQueries = engine.NewQueryMap().
         )`,
 	}).
 	Add(CmdAddSample, engine.Query{
-		Sqlite: `INSERT OR REPLACE INTO samples (gid, type, origin, message) VALUES (?, ?, ?, ?)`,
+		Sqlite: `INSERT INTO samples (gid, type, origin, message) VALUES (?, ?, ?, ?)
+                  ON CONFLICT (gid, message) DO UPDATE SET type = excluded.type, origin = excluded.origin,
+                  timestamp = CURRENT_TIMESTAMP WHERE samples.type != excluded.type OR samples.origin != excluded.origin`,
 		Postgres: `INSERT INTO samples (gid, type, origin, message) VALUES ($1, $2, $3, $4) 
                   ON CONFLICT (gid, message_hash) DO UPDATE SET type = EXCLUDED.type, origin = EXCLUDED.origin`,
 	}).
@@ -153,6 +155,39 @@ func (s *Samples) Add(ctx context.Context, t SampleType, o SampleOrigin, message
 		return fmt.Errorf("failed to add sample: %w", err)
 	}
 
+	return nil
+}
+
+// Snapshot returns both labels from a single ordered query, including both origins.
+func (s *Samples) Snapshot(ctx context.Context) (spam, ham []string, err error) {
+	s.RLock()
+	defer s.RUnlock()
+	var rows []struct {
+		Type    SampleType
+		Message string
+	}
+	query := s.Adopt(`SELECT type,message FROM samples WHERE gid = ?
+        AND type IN ('spam','ham') AND origin IN ('preset','user') ORDER BY origin, timestamp DESC, id`)
+	if err = s.SelectContext(ctx, &rows, query, s.GID()); err != nil {
+		return nil, nil, fmt.Errorf("read sample snapshot: %w", err)
+	}
+	for _, row := range rows {
+		if row.Type == SampleTypeSpam {
+			spam = append(spam, row.Message)
+		} else {
+			ham = append(ham, row.Message)
+		}
+	}
+	return spam, ham, nil
+}
+
+func (s *Samples) removeLearningSample(ctx context.Context, label SampleType, message string) error {
+	s.Lock()
+	defer s.Unlock()
+	query := s.Adopt(`DELETE FROM samples WHERE gid = ? AND type = ? AND message = ?`)
+	if _, err := s.ExecContext(ctx, query, s.GID(), label, message); err != nil {
+		return fmt.Errorf("remove learning sample: %w", err)
+	}
 	return nil
 }
 
@@ -258,10 +293,10 @@ func (s *Samples) Reader(ctx context.Context, t SampleType, o SampleOrigin) (io.
 	gid := s.GID()
 
 	if o == SampleOriginAny {
-		query = `SELECT message FROM samples WHERE gid = ? AND  type = ? ORDER BY timestamp DESC`
+		query = `SELECT message FROM samples WHERE gid = ? AND  type = ? ORDER BY timestamp DESC, id`
 		args = []any{gid, t}
 	} else {
-		query = `SELECT message FROM samples WHERE gid = ? AND type = ? AND origin = ? ORDER BY timestamp DESC`
+		query = `SELECT message FROM samples WHERE gid = ? AND type = ? AND origin = ? ORDER BY timestamp DESC, id`
 		args = []any{gid, t, o}
 	}
 	query = s.Adopt(query)
@@ -292,10 +327,10 @@ func (s *Samples) Iterator(ctx context.Context, t SampleType, o SampleOrigin) (i
 	gid := s.GID()
 
 	if o == SampleOriginAny {
-		query = `SELECT message FROM samples WHERE gid = ? AND type = ? ORDER BY timestamp DESC`
+		query = `SELECT message FROM samples WHERE gid = ? AND type = ? ORDER BY timestamp DESC, id`
 		args = []any{gid, t}
 	} else {
-		query = `SELECT message FROM samples WHERE gid = ? AND type = ? AND origin = ? ORDER BY timestamp DESC`
+		query = `SELECT message FROM samples WHERE gid = ? AND type = ? AND origin = ? ORDER BY timestamp DESC, id`
 		args = []any{gid, t, o}
 	}
 	query = s.Adopt(query)

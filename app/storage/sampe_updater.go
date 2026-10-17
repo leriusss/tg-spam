@@ -36,7 +36,17 @@ func (u *SampleUpdater) Remove(msg string) error {
 		ctx, cancel = context.WithTimeout(context.Background(), u.timeout)
 	}
 	defer cancel()
-	return u.samplesService.DeleteMessage(ctx, msg)
+	return u.samplesService.removeLearningSample(ctx, u.sampleType, msg)
+}
+
+// Snapshot returns both classes, including preset samples, from one read of the store.
+func (u *SampleUpdater) Snapshot() (spam, ham []string, err error) {
+	ctx, cancel := context.Background(), func() {}
+	if u.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, u.timeout)
+	}
+	defer cancel()
+	return u.samplesService.Snapshot(ctx)
 }
 
 // Reader returns a reader for the samples

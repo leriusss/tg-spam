@@ -47,6 +47,7 @@ type Detector struct {
 	excludedTokens    map[string]struct{}
 	luaEngine         LuaPluginEngine
 
+	samplesErr     error
 	spamSamplesUpd SampleUpdater
 	hamSamplesUpd  SampleUpdater
 	userStorage    UserStorage
@@ -183,9 +184,13 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		return false
 	}
 
+	d.recoverSamples()
 	cleanMsg := d.cleanText(req.Msg)
 	d.lock.RLock()
 	defer d.lock.RUnlock()
+	if d.samplesErr != nil {
+		cr = append(cr, d.samplesUnavailable())
+	}
 
 	// external inline-link buttons are a deterministic production guard. It runs before
 	// approved-user handling and before every configurable or statistical content check.
@@ -288,7 +293,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 
 	// check for spam similarity if a similarity threshold is set and spam samples are loaded
 	// skip for rune-short messages as similarity doesn't work well on short text
-	if !isShortMessage && d.SimilarityThreshold > 0 && len(d.tokenizedSpam) > 0 {
+	if d.samplesErr == nil && !isShortMessage && d.SimilarityThreshold > 0 && len(d.tokenizedSpam) > 0 {
 		similarityResult := d.isSpamSimilarityHighTokens(meaningfulTokens)
 		if weakTextEvidence && similarityResult.Spam {
 			similarityResult.Spam = false
@@ -301,7 +306,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	// skip for short messages as classifier doesn't work well on short text
 	classifierReady := d.classifier.nAllDocument > 0 &&
 		d.classifier.nDocumentByClass["ham"] > 0 && d.classifier.nDocumentByClass["spam"] > 0
-	if !isShortMessage && classifierReady {
+	if d.samplesErr == nil && !isShortMessage && classifierReady {
 		decision := d.classifyTokens(meaningfulTokens)
 		if shouldSuppressClassifierDecision(len(meaningfulTokens), decision) {
 			decision.response.Spam = false
@@ -360,6 +365,9 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	if spamDetected {
 		d.spamHistory.Push(req)
 		return true, cr
+	}
+	if d.samplesErr != nil {
+		return false, cr
 	}
 
 	// update approved users only if it's not paranoid mode and not a check-only request
@@ -609,21 +617,51 @@ func (d *Detector) LoadSamples(exclReader io.Reader, spamReaders, hamReaders []i
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
-	d.tokenizedSpam = []map[string]int{}
-	d.excludedTokens = map[string]struct{}{}
-	d.classifier.reset()
-
-	// excluded tokens should be loaded before spam samples to exclude them from spam tokenization
-	for t := range d.readerIterator(exclReader) {
-		d.excludedTokens[strings.ToLower(t)] = struct{}{}
+	if source := d.sampleSnapshot(); source != nil {
+		spam, ham, err := source.Snapshot()
+		if err != nil {
+			d.samplesErr = fmt.Errorf("read persisted samples: %w", err)
+			return LoadResult{}, d.samplesErr
+		}
+		spamReaders = []io.Reader{strings.NewReader(strings.Join(spam, "\n"))}
+		hamReaders = []io.Reader{strings.NewReader(strings.Join(ham, "\n"))}
 	}
-	lr := LoadResult{ExcludedTokens: len(d.excludedTokens)}
+	result, err := d.loadSamplesLocked(exclReader, spamReaders, hamReaders)
+	if err != nil && d.sampleSnapshot() != nil {
+		d.samplesErr = err
+	}
+	return result, err
+}
+
+func (d *Detector) loadSamplesLocked(exclReader io.Reader, spamReaders, hamReaders []io.Reader) (LoadResult, error) {
+	candidate := &Detector{classifier: newClassifier()}
+	candidate.tokenizedSpam = []map[string]int{}
+	candidate.excludedTokens = map[string]struct{}{}
+	candidate.classifier.reset()
+
+	excluded, err := sampleTokens(exclReader)
+	if err != nil {
+		return LoadResult{}, err
+	}
+	spam, err := sampleTokens(spamReaders...)
+	if err != nil {
+		return LoadResult{}, err
+	}
+	ham, err := sampleTokens(hamReaders...)
+	if err != nil {
+		return LoadResult{}, err
+	}
+	// excluded tokens should be loaded before spam samples to exclude them from spam tokenization
+	for _, t := range excluded {
+		candidate.excludedTokens[strings.ToLower(t)] = struct{}{}
+	}
+	lr := LoadResult{ExcludedTokens: len(candidate.excludedTokens)}
 
 	// load spam samples and update the classifier with them
 	docs := make([]document, 0) //nolint:prealloc // iterator size unknown
-	for token := range d.readerIterator(spamReaders...) {
-		tokenizedSpam := d.tokenize(token)
-		d.tokenizedSpam = append(d.tokenizedSpam, tokenizedSpam) // add to list of samples
+	for _, token := range spam {
+		tokenizedSpam := candidate.tokenize(token)
+		candidate.tokenizedSpam = append(candidate.tokenizedSpam, tokenizedSpam) // add to list of samples
 		tokens := make([]string, 0, len(tokenizedSpam))
 		for token := range tokenizedSpam {
 			tokens = append(tokens, token)
@@ -633,8 +671,8 @@ func (d *Detector) LoadSamples(exclReader io.Reader, spamReaders, hamReaders []i
 	}
 
 	// load ham samples and update the classifier with them
-	for token := range d.readerIterator(hamReaders...) {
-		tokenizedSpam := d.tokenize(token)
+	for _, token := range ham {
+		tokenizedSpam := candidate.tokenize(token)
 		tokens := make([]string, 0, len(tokenizedSpam))
 		for token := range tokenizedSpam {
 			tokens = append(tokens, token)
@@ -643,7 +681,9 @@ func (d *Detector) LoadSamples(exclReader io.Reader, spamReaders, hamReaders []i
 		lr.HamSamples++
 	}
 
-	d.classifier.learn(docs...)
+	candidate.classifier.learn(docs...)
+	d.classifier, d.tokenizedSpam, d.excludedTokens = candidate.classifier, candidate.tokenizedSpam, candidate.excludedTokens
+	d.samplesErr = nil
 	return lr, nil
 }
 
@@ -689,6 +729,17 @@ func (d *Detector) updateSample(msg string, upd SampleUpdater, sc spamClass) err
 		return nil
 	}
 
+	if d.sampleSnapshot() != nil {
+		if err := upd.Append(msg); err != nil {
+			return fmt.Errorf("save %s sample: %w", sc, err)
+		}
+		d.samplesErr = d.rebuildSamplesLocked()
+		if d.samplesErr != nil {
+			return fmt.Errorf("sample saved but model unavailable; reload required: %w", d.samplesErr)
+		}
+		return nil
+	}
+
 	// write to dynamic samples storage
 	if err := upd.Append(msg); err != nil {
 		return fmt.Errorf("can't update %s samples: %w", sc, err)
@@ -713,6 +764,17 @@ func (d *Detector) removeSample(msg string, upd SampleUpdater, sc spamClass) err
 	defer d.lock.Unlock()
 
 	if upd == nil {
+		return nil
+	}
+
+	if d.sampleSnapshot() != nil {
+		if err := upd.Remove(msg); err != nil {
+			return fmt.Errorf("remove %s sample: %w", sc, err)
+		}
+		d.samplesErr = d.rebuildSamplesLocked()
+		if d.samplesErr != nil {
+			return fmt.Errorf("sample removed but model unavailable; reload required: %w", d.samplesErr)
+		}
 		return nil
 	}
 
