@@ -28,6 +28,8 @@ DB commit и память **не являются одной транзакци�
 2. Если запись завершилась, а snapshot/построение не удалось, возвращается ошибка с указанием сохранения данных
    и недоступности модели. Старые classifier/similarity не используются; Check содержит `sample model unavailable`
    с `Error`. Детерминированные проверки и существующие gates сохраняются.
+   Неполная проверка не увеличивает auto-approved count, не записывает автоматическое доверие и не попадает в hamHistory.
+   Независимое spam-решение сохраняется; недоступность модели сама по себе не является основанием модерации.
 3. Следующий Check повторяет реконструкцию из БД. Следующая успешная learning/delete операция или reload тоже восстанавливает
    состояние. После остановки процесса новый процесс читает уже сохранённые актуальные строки. Старую БД восстанавливать не нужно.
 4. Ошибки чтения/scanner больше не превращаются в успешную загрузку частичного корпуса. Существующий scanner limit около 64 KiB
@@ -78,6 +80,10 @@ Callback IDs, journal decisions/idempotency и порядок moderation actions
 - Реальные direct `/spam` и recovery callbacks поверх настоящих detector/SQLite; Telegram API заменён mock.
   Повтор доставки callback и повтор команды не добавляют веса, unban/restore обучает ham без остаточного spam.
 - Single-connection reload, ошибки чтения и закрытия SQL reader.
+- `TestLearningUnavailableDoesNotBuildTrust`: FirstMessagesCount=3, настоящий SQLite user storage, несколько
+  CheckOnly=false запросов при snapshot failure после commit, отсутствие нового count/storage/hamHistory,
+  независимый spam и восстановление classifier/similarity. Reopen storage подтверждает отсутствие доверия,
+  полученного только во время сбоя, и сохранение прежнего поведения legitimate auto/manual trust.
 
 Выполнены `go test -race ./...` и профильные проверки. Полный Windows run имеет прежние ограничения:
 `TestBackupDB` использует запрещённые двоеточия в filename; `Test_checkVolumeMount` требует Unix mount;

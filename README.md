@@ -296,6 +296,7 @@ Repeated learning does not add weight, relabeling removes the previous class, an
 If persistence succeeds but rebuilding fails, learning returns an error and statistical checks report an unavailable model until
 a subsequent check, learning operation, reload, or restart successfully rebuilds it. See [learning consistency](docs/learning-consistency.md)
 for concurrency, compatibility, measurements, and rollback details.
+An unavailable statistical model does not contribute automatic approval or ham history; independent spam checks still apply.
 
 ### User Spam Reporting
 

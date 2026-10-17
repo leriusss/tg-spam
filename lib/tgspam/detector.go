@@ -366,6 +366,9 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		d.spamHistory.Push(req)
 		return true, cr
 	}
+	if d.samplesErr != nil {
+		return false, cr
+	}
 
 	// update approved users only if it's not paranoid mode and not a check-only request
 	// and only if the message was not too short (to ensure we have meaningful content)
