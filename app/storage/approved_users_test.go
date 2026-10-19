@@ -50,7 +50,7 @@ func (s *StorageTestSuite) TestApprovedUsers_NewApprovedUsers() {
 				var columnCount int
 				err = db.Get(&columnCount, "SELECT COUNT(*) FROM pragma_table_info('approved_users')")
 				s.Require().NoError(err)
-				s.Equal(6, columnCount) // id, uid, gid, name, timestamp, source
+				s.Equal(7, columnCount) // id, uid, gid, name, timestamp, source, auto_progress
 			})
 
 			s.Run("nil db connection", func() {
@@ -266,7 +266,7 @@ func (s *StorageTestSuite) TestApprovedUsers_LegacyRowsRemainUnknownAfterMigrati
 			au, err := NewApprovedUsers(ctx, db)
 			s.Require().NoError(err)
 
-			// A second init must not fail on the already-added source column.
+			// a second init must not fail on the already-added source column.
 			_, err = NewApprovedUsers(ctx, db)
 			s.Require().NoError(err)
 

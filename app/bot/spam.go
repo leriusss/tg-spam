@@ -140,6 +140,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		spamReq.Meta.HasGiveaway = true
 	}
 	spamReq.Meta.MessageID = msg.ID
+	spamReq.Meta.ChatID = msg.ChatID
 
 	// count mentions and links from entities (both regular and caption entities)
 	// links are counted from entities only - telegram provides url/text_link entities for all links

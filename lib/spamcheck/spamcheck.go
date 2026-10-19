@@ -21,13 +21,14 @@ type Request struct {
 
 // MetaData is a meta-info about the message, provided by the client.
 type MetaData struct {
-	Images      int  `json:"images"`       // number of images in the message
-	Links       int  `json:"links"`        // number of links in the message
-	Mentions    int  `json:"mentions"`     // number of mentions (@username) in the message
-	HasVideo    bool `json:"has_video"`    // true if the message has a video or video note
-	HasAudio    bool `json:"has_audio"`    // true if the message has an audio
-	HasForward  bool `json:"has_forward"`  // true if the message has a forward
-	HasKeyboard bool `json:"has_keyboard"` // true if the message has a keyboard (buttons)
+	ChatID      int64 `json:"chat_id,omitempty"` // source chat, together with MessageID identifies a Telegram message
+	Images      int   `json:"images"`            // number of images in the message
+	Links       int   `json:"links"`             // number of links in the message
+	Mentions    int   `json:"mentions"`          // number of mentions (@username) in the message
+	HasVideo    bool  `json:"has_video"`         // true if the message has a video or video note
+	HasAudio    bool  `json:"has_audio"`         // true if the message has an audio
+	HasForward  bool  `json:"has_forward"`       // true if the message has a forward
+	HasKeyboard bool  `json:"has_keyboard"`      // true if the message has a keyboard (buttons)
 	// HasExternalLinkButton is true when an inline keyboard contains an HTTP(S), login, or Web App button.
 	HasExternalLinkButton bool `json:"has_external_link_button"`
 	HasContact            bool `json:"has_contact"`  // true if the message has a shared contact

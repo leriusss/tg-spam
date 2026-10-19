@@ -664,7 +664,7 @@ func TestDetector_DuplicateDetectionForApprovedUsers(t *testing.T) {
 	req1 := spamcheck.Request{
 		Msg:    duplicateMsg,
 		UserID: userID,
-		Meta:   spamcheck.MetaData{MessageID: 658144},
+		Meta:   spamcheck.MetaData{ChatID: -100, MessageID: 658144},
 	}
 	spam1, results1 := d.Check(req1)
 
@@ -678,13 +678,13 @@ func TestDetector_DuplicateDetectionForApprovedUsers(t *testing.T) {
 	d.lock.RLock()
 	userInfo := d.approvedUsers[userID]
 	d.lock.RUnlock()
-	assert.Equal(t, 1, userInfo.Count, "user should have count=1 after first message")
+	assert.Equal(t, 1, userInfo.Progress[-100].Count, "user should have count=1 after first message")
 
 	// second identical message - user IS approved now
 	req2 := spamcheck.Request{
 		Msg:    duplicateMsg,
 		UserID: userID,
-		Meta:   spamcheck.MetaData{MessageID: 658145},
+		Meta:   spamcheck.MetaData{ChatID: -100, MessageID: 658145},
 	}
 	spam2, results2 := d.Check(req2)
 
@@ -2433,7 +2433,7 @@ func TestDetector_FirstMessagesCount(t *testing.T) {
 func TestDetector_ApprovedUsers(t *testing.T) {
 	mockUserStore := &mocks.UserStorageMock{
 		ReadFunc: func(context.Context) ([]approved.UserInfo, error) {
-			return []approved.UserInfo{{UserID: "123"}, {UserID: "456"}}, nil
+			return []approved.UserInfo{{UserID: "123", Source: approved.SourceManual}, {UserID: "456", Source: approved.SourceManual}}, nil
 		},
 		WriteFunc:  func(_ context.Context, au approved.UserInfo) error { return nil },
 		DeleteFunc: func(_ context.Context, id string) error { return nil },
@@ -2644,7 +2644,7 @@ func TestDetector_ExplicitTrustedUserProvenance(t *testing.T) {
 		assert.False(t, d.IsExplicitTrustedUser("auto-user"))
 	})
 
-	t.Run("legacy unknown is not explicit trusted but preserves pre-approved behavior", func(t *testing.T) {
+	t.Run("legacy unknown is checked without explicit or automatic trust", func(t *testing.T) {
 		mockUserStore := &mocks.UserStorageMock{
 			ReadFunc: func(context.Context) ([]approved.UserInfo, error) {
 				return []approved.UserInfo{{UserID: "legacy-user", UserName: "legacy", Source: approved.SourceUnknown}}, nil
@@ -2660,12 +2660,12 @@ func TestDetector_ExplicitTrustedUserProvenance(t *testing.T) {
 		assert.Equal(t, 1, count)
 
 		assert.False(t, d.IsExplicitTrustedUser("legacy-user"))
-		assert.True(t, d.IsApprovedUser("legacy-user"))
+		assert.False(t, d.IsApprovedUser("legacy-user"))
 
 		spam, cr := d.Check(spamcheck.Request{Msg: "spam text should still be pre-approved", UserID: "legacy-user"})
-		assert.False(t, spam)
+		assert.True(t, spam)
 		require.NotEmpty(t, cr)
-		assert.Equal(t, "pre-approved", cr[0].Name)
+		assert.Equal(t, "stopword", cr[0].Name)
 	})
 }
 

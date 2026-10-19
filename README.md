@@ -128,6 +128,13 @@ This is not a separate check, but rather a parameter to control the minimum mess
 
 **Note**: Messages shorter than `--min-msg-len` will not count towards user approval when `--first-messages-count` is configured. This prevents users from becoming approved by sending multiple short messages (like "hi", "ok", "yes") that bypass meaningful spam detection. Only messages that meet the minimum length requirement will increment the user's message count for approval purposes.
 
+Automatic approval progress is persisted without increasing it on restart. With `--first-messages-count=3`,
+three eligible messages are checked before later messages can bypass content checks. Historical automatic or unknown
+records without a saved count start at zero; explicit manual trust is preserved. Telegram progress and a bounded
+128-message replay window are scoped to the source chat and numeric sender identity. See
+[automatic trust progress](docs/auto-trust-progress.md) for migration, failure behavior, compatibility and rollback limits.
+
+
 **Maximum links in message**
 
 This option is disabled by default. If set to a positive number, the bot will check the message for the number of links. If the number of links is greater than `--meta.links-limit=, [$META_LINKS_LIMIT]` (default is -1), the message will be marked as spam. Setting the limit to -1 will effectively disable this check.
