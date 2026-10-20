@@ -207,3 +207,18 @@ func TestSenderSpamRollbackDisabledRecoveryCallbackIsInert(t *testing.T) {
 	require.Empty(t, a.bot.(*mocks.BotMock).UpdateSpamCalls())
 	require.Empty(t, a.bot.(*mocks.BotMock).RemoveApprovedUserCalls())
 }
+
+func TestSenderSpamDifferentOriginalsReceiveSeparateFeedback(t *testing.T) {
+	a, u := senderFixture(t)
+	api := &mocks.TbAPIMock{SendFunc: func(tbapi.Chattable) (tbapi.Message, error) { return tbapi.Message{}, nil }}
+	a.tbAPI = api
+	l := &TelegramListener{chatID: 123, adminHandler: a}
+	require.True(t, l.procSenderSpam(u))
+	u.Message.MessageID++
+	u.Message.ReplyToMessage.MessageID++
+	require.True(t, l.procSenderSpam(u))
+	require.Len(t, api.SendCalls(), 2)
+	u.Message.MessageID++
+	require.True(t, l.procSenderSpam(u))
+	require.Len(t, api.SendCalls(), 2, "repeat against the same target is throttled")
+}

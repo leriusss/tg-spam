@@ -37,7 +37,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS moderation_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_requests_rate ON moderation_requests(gid,created_at)`,
-		`CREATE TABLE IF NOT EXISTS moderation_command_replies (gid TEXT NOT NULL, sender BIGINT NOT NULL, next_at BIGINT NOT NULL, PRIMARY KEY(gid,sender))`,
+		`CREATE TABLE IF NOT EXISTS moderation_command_replies (gid TEXT NOT NULL, sender BIGINT NOT NULL, scope TEXT NOT NULL, next_at BIGINT NOT NULL, PRIMARY KEY(gid,sender,scope))`,
 		`CREATE TABLE IF NOT EXISTS moderation_control (gid TEXT PRIMARY KEY, version BIGINT NOT NULL DEFAULT 0, cooldown BIGINT NOT NULL DEFAULT 0, rejected BIGINT NOT NULL DEFAULT 0)`,
 		`CREATE TABLE IF NOT EXISTS moderation_receipts (gid TEXT NOT NULL, id TEXT NOT NULL, chat_id BIGINT NOT NULL, identity_id BIGINT NOT NULL, identity_kind TEXT NOT NULL, message_id INTEGER NOT NULL, destination BIGINT NOT NULL, state TEXT NOT NULL, owner TEXT NOT NULL, lease_until BIGINT NOT NULL, created_at BIGINT NOT NULL, PRIMARY KEY(gid,id))`,
 		`CREATE TABLE IF NOT EXISTS moderation_deliveries (gid TEXT NOT NULL, chat_id BIGINT NOT NULL, message_id INTEGER NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(gid,chat_id,message_id))`,

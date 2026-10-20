@@ -74,8 +74,8 @@ func (j *Journal) requestDecision(
 	return true, true, err
 }
 
-// ClaimCommandReply persists one feedback slot per sender per minute across restarts.
-func (j *Journal) ClaimCommandReply(ctx context.Context, sender int64, now time.Time) (bool, error) {
+// ClaimCommandReply persists one feedback slot per sender/target per minute across restarts.
+func (j *Journal) ClaimCommandReply(ctx context.Context, sender int64, scope string, now time.Time) (bool, error) {
 	fresh := false
 	err := j.transaction(ctx, func(tx journalTx) error {
 		fresh = false
@@ -89,7 +89,7 @@ func (j *Journal) ClaimCommandReply(ctx context.Context, sender int64, now time.
 		if active >= 20 {
 			return nil
 		}
-		result, e := tx.ExecContext(ctx, j.db.Adopt(`INSERT INTO moderation_command_replies VALUES (?,?,?) ON CONFLICT(gid,sender) DO UPDATE SET next_at=excluded.next_at WHERE moderation_command_replies.next_at<=?`), j.db.GID(), sender, now.Add(time.Minute).UnixMilli(), now.UnixMilli())
+		result, e := tx.ExecContext(ctx, j.db.Adopt(`INSERT INTO moderation_command_replies VALUES (?,?,?,?) ON CONFLICT(gid,sender,scope) DO UPDATE SET next_at=excluded.next_at WHERE moderation_command_replies.next_at<=?`), j.db.GID(), sender, scope, now.Add(time.Minute).UnixMilli(), now.UnixMilli())
 		if e != nil {
 			return journalError(e)
 		}

@@ -33,7 +33,11 @@ func (l *TelegramListener) procSenderSpam(u tbapi.Update) bool {
 	text := "Не удалось принять /spam: необходимы recovery journal и админ-чат. Действия не выполнялись."
 	if a.recovery != nil && a.adminChatID != 0 {
 		text = a.senderSpamRequest(u, sender)
-		fresh, err := a.recovery.journal.ClaimCommandReply(context.Background(), sender, time.Now())
+		scope := "no-target"
+		if m.ReplyToMessage != nil {
+			scope = fmt.Sprint(m.ReplyToMessage.MessageID)
+		}
+		fresh, err := a.recovery.journal.ClaimCommandReply(context.Background(), sender, scope, time.Now())
 		if err != nil {
 			log.Printf("[WARN] sender /spam feedback throttle unavailable: message_id=%d", m.MessageID)
 			if time.Now().Before(l.senderFeedbackAt) {
