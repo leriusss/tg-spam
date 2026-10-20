@@ -863,3 +863,7 @@ func main() {
 При включённом moderation recovery сервисные карточки показывают компактные русские результаты.
 Технические операции и данные детекции доступны через «Подробнее». Полный исходный текст сохраняется отдельно для обучения.
 Примеры и ограничения: [compact moderation review](docs/review/compact-moderation.md).
+
+### Channel and anonymous `/spam` commands
+
+Replying `/spam` as a channel submits a pending review request to the configured administrator chat when moderation recovery is enabled. A numeric authorized personal user must approve the bound recovery card within 15 minutes; channel names and shared Telegram sender IDs never authorize moderation. No learning, trust change, ban or deletion occurs before approval. Requests and discussion feedback are rate limited and durable across restart. See [the authority, validation and rollout contract](docs/operations/sender-spam-confirmation.md).

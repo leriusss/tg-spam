@@ -53,10 +53,11 @@ type TelegramListener struct {
 	AggressiveCleanup       bool                // delete all messages from user when banned via /spam command
 	AggressiveCleanupLimit  int                 // max messages to delete in aggressive cleanup mode
 
-	adminHandler   *admin
-	reportsHandler *userReports
-	chatID         int64
-	adminChatID    int64
+	senderFeedbackAt time.Time
+	adminHandler     *admin
+	reportsHandler   *userReports
+	chatID           int64
+	adminChatID      int64
 
 	msgs struct {
 		once sync.Once
@@ -303,6 +304,10 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				if l.DeleteLeaveMessages {
 					l.deleteSystemMessage(update.Message.MessageID, update.Message.Chat.ID, "leave")
 				}
+				continue
+			}
+
+			if l.procSenderSpam(update) {
 				continue
 			}
 

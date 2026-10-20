@@ -10,6 +10,8 @@ import (
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
+	RequestState        string   `db:"-"`
+	RequestExpires      int64    `db:"-"`
 	Ref                 string   `db:"ref"`
 	Receipt             string   `db:"receipt"`
 	Destination         int64    `db:"destination"`
@@ -503,6 +505,20 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 				c.Receipt,
 			)
 		}
+		if err == nil {
+			var requests []struct {
+				State   string `db:"state"`
+				Expires int64  `db:"expires_at"`
+			}
+			err = tx.SelectContext(ctx, &requests, j.db.Adopt(`SELECT state,expires_at FROM moderation_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt)
+			if len(requests) > 0 {
+				c.RequestState = requests[0].State
+				c.RequestExpires = requests[0].Expires
+				if c.RequestState == "pending" && c.RequestExpires <= time.Now().UnixMilli() {
+					c.RequestState = "expired"
+				}
+			}
+		}
 		c.Held = held > 0
 		return journalError(err)
 	})
@@ -650,6 +666,13 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 	fresh := false
 	err := j.transaction(ctx, func(tx journalTx) error {
 		fresh = false
+		request, allowed, requestErr := j.requestDecision(ctx, tx, c, verb, now)
+		if requestErr != nil {
+			return requestErr
+		}
+		if request && !allowed {
+			return nil
+		}
 		result, e := tx.ExecContext(
 			ctx,
 			j.db.Adopt(`INSERT INTO moderation_decisions VALUES (?,?,?,?,?,?) ON CONFLICT(gid,id) DO NOTHING`),
@@ -745,6 +768,15 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 						MessageDate:  date,
 					},
 				)
+			}
+			if request {
+				for _, item := range c.Actions {
+					if item.Kind == "cleanup_delete" && item.State == Manual {
+						item.State = ""
+						item.ID = ""
+						p.Actions = append(p.Actions, item)
+					}
+				}
 			}
 			if operationErr := j.mergePlan(ctx, tx, p, now); operationErr != nil {
 				return operationErr

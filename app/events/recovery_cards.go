@@ -91,6 +91,15 @@ func truncateRunes(s string, n int) string {
 }
 
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
+	if c.RequestState == "pending" || c.RequestState == "expired" || c.RequestState == "reject_report" {
+		rows := [][]tbapi.InlineKeyboardButton{tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref))}
+		if allowed && c.RequestState == "pending" {
+			rows = append(rows, tbapi.NewInlineKeyboardRow(
+				tbapi.NewInlineKeyboardButtonData("Подтвердить модерацию", "M+:"+c.Ref),
+				tbapi.NewInlineKeyboardButtonData("Отклонить запрос", "MR:"+c.Ref)))
+		}
+		return tbapi.InlineKeyboardMarkup{InlineKeyboard: rows}
+	}
 	live, manual, decision, _ := cardWork(c)
 	rows := [][]tbapi.InlineKeyboardButton{}
 	main := []tbapi.InlineKeyboardButton{}
@@ -199,6 +208,25 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	if !bound {
 		return fmt.Errorf("callback is not bound to this moderation card")
 	}
+	request, err := j.IsRequest(ctx, c.Receipt)
+	if err != nil {
+		return fmt.Errorf("request authority unavailable: %w", err)
+	}
+	if request {
+		if q.From.ID <= 0 || q.From.IsBot || sharedTelegramUser(q.From.ID) || !a.superUsers.IsSuper("", q.From.ID) {
+			return a.answerRecoveryCallback(ctx, q, "Подтверждение доступно только уполномоченному пользователю с числовым ID")
+		}
+		if c.RequestState == "expired" && (parts[0] == "M+" || parts[0] == "MR") {
+			return a.answerRecoveryCallback(ctx, q, "Срок запроса истёк. Модерация и обучение не разрешены")
+		}
+		if c.RequestState != "approve_report" && parts[0] != "M+" && parts[0] != "MR" &&
+			parts[0] != "M?" && parts[0] != "MB" && !strings.HasPrefix(parts[0], "MP") {
+			return a.answerRecoveryCallback(ctx, q, "Для запроса доступны подтверждение, отказ и подробности")
+		}
+		if a.superUsers.IsSuper(c.UserName, c.IdentityID) || a.targetExplicitlyApproved(c.IdentityID) {
+			return a.answerRecoveryCallback(ctx, q, "Цель защищена политикой полномочий или явного доверия")
+		}
+	}
 	if pageText, historyPage := strings.CutPrefix(parts[0], "MP"); historyPage {
 		page, parseErr := strconv.Atoi(pageText)
 		if parseErr != nil || page < 0 || page >= max(1, (len(c.Actions)+1)/2) {
@@ -265,11 +293,20 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	if a.softBan {
 		c.RequestedBanKind = "restrict"
 	}
-	fresh, err := j.Decide(ctx, q.ID, c, verb, q.From.ID, time.Now())
+	decisionID := q.ID
+	if request && (verb == "approve_report" || verb == "reject_report") {
+		decisionID = "sender-request:" + c.Receipt
+	}
+	fresh, err := j.Decide(ctx, decisionID, c, verb, q.From.ID, time.Now())
 	if err != nil {
 		return fmt.Errorf("record moderation decision: %w", err)
 	}
 	if fresh {
+		if request && verb == "approve_report" {
+			if e := a.bot.RemoveApprovedUser(c.IdentityID); e != nil {
+				return fmt.Errorf("trust update failed; decision retained")
+			}
+		}
 		var learningErr error
 		if (verb == "approve" || verb == "approve_report") && c.Text != "" {
 			learningErr = a.bot.UpdateSpam(c.Text)
@@ -285,7 +322,7 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 		if learningErr != nil {
 			return fmt.Errorf("local learning/approval failed; decision retained for manual review")
 		}
-		if err = j.EndDecision(ctx, q.ID); err != nil {
+		if err = j.EndDecision(ctx, decisionID); err != nil {
 			return fmt.Errorf("record callback completion: %w", err)
 		}
 	}
@@ -315,6 +352,10 @@ func (r *userReports) recoveryReportDecision(ctx context.Context, q *tbapi.Callb
 	a := r.recoveryAdmin
 	j := a.recovery.journal
 	receipt := fmt.Sprintf("source:%d:%d:user:%d", r.primChatID, msgID, uid)
+	isRequest, requestErr := j.IsRequest(ctx, receipt)
+	if requestErr != nil || isRequest {
+		return fmt.Errorf("sender request requires its bound moderation card")
+	}
 	c, contextErr := j.CardView(ctx, receipt)
 	var reports []storage.Report
 	if r.Storage != nil {
@@ -495,6 +536,10 @@ func (a *admin) recoveryLegacyCallback(q *tbapi.CallbackQuery) error {
 	key := fmt.Sprintf("source:%d:%d:%s:%d", a.primChatID, msgID, kind, uid)
 	if msgID <= 0 {
 		return fmt.Errorf("legacy callback lacks exact source message ID")
+	}
+	pendingRequest, requestErr := a.recovery.journal.IsRequest(context.Background(), key)
+	if requestErr != nil || pendingRequest {
+		return fmt.Errorf("sender request cannot adopt legacy callback authority")
 	}
 	name, _ := a.extractUsername(q.Message.Text)
 	p := moderation.Plan{
