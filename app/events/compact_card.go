@@ -245,9 +245,9 @@ func requestLabel(c moderation.Card) string {
 	case "pending":
 		return "ожидает подтверждения до " + cardDate(c.RequestExpires/1000)
 	case "expired":
-		return "срок подтверждения истёк; действия не разрешены"
+		return "срок подтверждения истёк; запрос не даёт полномочий"
 	case "reject_report", "cancel":
-		return "отклонён; действия не разрешены"
+		return "отклонён; запрос не даёт полномочий"
 	default:
 		return "решение записано; результаты действий указаны ниже"
 	}

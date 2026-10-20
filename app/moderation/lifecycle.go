@@ -89,7 +89,7 @@ func permanent(until int64, now time.Time) bool {
 
 func (j *Journal) matching(ctx context.Context, tx journalTx, p Plan, a Action, now time.Time) (Action, bool, error) {
 	var rows []Action
-	q := `SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY id`
+	q := `SELECT id,kind,message_id,until_date,state,code,next_at FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY CASE WHEN kind IN ('original_delete','cleanup_delete') AND state='confirmed' THEN 0 WHEN kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') THEN 1 ELSE 2 END,id`
 	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(q), j.db.GID(), p.Key, a.Kind, a.Kind, a.MessageID); err != nil {
 		return Action{}, false, journalError(err)
 	}
@@ -103,6 +103,11 @@ func (j *Journal) matchRows(
 	for _, old := range rows {
 		if a.ID != "" && old.ID == a.ID {
 			return old, true, nil
+		}
+		// a pending sender request is not an executable deletion demand.
+		if deleteKind(a.Kind) && old.State == Manual && old.Code == "sender_command_pending_confirmation" &&
+			a.State != Manual && p.RequesterID == 0 && !strings.HasPrefix(p.Origin, "report:sender:") {
+			continue
 		}
 		// Explicit approval is a new demand, not an automatic retry of a terminal result.
 		if (strings.HasPrefix(p.Origin, "operator:") || strings.HasPrefix(p.Origin, "report:approval:")) &&
@@ -220,7 +225,7 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 		return journalError(err)
 	}
 	var rows []Action
-	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY id`), j.db.GID(), p.Key); err != nil {
+	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,code,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY CASE WHEN kind IN ('original_delete','cleanup_delete') AND state='confirmed' THEN 0 WHEN kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') THEN 1 ELSE 2 END,id`), j.db.GID(), p.Key); err != nil {
 		return journalError(err)
 	}
 	for _, a := range p.Actions {
