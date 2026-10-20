@@ -403,7 +403,7 @@ func (j *Journal) withdrawUnwanted(ctx context.Context, tx journalTx, receipt st
 	return j.exec(
 		ctx,
 		tx,
-		`UPDATE moderation_actions SET state=CASE WHEN uncertain=TRUE THEN 'manual_review' ELSE 'canceled' END,code=CASE WHEN uncertain=TRUE THEN 'withdrawn_request_outcome_unknown' ELSE 'withdrawn_before_execution' END WHERE gid=? AND receipt=? AND (state='pending' OR (state='manual_review' AND code IN ('manual_report_pending_decision','legacy_context_only'))) AND kind NOT IN ('notice','card') AND NOT EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id AND d.active=TRUE)`,
+		`UPDATE moderation_actions SET state=CASE WHEN uncertain=TRUE THEN 'manual_review' ELSE 'canceled' END,code=CASE WHEN uncertain=TRUE THEN 'withdrawn_request_outcome_unknown' ELSE 'withdrawn_before_execution' END WHERE gid=? AND receipt=? AND (state='pending' OR (state='manual_review' AND code IN ('manual_report_pending_decision','legacy_context_only','sender_command_pending_confirmation'))) AND kind NOT IN ('notice','card') AND NOT EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id AND d.active=TRUE)`,
 		j.db.GID(),
 		receipt,
 	)

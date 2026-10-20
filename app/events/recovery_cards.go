@@ -98,6 +98,9 @@ func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
 				tbapi.NewInlineKeyboardButtonData("Подтвердить модерацию", "M+:"+c.Ref),
 				tbapi.NewInlineKeyboardButtonData("Отклонить запрос", "MR:"+c.Ref)))
 		}
+		if c.RequestState == "expired" || c.RequestState == "reject_report" {
+			rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Закрыть запрос", "MC:"+c.Ref)))
+		}
 		return tbapi.InlineKeyboardMarkup{InlineKeyboard: rows}
 	}
 	live, manual, decision, _ := cardWork(c)
@@ -219,7 +222,8 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 		if c.RequestState == "expired" && (parts[0] == "M+" || parts[0] == "MR") {
 			return a.answerRecoveryCallback(ctx, q, "Срок запроса истёк. Модерация и обучение не разрешены")
 		}
-		if c.RequestState != "approve_report" && parts[0] != "M+" && parts[0] != "MR" &&
+		closedRequest := c.RequestState == "expired" || c.RequestState == "reject_report"
+		if c.RequestState != "approve_report" && (!closedRequest || parts[0] != "MC") && parts[0] != "M+" && parts[0] != "MR" &&
 			parts[0] != "M?" && parts[0] != "MB" && !strings.HasPrefix(parts[0], "MP") {
 			return a.answerRecoveryCallback(ctx, q, "Для запроса доступны подтверждение, отказ и подробности")
 		}

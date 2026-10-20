@@ -59,7 +59,13 @@ func (j *Journal) requestDecision(
 		return false, true, nil
 	}
 	if rows[0].Expires <= now.UnixMilli() {
-		return true, false, errors.New("confirmation request expired; no moderation authorized")
+		if verb != "close" {
+			return true, false, errors.New("confirmation request expired; no moderation authorized")
+		}
+		if e := j.exec(ctx, tx, `UPDATE moderation_requests SET state='expired' WHERE gid=? AND receipt=?`, j.db.GID(), c.Receipt); e != nil {
+			return true, false, e
+		}
+		return false, true, j.withdrawTX(ctx, tx, c.Receipt, "report", now)
 	}
 	if verb != "approve_report" && verb != "reject_report" && verb != "cancel" {
 		return true, false, errors.New("request requires explicit approval or cancellation")

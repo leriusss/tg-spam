@@ -147,3 +147,28 @@ func TestPendingRequestReopenDoesNotReplayConfirmedActions(t *testing.T) {
 	require.NoError(t, db.GetContext(ctx, &count, `SELECT count(*) FROM moderation_actions WHERE kind NOT IN ('card','notice') AND state='pending'`))
 	require.Zero(t, count)
 }
+
+func TestPendingRequestExpiredClosureDoesNotAuthorizeActions(t *testing.T) {
+	j, _ := testJournal(t, DefaultLimits())
+	now := time.Now()
+	p := pendingPlan(400)
+	_, _, _, err := j.Accept(testCtx, p, now)
+	require.NoError(t, err)
+	c, err := j.CardView(testCtx, p.Key)
+	require.NoError(t, err)
+	fresh, err := j.Decide(testCtx, "close expired", c, "close", 11, now.Add(16*time.Minute))
+	require.NoError(t, err)
+	require.True(t, fresh)
+	require.NoError(t, j.EndDecision(testCtx, "close expired"))
+	after, err := j.CardView(testCtx, p.Key)
+	require.NoError(t, err)
+	require.Equal(t, "expired", after.RequestState)
+	for _, op := range after.Actions {
+		require.NotEqual(t, Pending, op.State)
+		require.NotEqual(t, Running, op.State)
+		require.NotEqual(t, Confirmed, op.State)
+	}
+	fresh, err = j.Decide(testCtx, "late approve", after, "approve_report", 11, now.Add(17*time.Minute))
+	require.NoError(t, err)
+	require.False(t, fresh)
+}
