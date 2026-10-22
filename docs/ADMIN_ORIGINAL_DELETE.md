@@ -143,3 +143,13 @@ SQLite backup snapshots с integrity/SHA-256. Проверить кандида�
 Старые БД не восстанавливать, новые таблицы/историю не удалять, prune/replay не
 выполнять. Возобновление recovery и Han — отдельное проверенное восстановление
 с актуальными БД и прежними согласованными Han=true / ratio=0.7 / min-count=20.
+
+## Обнаруженная CI-конкуренция SQLite
+
+Первый recovery CI выявил SQLITE_BUSY в прежнем
+`TestAtomicClaimsAcrossConnectionsAndFencedTakeover`: лимит 40 повторов завершал
+транзакцию примерно через секунду, раньше существующего deadline 5 секунд.
+Повторы теперь ограничены этим же deadline, без сокращающего его счётчика.
+`TestDeleteRequestAdmissionWaitsWithinTransactionDeadline` удерживает отдельную
+SQLite write-транзакцию 2 секунды и проверяет сохранение delete request после
+освобождения; модерация/Telegram API до успешного commit не выполняются.

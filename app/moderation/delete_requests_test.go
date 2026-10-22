@@ -247,3 +247,28 @@ func TestDeleteRequestActualDatabaseReopen(t *testing.T) {
 	drive(t, &w)
 	require.Equal(t, 1, calls)
 }
+
+func TestDeleteRequestAdmissionWaitsWithinTransactionDeadline(t *testing.T) {
+	j, db := testJournal(t, DefaultLimits())
+	var path string
+	require.NoError(t, db.Get(&path, `SELECT file FROM pragma_database_list WHERE name='main'`))
+	blocker, err := engine.NewSqlite(path, "test")
+	require.NoError(t, err)
+	defer blocker.Close()
+	blocker.SetMaxOpenConns(1)
+	conn, err := blocker.Connx(testCtx)
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.ExecContext(testCtx, "BEGIN IMMEDIATE")
+	require.NoError(t, err)
+	unlocked := make(chan error, 1)
+	timer := time.AfterFunc(2*time.Second, func() { _, e := conn.ExecContext(testCtx, "COMMIT"); unlocked <- e })
+	defer timer.Stop()
+	started := time.Now()
+	_, _, fresh, err := j.Accept(testCtx, deletePlan(91007), started)
+	require.NoError(t, <-unlocked)
+	require.NoError(t, err)
+	require.True(t, fresh)
+	require.GreaterOrEqual(t, time.Since(started), 2*time.Second)
+	// The admission remains bounded by the original five-second transaction budget.
+}

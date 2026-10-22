@@ -82,7 +82,9 @@ type journalTx interface {
 func (j *Journal) transaction(ctx context.Context, fn func(journalTx) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	for retry := 0; ; retry++ {
+	// SQLite contention may outlast one second under concurrent workers.
+	// Retry until the existing transaction deadline, never beyond it.
+	for {
 		var err error
 		if j.db.Type() == engine.Sqlite {
 			var conn *sqlx.Conn
@@ -130,7 +132,7 @@ func (j *Journal) transaction(ctx context.Context, fn func(journalTx) error) err
 		if err == nil {
 			return nil
 		}
-		if retry >= 40 || !strings.Contains(strings.ToLower(err.Error()), "locked") {
+		if !strings.Contains(strings.ToLower(err.Error()), "locked") {
 			return journalError(err)
 		}
 		select {
