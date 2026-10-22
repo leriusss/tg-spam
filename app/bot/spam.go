@@ -42,6 +42,7 @@ type SpamConfig struct {
 	GroupID           string
 	Dry               bool
 	ContentExtraction ContentExtractionConfig
+	Han               HanConfig
 	Burst             BurstConfig
 }
 
@@ -109,6 +110,10 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		checkUserID = msg.SenderChat.ID
 		checkUserName = msg.SenderChat.UserName
 		firstName, lastName, isPremium = "", "", false // channels don't have personal user fields
+	}
+
+	if response, matched := s.hanResponse(msg, strconv.FormatInt(checkUserID, 10)); matched {
+		return response
 	}
 
 	spamReq := spamcheck.Request{Msg: msgText, CheckOnly: checkOnly,

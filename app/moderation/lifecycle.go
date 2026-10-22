@@ -10,6 +10,7 @@ import (
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
+	Reason              string   `db:"-"`
 	RequestState        string   `db:"-"`
 	RequestExpires      int64    `db:"-"`
 	Ref                 string   `db:"ref"`
@@ -39,6 +40,7 @@ type Demand struct {
 
 func (j *Journal) migrateLifecycle(ctx context.Context) error {
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_reasons (gid TEXT NOT NULL, receipt TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_demands (gid TEXT NOT NULL, receipt TEXT NOT NULL, action_id TEXT NOT NULL, origin TEXT NOT NULL, active BOOLEAN NOT NULL, accepted_at BIGINT NOT NULL, PRIMARY KEY(gid,action_id,origin))`,
 		`CREATE TABLE IF NOT EXISTS moderation_cards (gid TEXT NOT NULL, receipt TEXT NOT NULL, ref TEXT NOT NULL, destination BIGINT NOT NULL, chat_id BIGINT NOT NULL, identity_id BIGINT NOT NULL, identity_kind TEXT NOT NULL, message_id INTEGER NOT NULL, text TEXT NOT NULL, user_name TEXT NOT NULL, display_name TEXT NOT NULL, PRIMARY KEY(gid,receipt), UNIQUE(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS moderation_withdrawals (gid TEXT NOT NULL, receipt TEXT NOT NULL, origin TEXT NOT NULL, PRIMARY KEY(gid,receipt,origin))`,
@@ -253,6 +255,12 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 			return journalError(e)
 		}
 		changed = changed || n > 0
+	}
+	if p.Reason != "" {
+		if err := j.exec(ctx, tx, `INSERT INTO moderation_reasons VALUES (?,?,?) ON CONFLICT(gid,receipt) DO NOTHING`,
+			j.db.GID(), p.Key, p.Reason); err != nil {
+			return err
+		}
 	}
 	if p.Card {
 		res, e := tx.ExecContext(
@@ -479,6 +487,14 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 		)
 		if err != nil {
 			return journalError(err)
+		}
+		var reasons []string
+		if reasonErr := tx.SelectContext(ctx, &reasons, j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`),
+			j.db.GID(), c.Receipt); reasonErr != nil {
+			return journalError(reasonErr)
+		}
+		if len(reasons) > 0 {
+			c.Reason = reasons[0]
 		}
 		var held int
 		err = tx.GetContext(

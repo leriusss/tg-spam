@@ -56,6 +56,9 @@ func compactCardText(c moderation.Card, chatName string) string {
 		fmt.Fprintf(&text, "\nЗапрос /spam: %s.\nЧат: %d; оригинал: %d; цель: %s ID=%d\n",
 			requestLabel(c), c.ChatID, c.MessageID, c.IdentityKind, c.IdentityID)
 	}
+	if c.Reason != "" {
+		text.WriteString("\n" + html.EscapeString(c.Reason) + "\n")
+	}
 	deleted, remaining, shown := 0, 0, 0
 	for _, op := range currentCardActions(c) {
 		if op.Kind == "card" || op.Kind == "notice" {
