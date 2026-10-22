@@ -5,7 +5,6 @@ import (
 	"context"
 	"log"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -669,5 +668,5 @@ func TestAdminForwardOfflineReplaySafetyInvariants(t *testing.T) {
 	assert.NotNil(t, r.api)
 	assert.NotNil(t, r.bot)
 	assert.NotNil(t, r.locator)
-	assert.False(t, strings.Contains(t.TempDir(), "/opt/antispam-bots/runtime"))
+	assert.NotContains(t, t.TempDir(), "/opt/antispam-bots/runtime")
 }

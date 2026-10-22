@@ -422,7 +422,10 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if err := l.Locator.AddMediaMessage(ctx, mediaKey, fromChat, identity, locatorUserName, msg.ID); err != nil {
 			log.Printf("[WARN] failed to add media message to locator: kind=%s msg_id=%d: %v", mediaKey.Kind, msg.ID, err)
 		} else {
-			log.Printf("[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d", mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID)
+			log.Printf(
+				"[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d",
+				mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID,
+			)
 		}
 	}
 
