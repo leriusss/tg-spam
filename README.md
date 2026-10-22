@@ -41,7 +41,9 @@ TG-Spam can also run as a server, providing a simple HTTP API to check messages 
 message whose own text/caption has at least `--han.min-count=20` (`HAN_MIN_COUNT`)
 Han letters and a Han/all-letters fraction of at least `--han.ratio=0.7`
 (`HAN_RATIO`). Requires `--moderation-recovery`; invalid settings fail startup.
-No automatic ban, cleanup, training or trust removal is requested by this rule.
+Han alone requests no automatic ban, cleanup, training or trust removal. Independent
+detector/burst verdicts retain their ban/cleanup; Han matches do not record ham history
+or accumulate automatic trust. Both decision reasons are retained in the persistent card.
 Manual trust, superusers, dry and training modes retain their safety gates.
 Han is a Unicode script shared by Chinese and Japanese writing; this is not
 language detection. See [configuration and worked examples](docs/HAN_SCRIPT_RULE.md).

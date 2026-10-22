@@ -366,7 +366,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		d.spamHistory.Push(req)
 		return true, cr
 	}
-	if d.samplesErr != nil {
+	if d.samplesErr != nil || req.SuppressHamRecording {
 		return false, cr
 	}
 

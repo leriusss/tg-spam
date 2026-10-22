@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -257,9 +258,31 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 		changed = changed || n > 0
 	}
 	if p.Reason != "" {
-		if err := j.exec(ctx, tx, `INSERT INTO moderation_reasons VALUES (?,?,?) ON CONFLICT(gid,receipt) DO NOTHING`,
-			j.db.GID(), p.Key, p.Reason); err != nil {
-			return err
+		var prior []string
+		reasonErr := tx.SelectContext(ctx, &prior,
+			j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`), j.db.GID(), p.Key)
+		if reasonErr != nil {
+			return journalError(reasonErr)
+		}
+		merged := ""
+		if len(prior) > 0 {
+			merged = prior[0]
+		}
+		for line := range strings.SplitSeq(p.Reason, "\n") {
+			if line != "" && !slices.Contains(strings.Split(merged, "\n"), line) {
+				if merged != "" {
+					merged += "\n"
+				}
+				merged += line
+			}
+		}
+		if len(prior) == 0 || merged != prior[0] {
+			reasonErr = j.exec(ctx, tx, `INSERT INTO moderation_reasons VALUES (?,?,?) ON CONFLICT(gid,receipt) DO UPDATE SET reason=excluded.reason`,
+				j.db.GID(), p.Key, merged)
+			if reasonErr != nil {
+				return reasonErr
+			}
+			changed = true
 		}
 	}
 	if p.Card {

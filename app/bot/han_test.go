@@ -83,8 +83,8 @@ func TestHanBeforeAutoBypassAndWithoutLearning(t *testing.T) {
 				require.True(t, resp.DeleteReplyTo)
 				require.Equal(t, msg.ID, resp.ReplyTo)
 				require.Equal(t, before, d.ApprovedUsers(), "Han must not change trust or train")
-				require.Contains(t, resp.CheckResults[0].Details, "Преобладает письменность Han")
-				require.Empty(t, resp.CheckResults[0].ExtraDeleteIDs)
+				require.Contains(t, resp.CheckResults[len(resp.CheckResults)-1].Details, "Преобладает письменность Han")
+				require.Empty(t, resp.CheckResults[len(resp.CheckResults)-1].ExtraDeleteIDs)
 			}
 		})
 	}

@@ -80,7 +80,7 @@ func (s *SpamFilter) hanResponse(msg Message, userID string) (Response, bool) {
 		return Response{}, false
 	}
 	reason := fmt.Sprintf("Преобладает письменность Han: %d из %d букв (%.1f%%); "+
-		"порог %.1f%%, минимум %d. Только удаление сообщения.",
+		"порог %.1f%%, минимум %d. Только удаление сообщения по правилу Han.",
 		han, letters, 100*float64(han)/float64(letters), 100*cfg.Ratio, cfg.MinCount)
 	return Response{Send: true, ReplyTo: msg.ID, DeleteReplyTo: true, HanDeleteOnly: true,
 		User: msg.From, ChannelID: msg.SenderChat.ID,
