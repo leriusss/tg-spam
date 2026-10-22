@@ -787,7 +787,7 @@ func (j *Journal) Prune(ctx context.Context, now time.Time) error {
 		for _, id := range ids {
 			for _, table := range []string{
 				"moderation_deliveries", "moderation_demands", "moderation_decisions", "moderation_cards",
-				"moderation_withdrawals", "moderation_resolutions", "moderation_actions", "moderation_requests",
+				"moderation_reasons", "moderation_withdrawals", "moderation_resolutions", "moderation_actions", "moderation_requests",
 			} {
 				if e := j.exec(ctx, tx, `DELETE FROM `+table+` WHERE gid=? AND receipt=?`, j.db.GID(), id); e != nil {
 					return journalError(e)

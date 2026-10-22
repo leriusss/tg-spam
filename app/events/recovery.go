@@ -450,7 +450,18 @@ func (l *TelegramListener) enqueueAutomatic(update tbapi.Update, msg *bot.Messag
 		IdentityID:   id,
 		Destination:  l.adminChatID,
 	}
+	p.Reason = hanModerationReason(resp.CheckResults, resp.BanInterval > 0)
 	base := moderation.Action{ChatID: p.ChatID, IdentityKind: kind, IdentityID: id}
+	if resp.HanDeleteOnly {
+		checker, ok := l.Bot.(interface{ IsExplicitTrustedUser(int64) bool })
+		if ok && checker.IsExplicitTrustedUser(id) || l.SuperUsers.IsSuper(msg.SenderChat.UserName, id) {
+			return false, nil
+		}
+		p.SourceText = msg.Text
+		p.Actions = []moderation.Action{{Kind: "original_delete", ChatID: p.ChatID, IdentityKind: kind,
+			IdentityID: id, MessageID: msg.ID, MessageDate: int64(update.Message.Date)}}
+		return l.adminHandler.acceptRecovery(p, nil)
+	}
 	if resp.BanInterval > 0 {
 		b := base
 		b.Kind = "ban"

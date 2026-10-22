@@ -15,6 +15,7 @@ var PermanentBanDuration = time.Hour * 24 * 400
 
 // Response describes bot's reaction on particular message
 type Response struct {
+	HanDeleteOnly bool // requires persistent deletion; never ban, cleanup or learn
 	Text          string
 	Send          bool                 // status
 	BanInterval   time.Duration        // bots banning user set the interval
@@ -39,6 +40,7 @@ type SenderChat struct {
 
 // Message is primary record to pass data from/to bots
 type Message struct {
+	HanText    *string `json:"-"` // own text/caption excluding Telegram quoted entities
 	ID         int
 	From       User
 	SenderChat SenderChat `json:"sender_chat,omitzero"`

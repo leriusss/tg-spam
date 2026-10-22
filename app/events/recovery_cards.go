@@ -17,6 +17,9 @@ import (
 func cardDetails(c moderation.Card) string {
 	var text strings.Builder
 	text.WriteString("Подробности модерации\n")
+	if c.Reason != "" {
+		fmt.Fprintf(&text, "Причина: %s\n", c.Reason)
+	}
 	if c.ChatID != 0 {
 		fmt.Fprintf(&text, "Чат: %d\n", c.ChatID)
 	}

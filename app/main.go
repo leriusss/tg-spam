@@ -131,6 +131,12 @@ type options struct {
 		Window    time.Duration `long:"window" env:"WINDOW" default:"1h" description:"time window for duplicate detection"`
 	} `group:"duplicates" namespace:"duplicates" env-namespace:"DUPLICATES"`
 
+	Han struct {
+		Enabled  bool    `long:"enabled" env:"ENABLED" description:"delete messages dominated by Han script"`
+		Ratio    float64 `long:"ratio" env:"RATIO" default:"0.7" description:"minimum Han fraction among letters (greater than 0.5, at most 1)"`
+		MinCount int     `long:"min-count" env:"MIN_COUNT" default:"20" description:"minimum Han letters required (at least 2)"`
+	} `group:"han" namespace:"han" env-namespace:"HAN"`
+
 	Burst struct {
 		Enabled            bool   `long:"enabled" env:"ENABLED" description:"enable burst spam detector foundation"`
 		WindowSeconds      int    `long:"window-seconds" env:"WINDOW_SECONDS" default:"30" description:"rolling window for burst detection, in seconds"`
@@ -279,6 +285,9 @@ func main() {
 }
 
 func execute(ctx context.Context, opts options) error {
+	if err := validateHanOptions(opts); err != nil {
+		return err
+	}
 	if opts.Dry {
 		log.Print("[WARN] dry mode, no actual bans")
 	}
@@ -817,6 +826,7 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 			UseFingerprintForDups: opts.ContentExtraction.UseFingerprintForDuplicates,
 			LowTextThreshold:      opts.ContentExtraction.LowTextThreshold,
 		},
+		Han: bot.HanConfig{Enabled: opts.Han.Enabled, Ratio: opts.Han.Ratio, MinCount: opts.Han.MinCount},
 		Burst: bot.BurstConfig{
 			Enabled:            opts.Burst.Enabled,
 			WindowSeconds:      opts.Burst.WindowSeconds,

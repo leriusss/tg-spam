@@ -368,6 +368,17 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	}
 
 	msg := transform(update.Message)
+	hanText := bot.HanOwnText(update.Message.Text, hanEntities(update.Message.Entities))
+	if update.Message.Caption != "" {
+		if update.Message.Text != "" {
+			hanText += "\n"
+		}
+		hanText += bot.HanOwnText(update.Message.Caption, hanEntities(update.Message.CaptionEntities))
+	}
+	if hanText != msg.Text {
+		msg.HanText = &hanText
+	}
+
 	textPresent := strings.TrimSpace(msg.Text) != ""
 	mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
 	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward ||
@@ -445,6 +456,17 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	}
 
 	resp := l.Bot.OnMessage(*msg, false)
+
+	if resp.HanDeleteOnly {
+		if l.Dry || l.TrainingMode {
+			return nil
+		}
+		if l.RecoveryJournal == nil || l.adminHandler == nil || l.adminHandler.recovery == nil {
+			return fmt.Errorf("han deletion requires durable moderation journal")
+		}
+		_, err := l.enqueueAutomatic(update, msg, resp)
+		return err
+	}
 
 	if !resp.Send { // not spam
 		return nil

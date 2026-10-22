@@ -35,6 +35,19 @@ TG-Spam's spam detection algorithm is multifaceted, incorporating several criter
 
 TG-Spam can also run as a server, providing a simple HTTP API to check messages for spam. This is useful for integration with other tools, not related to Telegram. For more details, see [Running with webapi server](#running-with-webapi-server) section below. In addition, it provides WEB UI to perform some useful admin tasks. For more details see [WEB UI](#web-ui) section below. All the spam detection modules can be also used as a library. For more details, see [Using tg-spam as a library](#using-tg-spam-as-a-library) section below.
 
+### Optional Han script restriction
+
+`--han.enabled` / `HAN_ENABLED` is off by default. It deletes only the particular
+message whose own text/caption has at least `--han.min-count=20` (`HAN_MIN_COUNT`)
+Han letters and a Han/all-letters fraction of at least `--han.ratio=0.7`
+(`HAN_RATIO`). Requires `--moderation-recovery`; invalid settings fail startup.
+Han alone requests no automatic ban, cleanup, training or trust removal. Independent
+detector/burst verdicts retain their ban/cleanup; Han matches do not record ham history
+or accumulate automatic trust. Both decision reasons are retained in the persistent card.
+Manual trust, superusers, dry and training modes retain their safety gates.
+Han is a Unicode script shared by Chinese and Japanese writing; this is not
+language detection. See [configuration and worked examples](docs/HAN_SCRIPT_RULE.md).
+
 ## Installation
 
 - The primary method of installation is via Docker. TG-Spam is available as a Docker image, making it easy to deploy and run as a container. The image is available on Docker Hub at [umputun/tg-spam](https://hub.docker.com/r/umputun/tg-spam) as well as on GitHub Packages at [ghcr.io/umputun/tg-spam](https://ghcr.io/umputun/tg-spam).
@@ -539,6 +552,11 @@ space:
 duplicates:
       --duplicates.threshold=           duplicate messages to trigger spam (0=disabled) (default: 0) [$DUPLICATES_THRESHOLD]
       --duplicates.window=              time window for duplicate detection (default: 1h) [$DUPLICATES_WINDOW]
+
+han:
+      --han.enabled                     delete messages dominated by Han script [$HAN_ENABLED]
+      --han.ratio=                      minimum Han fraction among letters (greater than 0.5, at most 1) (default: 0.7) [$HAN_RATIO]
+      --han.min-count=                  minimum Han letters required (at least 2) (default: 20) [$HAN_MIN_COUNT]
 
 report:
       --report.enabled                  enable user spam reporting [$REPORT_ENABLED]
