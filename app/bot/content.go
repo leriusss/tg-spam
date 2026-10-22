@@ -3,6 +3,7 @@ package bot
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -105,12 +106,7 @@ func normalizeContentText(text string) string {
 }
 
 func containsContentPart(parts []string, text string) bool {
-	for _, part := range parts {
-		if part == text {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(parts, text)
 }
 
 func buildFingerprintBase(content NormalizedMessageContent) string {
@@ -140,7 +136,7 @@ func buildFingerprintBase(content NormalizedMessageContent) string {
 	return fmt.Sprintf("%s:%x", base, sum[:4])
 }
 
-func hasLinkMentionEntities(msg Message) (hasLinks bool, hasMentions bool) {
+func hasLinkMentionEntities(msg Message) (hasLinks, hasMentions bool) {
 	check := func(entities *[]Entity) {
 		if entities == nil {
 			return

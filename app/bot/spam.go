@@ -172,9 +172,11 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	detectorSpam, checkResults := s.Check(spamReq)
 	if burstDecision.Spam {
 		checkResults = append(checkResults, spamcheck.Response{
-			Name:           "burst",
-			Spam:           true,
-			Details:        fmt.Sprintf("%s: repeated %d times in %ds", burstDecision.Reason, burstDecision.Count, burstDecision.WindowSeconds),
+			Name: "burst",
+			Spam: true,
+			Details: fmt.Sprintf(
+				"%s: repeated %d times in %ds", burstDecision.Reason, burstDecision.Count, burstDecision.WindowSeconds,
+			),
 			ExtraDeleteIDs: burstDecision.ExtraDeleteIDs,
 		})
 	}
