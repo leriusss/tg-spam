@@ -26,8 +26,17 @@ func (j *Journal) admitRequest(ctx context.Context, tx journalTx, p Plan, now ti
 	if err := tx.GetContext(ctx, &sender, j.db.Adopt(q+` AND requester=?`), j.db.GID(), now.Add(-time.Minute).UnixMilli(), p.RequesterID); err != nil {
 		return journalError(err)
 	}
-	if total >= 20 || sender >= 3 {
+	senderLimit := 3
+	if p.DeleteOnly {
+		senderLimit = 20
+	}
+	if total >= 20 || sender >= senderLimit {
 		return ErrRequestLimit
+	}
+	if p.DeleteOnly {
+		if err := j.exec(ctx, tx, `INSERT INTO moderation_delete_requests VALUES (?,?)`, j.db.GID(), p.Key); err != nil {
+			return err
+		}
 	}
 	return j.exec(ctx, tx, `INSERT INTO moderation_requests VALUES (?,?,?,?,?,?)`, j.db.GID(), p.Key, p.RequesterID, now.UnixMilli(), now.Add(15*time.Minute).UnixMilli(), "pending")
 }

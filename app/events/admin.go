@@ -122,6 +122,9 @@ func (a *admin) MsgHandler(update tbapi.Update) error {
 		return nil
 	}
 
+	if locator, ok := a.locator.(deleteCandidateLocator); ok {
+		return a.originalDeleteCandidates(update, locator)
+	}
 	origin := adminForwardOriginIdentity(update.Message.ForwardOrigin)
 	log.Printf("[DEBUG] admin report origin parsed: admin_msg_id=%d origin_type=%s target_type=%s target_id=%d reliable=%t",
 		update.Message.MessageID, origin.OriginType, origin.Kind, origin.ID, origin.Reliable)

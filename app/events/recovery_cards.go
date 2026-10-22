@@ -94,6 +94,9 @@ func truncateRunes(s string, n int) string {
 }
 
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
+	if c.DeleteOnly {
+		return deleteOnlyKeyboard(c, allowed)
+	}
 	if c.RequestState == "pending" || c.RequestState == "expired" || c.RequestState == "reject_report" {
 		rows := [][]tbapi.InlineKeyboardButton{tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref))}
 		if allowed && c.RequestState == "pending" {
@@ -147,6 +150,9 @@ func (r *recovery) notifyCard(ctx context.Context, a moderation.Action) moderati
 		IdentityID:   c.IdentityID,
 		IdentityKind: c.IdentityKind,
 		MessageID:    c.MessageID,
+	}
+	if c.DeleteOnly {
+		authority.Kind = "original_delete"
 	}
 	allowed := r.gate(authority)
 	if r.superName != nil && r.superName(c.UserName, c.IdentityID) {
@@ -213,6 +219,9 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	}
 	if !bound {
 		return fmt.Errorf("callback is not bound to this moderation card")
+	}
+	if c.DeleteOnly {
+		return a.originalDeleteCallback(ctx, q, c, parts[0])
 	}
 	request, err := j.IsRequest(ctx, c.Receipt)
 	if err != nil {
@@ -691,6 +700,9 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 func (a *admin) recoveryCardDisplay(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card) error {
 	authority := moderation.Action{Kind: "ban", ChatID: c.ChatID, IdentityID: c.IdentityID,
 		IdentityKind: c.IdentityKind, MessageID: c.MessageID}
+	if c.DeleteOnly {
+		authority.Kind = "original_delete"
+	}
 	allowed := a.recovery.gate == nil || a.recovery.gate(authority)
 	if a.recovery.superName != nil && a.recovery.superName(c.UserName, c.IdentityID) {
 		allowed = false

@@ -120,3 +120,18 @@ func TestQueueCapacityAndMetadataFootprint(t *testing.T) {
 	require.Equal(t, 5000, actions)
 	t.Logf("5000 pending actions metadata: %d bytes (%d-byte SQLite pages)", pages*pageSize, pageSize)
 }
+
+func TestPostgresDeleteRequestContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PostgreSQL runs in full Linux checks")
+	}
+	ctx := context.Background()
+	pg := containers.NewPostgresTestContainerWithDB(ctx, t, "delete_requests")
+	defer pg.Close(ctx)
+	db, err := engine.NewPostgres(ctx, pg.ConnectionString(), "delete-contract")
+	require.NoError(t, err)
+	defer db.Close()
+	j, err := NewJournal(ctx, db, DefaultLimits())
+	require.NoError(t, err)
+	checkDeleteRequest(t, j, db)
+}

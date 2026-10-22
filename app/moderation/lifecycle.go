@@ -11,6 +11,8 @@ import (
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
+	DeleteOnly          bool     `db:"-"`
+	RequesterID         int64    `db:"-"`
 	Reason              string   `db:"-"`
 	RequestState        string   `db:"-"`
 	RequestExpires      int64    `db:"-"`
@@ -511,6 +513,11 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 		if err != nil {
 			return journalError(err)
 		}
+		var deleteRequests []string
+		if e := tx.SelectContext(ctx, &deleteRequests, j.db.Adopt(`SELECT receipt FROM moderation_delete_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt); e != nil {
+			return journalError(e)
+		}
+		c.DeleteOnly = len(deleteRequests) > 0
 		var reasons []string
 		if reasonErr := tx.SelectContext(ctx, &reasons, j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`),
 			j.db.GID(), c.Receipt); reasonErr != nil {
@@ -551,11 +558,13 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 		}
 		if err == nil {
 			var requests []struct {
-				State   string `db:"state"`
-				Expires int64  `db:"expires_at"`
+				State     string `db:"state"`
+				Requester int64  `db:"requester"`
+				Expires   int64  `db:"expires_at"`
 			}
-			err = tx.SelectContext(ctx, &requests, j.db.Adopt(`SELECT state,expires_at FROM moderation_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt)
+			err = tx.SelectContext(ctx, &requests, j.db.Adopt(`SELECT state,expires_at,requester FROM moderation_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt)
 			if len(requests) > 0 {
+				c.RequesterID = requests[0].Requester
 				c.RequestState = requests[0].State
 				c.RequestExpires = requests[0].Expires
 				if c.RequestState == "pending" && c.RequestExpires <= time.Now().UnixMilli() {
@@ -710,6 +719,13 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 	fresh := false
 	err := j.transaction(ctx, func(tx journalTx) error {
 		fresh = false
+		var deleteOnly int
+		if e := tx.GetContext(ctx, &deleteOnly, j.db.Adopt(`SELECT count(*) FROM moderation_delete_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt); e != nil {
+			return journalError(e)
+		}
+		if deleteOnly > 0 {
+			return errors.New("delete-only card requires its dedicated decision")
+		}
 		request, allowed, requestErr := j.requestDecision(ctx, tx, c, verb, now)
 		if requestErr != nil {
 			return requestErr

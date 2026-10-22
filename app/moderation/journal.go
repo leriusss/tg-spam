@@ -35,6 +35,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		db.SetMaxOpenConns(1)
 	}
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_delete_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_requests_rate ON moderation_requests(gid,created_at)`,
 		`CREATE TABLE IF NOT EXISTS moderation_command_replies (gid TEXT NOT NULL, sender BIGINT NOT NULL, scope TEXT NOT NULL, next_at BIGINT NOT NULL, PRIMARY KEY(gid,sender,scope))`,
@@ -148,12 +149,25 @@ func (j *Journal) exec(ctx context.Context, tx journalTx, q string, args ...any)
 // Accept binds delivery and creates all actions in one transaction, before local learning/API calls.
 // The returned owner is required to activate the preparation after non-replayable learning.
 func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner string, created bool, err error) {
-	if p.Key == "" || p.ChatID == 0 || p.IdentityID == 0 || (p.IdentityKind != "user" && p.IdentityKind != "sender_chat") ||
+	messageOnly := p.DeleteOnly && p.IdentityKind == "message" && p.IdentityID == 0
+	if p.DeleteOnly && !validDeleteRequest(p) {
+		return "", "", false, errors.New("invalid delete-only request")
+	}
+	if p.Key == "" ||
+		p.ChatID == 0 ||
+		(!messageOnly &&
+			(p.IdentityID == 0 ||
+				(p.IdentityKind != "user" &&
+					p.IdentityKind != "sender_chat"))) ||
+
 		(p.IdentityKind == "user" && p.IdentityID < 0) ||
 		(p.IdentityKind == "sender_chat" && p.IdentityID > 0) {
 		return "", "", false, errors.New("invalid validated moderation target")
 	}
 	sourceKey := fmt.Sprintf("source:%d:%d:%s:%d", p.ChatID, p.MessageID, p.IdentityKind, p.IdentityID)
+	if p.DeleteOnly {
+		sourceKey = fmt.Sprintf("delete:%d:%d", p.ChatID, p.MessageID)
+	}
 	deliveryKey := fmt.Sprintf("delivery:%d:%d", p.DeliveryChat, p.DeliveryMessage)
 	if len(p.Actions) == 0 ||
 		((p.Key != sourceKey || p.MessageID <= 0) &&
@@ -268,7 +282,7 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 				}
 				if deleteKind(a.Kind) && a.MessageID > 0 {
 					var done int
-					if lookupErr := tx.GetContext(ctx, &done, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND message_id=? AND identity_id=? AND kind IN ('original_delete','cleanup_delete') AND state='confirmed'`), j.db.GID(), a.ChatID, a.MessageID, a.IdentityID); lookupErr != nil {
+					if lookupErr := tx.GetContext(ctx, &done, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND message_id=? AND kind IN ('original_delete','cleanup_delete') AND state='confirmed'`), j.db.GID(), a.ChatID, a.MessageID); lookupErr != nil {
 						return journalError(lookupErr)
 					}
 					if done > 0 {
@@ -578,7 +592,7 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 		if cooldown > now.UnixMilli() {
 			return nil
 		}
-		q := `SELECT a.id,a.receipt,a.kind,a.chat_id,a.identity_id,a.identity_kind,a.message_id,a.message_date,a.until_date,a.state,a.code,a.attempts,a.deadline,a.next_at,a.owner,a.lease_until,a.uncertain,a.generation,a.delivered,a.notification_id FROM moderation_actions a LEFT JOIN moderation_receipts r ON a.gid=r.gid AND a.receipt=r.id WHERE a.gid=? AND (a.kind IN ('notice','card') OR r.state='ready' OR EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=a.gid AND d.action_id=a.id AND d.active=TRUE AND d.origin='detector')) AND ((a.state='pending' AND a.next_at<=?) OR (a.state='running' AND a.lease_until<?)) AND (a.kind NOT IN ('ban','restrict','unban','restore') OR NOT EXISTS (SELECT 1 FROM moderation_actions running WHERE running.gid=a.gid AND running.chat_id=a.chat_id AND running.identity_id=a.identity_id AND running.kind IN ('ban','restrict','unban','restore') AND running.state='running' AND running.id!=a.id)) ORDER BY a.next_at,a.id LIMIT 1`
+		q := `SELECT a.id,a.receipt,a.kind,a.chat_id,a.identity_id,a.identity_kind,a.message_id,a.message_date,a.until_date,a.state,a.code,a.attempts,a.deadline,a.next_at,a.owner,a.lease_until,a.uncertain,a.generation,a.delivered,a.notification_id FROM moderation_actions a LEFT JOIN moderation_receipts r ON a.gid=r.gid AND a.receipt=r.id WHERE a.gid=? AND (a.kind IN ('notice','card') OR r.state='ready' OR EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=a.gid AND d.action_id=a.id AND d.active=TRUE AND d.origin='detector')) AND ((a.state='pending' AND a.next_at<=?) OR (a.state='running' AND a.lease_until<?)) AND (a.kind NOT IN ('ban','restrict','unban','restore') OR NOT EXISTS (SELECT 1 FROM moderation_actions running WHERE running.gid=a.gid AND running.chat_id=a.chat_id AND running.identity_id=a.identity_id AND running.kind IN ('ban','restrict','unban','restore') AND running.state='running' AND running.id!=a.id)) AND (a.kind NOT IN ('original_delete','cleanup_delete') OR NOT EXISTS (SELECT 1 FROM moderation_actions running WHERE running.gid=a.gid AND running.chat_id=a.chat_id AND running.message_id=a.message_id AND running.kind IN ('original_delete','cleanup_delete') AND running.state='running' AND running.id!=a.id)) ORDER BY a.next_at,a.id LIMIT 1`
 		e := tx.GetContext(ctx, &a, j.db.Adopt(q), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli())
 		if errors.Is(e, sqlNoRows) {
 			return nil
@@ -591,7 +605,7 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 		}
 		if deleteKind(a.Kind) && a.MessageID > 0 {
 			var done int
-			if lookupErr := tx.GetContext(ctx, &done, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND message_id=? AND identity_id=? AND kind IN ('original_delete','cleanup_delete') AND state='confirmed'`), j.db.GID(), a.ChatID, a.MessageID, a.IdentityID); lookupErr != nil {
+			if lookupErr := tx.GetContext(ctx, &done, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND message_id=? AND kind IN ('original_delete','cleanup_delete') AND state='confirmed'`), j.db.GID(), a.ChatID, a.MessageID); lookupErr != nil {
 				return journalError(lookupErr)
 			}
 			if done > 0 {
@@ -787,7 +801,12 @@ func (j *Journal) Prune(ctx context.Context, now time.Time) error {
 		for _, id := range ids {
 			for _, table := range []string{
 				"moderation_deliveries", "moderation_demands", "moderation_decisions", "moderation_cards",
-				"moderation_reasons", "moderation_withdrawals", "moderation_resolutions", "moderation_actions", "moderation_requests",
+				"moderation_reasons",
+				"moderation_withdrawals",
+				"moderation_resolutions",
+				"moderation_actions",
+				"moderation_requests",
+				"moderation_delete_requests",
 			} {
 				if e := j.exec(ctx, tx, `DELETE FROM `+table+` WHERE gid=? AND receipt=?`, j.db.GID(), id); e != nil {
 					return journalError(e)

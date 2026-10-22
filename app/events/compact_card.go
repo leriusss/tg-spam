@@ -29,6 +29,9 @@ func safeTelegramUsername(s string) bool {
 func cardText(c moderation.Card) string { return compactCardText(c, "") }
 
 func compactCardText(c moderation.Card, chatName string) string {
+	if c.DeleteOnly {
+		return originalDeleteCardText(c, chatName)
+	}
 	var text strings.Builder
 	heading := "🛡 Спам"
 	if chatName != "" {
