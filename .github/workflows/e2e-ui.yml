@@ -15,9 +15,6 @@ jobs:
   e2e-ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      PLAYWRIGHT_DRIVER_PATH: ${{ runner.temp }}/playwright-driver/1.52.0
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers/1.52.0
 
     steps:
       - name: checkout
@@ -41,6 +38,8 @@ jobs:
           test "$(node -p 'require("./tools/playwright/package-lock.json").packages["node_modules/playwright-core"].version')" = 1.52.0
           test "$(npm --version)" = 10.9.2
           echo "PLAYWRIGHT_NODEJS_PATH=$(command -v node)" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_DRIVER_PATH=$RUNNER_TEMP/playwright-driver/1.52.0" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/playwright-browsers/1.52.0" >> "$GITHUB_ENV"
 
       # PR validation always installs Chromium from an empty runner-local path.
       - name: cache playwright browsers
