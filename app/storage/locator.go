@@ -130,11 +130,16 @@ type MsgMeta struct {
 type MediaKind string
 
 const (
-	MediaLocatorVersion           = 1
-	MediaPhoto          MediaKind = "photo"
-	MediaVideo          MediaKind = "video"
-	MediaDocument       MediaKind = "document"
-	MediaAnimation      MediaKind = "animation"
+	// MediaLocatorVersion identifies the media key encoding.
+	MediaLocatorVersion = 1
+	// MediaPhoto identifies photo media.
+	MediaPhoto MediaKind = "photo"
+	// MediaVideo identifies video media.
+	MediaVideo MediaKind = "video"
+	// MediaDocument identifies document media.
+	MediaDocument MediaKind = "document"
+	// MediaAnimation identifies animation media.
+	MediaAnimation MediaKind = "animation"
 )
 
 // MediaLocatorKey is a typed, stable media identifier. StableMediaID is never a moderation identity.
@@ -148,7 +153,9 @@ type MediaLocatorKey struct {
 type LocatorIdentityKind string
 
 const (
-	LocatorIdentityUser       LocatorIdentityKind = "user"
+	// LocatorIdentityUser identifies a Telegram user.
+	LocatorIdentityUser LocatorIdentityKind = "user"
+	// LocatorIdentitySenderChat identifies a Telegram sender chat.
 	LocatorIdentitySenderChat LocatorIdentityKind = "sender_chat"
 )
 
@@ -300,7 +307,9 @@ func (l *Locator) addMessageRecord(ctx context.Context, baseHash string, chatID,
 func (l *Locator) MessageByMedia(ctx context.Context, key MediaLocatorKey, chatID int64,
 	identity LocatorIdentity) (MsgMeta, bool) {
 	if err := validateMediaLocatorInput(key, identity); err != nil {
-		log.Printf("[WARN] media locator lookup rejected: kind=%s identity_kind=%s identity_id=%d", key.Kind, identity.Kind, identity.ID)
+		log.Printf(
+			"[WARN] media locator lookup rejected: kind=%s identity_kind=%s identity_id=%d", key.Kind, identity.Kind, identity.ID,
+		)
 		return MsgMeta{}, false
 	}
 	l.RLock()
@@ -315,7 +324,9 @@ func (l *Locator) MessageByMedia(ctx context.Context, key MediaLocatorKey, chatI
 		ORDER BY time DESC, msg_id DESC LIMIT 1`)
 	err := l.GetContext(ctx, &located, query, l.GID(), chatID, identity.ID, baseHash, hashPattern)
 	if err != nil {
-		log.Printf("[DEBUG] media locator miss: kind=%s identity_kind=%s identity_id=%d chat_id=%d", key.Kind, identity.Kind, identity.ID, chatID)
+		log.Printf(
+			"[DEBUG] media locator miss: kind=%s identity_kind=%s identity_id=%d chat_id=%d", key.Kind, identity.Kind, identity.ID, chatID,
+		)
 		return MsgMeta{}, false
 	}
 	return located, true

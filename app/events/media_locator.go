@@ -30,14 +30,27 @@ func extractMediaLocatorKey(msg *tbapi.Message) (storage.MediaLocatorKey, mediaL
 	switch {
 	case len(msg.Photo) > 0:
 		photo := canonicalPhotoSize(msg.Photo)
-		key = storage.MediaLocatorKey{Version: storage.MediaLocatorVersion, Kind: storage.MediaPhoto, StableMediaID: photo.FileUniqueID}
+		key = storage.MediaLocatorKey{
+			Version: storage.MediaLocatorVersion, Kind: storage.MediaPhoto,
+			StableMediaID: photo.FileUniqueID,
+		}
 	case msg.Animation != nil:
-		key = storage.MediaLocatorKey{Version: storage.MediaLocatorVersion, Kind: storage.MediaAnimation, StableMediaID: msg.Animation.FileUniqueID}
+		key = storage.MediaLocatorKey{
+			Version: storage.MediaLocatorVersion, Kind: storage.MediaAnimation,
+			StableMediaID: msg.Animation.FileUniqueID,
+		}
 	case msg.Video != nil:
-		key = storage.MediaLocatorKey{Version: storage.MediaLocatorVersion, Kind: storage.MediaVideo, StableMediaID: msg.Video.FileUniqueID}
+		key = storage.MediaLocatorKey{
+			Version: storage.MediaLocatorVersion, Kind: storage.MediaVideo,
+			StableMediaID: msg.Video.FileUniqueID,
+		}
 	case msg.Document != nil:
-		key = storage.MediaLocatorKey{Version: storage.MediaLocatorVersion, Kind: storage.MediaDocument, StableMediaID: msg.Document.FileUniqueID}
-	case msg.Audio != nil || msg.Voice != nil || msg.VideoNote != nil || msg.Sticker != nil || msg.Story != nil || msg.PaidMedia != nil:
+		key = storage.MediaLocatorKey{
+			Version: storage.MediaLocatorVersion, Kind: storage.MediaDocument,
+			StableMediaID: msg.Document.FileUniqueID,
+		}
+	case msg.Audio != nil || msg.Voice != nil || msg.VideoNote != nil ||
+		msg.Sticker != nil || msg.Story != nil || msg.PaidMedia != nil:
 		return storage.MediaLocatorKey{}, mediaLocatorUnsupported
 	default:
 		return storage.MediaLocatorKey{}, mediaLocatorUnavailable
@@ -56,7 +69,8 @@ func canonicalPhotoSize(sizes []tbapi.PhotoSize) tbapi.PhotoSize {
 		if candidateArea > bestArea ||
 			(candidateArea == bestArea && candidate.Width > best.Width) ||
 			(candidateArea == bestArea && candidate.Width == best.Width && candidate.Height > best.Height) ||
-			(candidateArea == bestArea && candidate.Width == best.Width && candidate.Height == best.Height && candidate.FileUniqueID > best.FileUniqueID) {
+			(candidateArea == bestArea && candidate.Width == best.Width && candidate.Height == best.Height &&
+				candidate.FileUniqueID > best.FileUniqueID) {
 			best = candidate
 		}
 	}

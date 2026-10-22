@@ -767,7 +767,7 @@ func TestSpamFilter_BurstTrustedBoundary(t *testing.T) {
 		s := NewSpamFilter(det, SpamConfig{Burst: BurstConfig{Enabled: true, Threshold: 3}})
 		msg := Message{ChatID: 1, Text: "limited time offer", From: User{ID: 10, Username: "user1"}}
 
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			got := s.OnMessage(withMessageID(msg, 100+i), false)
 			assert.False(t, got.Send)
 			assert.Len(t, got.CheckResults, 1)

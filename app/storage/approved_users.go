@@ -111,7 +111,8 @@ func (au *ApprovedUsers) Read(ctx context.Context) ([]approved.UserInfo, error) 
 	au.RLock()
 	defer au.RUnlock()
 
-	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source FROM approved_users WHERE gid = ? ORDER BY uid ASC")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source " +
+		"FROM approved_users WHERE gid = ? ORDER BY uid ASC")
 	users := []approvedUsersInfo{}
 	if err := au.SelectContext(ctx, &users, query, au.GID()); err != nil {
 		return nil, fmt.Errorf("failed to get approved users: %w", err)
@@ -168,7 +169,8 @@ func (au *ApprovedUsers) Delete(ctx context.Context, id string) error {
 
 	// check if user exists first
 	var user approvedUsersInfo
-	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source FROM approved_users WHERE uid = ? AND gid = ?")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source " +
+		"FROM approved_users WHERE uid = ? AND gid = ?")
 	if err := au.GetContext(ctx, &user, query, id, au.GID()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("[DEBUG] approved user %q not found, nothing to delete", id)
