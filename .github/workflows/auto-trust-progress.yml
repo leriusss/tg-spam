@@ -1,0 +1,48 @@
+name: auto-trust-progress
+on:
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'app/storage/**'
+      - 'app/bot/**'
+      - 'app/events/**'
+      - 'scripts/check-approved-progress-compat.sh'
+      - '.github/workflows/auto-trust-progress.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: fixture
+          POSTGRES_DB: compat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      - name: Detector, SQLite, PostgreSQL and OnMessage race tests
+        run: go test -race -timeout=300s ./lib/tgspam ./app/storage ./app/bot ./app/events
+      - name: Build
+        run: go build -race ./...
+      - name: Previous binary reads current schemas and retains its known trust defect
+        run: bash scripts/check-approved-progress-compat.sh
+        env:
+          COMPAT_POSTGRES_URL: postgres://postgres:fixture@localhost:5432/compat?sslmode=disable
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.6.2
+          args: --new-from-rev=9e47893a6dd97859c2cd9c8794924b268aa46e5a

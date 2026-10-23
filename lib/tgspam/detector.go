@@ -57,7 +57,8 @@ type Detector struct {
 	hamHistory  *spamcheck.LastRequests
 	spamHistory *spamcheck.LastRequests
 
-	lock sync.RWMutex
+	trustLock sync.Mutex // serializes progress persistence, replacement and removal
+	lock      sync.RWMutex
 }
 
 const (
@@ -187,7 +188,12 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	d.recoverSamples()
 	cleanMsg := d.cleanText(req.Msg)
 	d.lock.RLock()
-	defer d.lock.RUnlock()
+	locked := true
+	defer func() {
+		if locked {
+			d.lock.RUnlock()
+		}
+	}()
 	if d.samplesErr != nil {
 		cr = append(cr, d.samplesUnavailable())
 	}
@@ -224,7 +230,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	}
 
 	// approved user don't need content analysis checks, but only skip if no spam detected by behavioral checks
-	if req.UserID != "" && d.FirstMessageOnly && !isSpamDetected(cr) && d.approvedUsers[req.UserID].Count >= d.FirstMessagesCount {
+	if req.UserID != "" && d.FirstMessageOnly && !isSpamDetected(cr) && d.approvedForRequest(req) {
 		// include previous check results (e.g., duplicate check) in the response
 		return false, append(cr, spamcheck.Response{Name: "pre-approved", Spam: false, Details: "user already approved"})
 	}
@@ -371,30 +377,24 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		return false, cr
 	}
 
-	// update approved users only if it's not paranoid mode and not a check-only request
-	// and only if the message was not too short (to ensure we have meaningful content)
-	if (d.FirstMessageOnly || d.FirstMessagesCount > 0) && !req.CheckOnly && !isShortMessage {
-		ctx, cancel := d.ctxWithStoreTimeout()
-		defer cancel()
-		au := approved.UserInfo{
-			Count:     d.approvedUsers[req.UserID].Count + 1,
-			UserID:    req.UserID,
-			UserName:  req.UserName,
-			Timestamp: time.Now(),
-			Source:    approved.SourceAuto,
-		}
-		d.approvedUsers[req.UserID] = au // update approved users status in memory
-		if d.userStorage != nil {
-			// update approved users status in storage
-			_ = d.userStorage.Write(ctx, au) // ignore error, failed to write to storage is not critical here
+	d.lock.RUnlock()
+	locked = false
+	// persistence is serialized after all content/network checks release the model read lock.
+	if (d.FirstMessageOnly || d.FirstMessagesCount > 0) && !req.CheckOnly && !isShortMessage && req.UserID != "" {
+		if err := d.creditAutoProgress(req); err != nil {
+			log.Printf("[WARN] auto approval progress not saved: %v", err)
+			cr = append(cr, spamcheck.Response{Name: "auto approval persistence", Error: err, Details: "progress not advanced"})
 		}
 	}
+
 	d.hamHistory.Push(req)
 	return false, cr
 }
 
 // Reset resets spam samples/classifier, excluded tokens, stop words and approved users.
 func (d *Detector) Reset() {
+	d.trustLock.Lock()
+	defer d.trustLock.Unlock()
 	d.lock.Lock()
 	defer d.lock.Unlock()
 
@@ -478,6 +478,8 @@ func (d *Detector) WithLuaEngine(engine LuaPluginEngine) error {
 
 // WithUserStorage sets a UserStorage for approved users and loads approved users from it.
 func (d *Detector) WithUserStorage(storage UserStorage) (count int, err error) {
+	d.trustLock.Lock()
+	defer d.trustLock.Unlock()
 	d.lock.Lock()
 	defer d.lock.Unlock()
 	d.approvedUsers = make(map[string]approved.UserInfo) // reset approved users
@@ -491,8 +493,7 @@ func (d *Detector) WithUserStorage(storage UserStorage) (count int, err error) {
 		return 0, fmt.Errorf("failed to read approved users from storage: %w", err)
 	}
 	for _, user := range users {
-		user.Count = d.FirstMessagesCount + 1 // +1 to skip first message check if count is 0
-		d.approvedUsers[user.UserID] = user
+		d.approvedUsers[user.UserID] = user.Clone()
 	}
 	return len(users), nil
 }
@@ -514,7 +515,7 @@ func (d *Detector) ApprovedUsers() (res []approved.UserInfo) {
 	defer d.lock.RUnlock()
 	res = make([]approved.UserInfo, 0, len(d.approvedUsers))
 	for _, info := range d.approvedUsers {
-		res = append(res, info)
+		res = append(res, info.Clone())
 	}
 	sort.Slice(res, func(i, j int) bool {
 		return res[i].Timestamp.After(res[j].Timestamp)
@@ -522,8 +523,8 @@ func (d *Detector) ApprovedUsers() (res []approved.UserInfo) {
 	return res
 }
 
-// IsApprovedUser checks if a given user ID is approved.
-// It uses memory cache for approved users and compares the count of messages sent by the user.
+// IsApprovedUser checks manual trust or a reached threshold in any stored scope.
+// It retains the aggregate library API; use IsApprovedUserInChat for chat-local authorization.
 func (d *Detector) IsApprovedUser(userID string) bool {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
@@ -532,7 +533,31 @@ func (d *Detector) IsApprovedUser(userID string) bool {
 	if !ok {
 		return false
 	}
-	return ui.Count > d.FirstMessagesCount
+	if ui.Source == approved.SourceManual || ui.Count >= d.FirstMessagesCount {
+		return true
+	}
+	for _, progress := range ui.Progress {
+		if progress.Count >= d.FirstMessagesCount {
+			return true
+		}
+	}
+	return false
+}
+
+// IsApprovedUserInChat checks automatic progress only in the given source chat.
+// Manual trust remains global. Unlike IsApprovedUser, unscoped/other-chat counts
+// cannot authorize a chat-local operation such as a user report.
+func (d *Detector) IsApprovedUserInChat(userID string, chatID int64) bool {
+	d.lock.RLock()
+	defer d.lock.RUnlock()
+	ui, ok := d.approvedUsers[userID]
+	if !ok {
+		return false
+	}
+	if ui.Source == approved.SourceManual {
+		return true
+	}
+	return chatID != 0 && ui.Progress[chatID].Count >= d.FirstMessagesCount
 }
 
 // IsExplicitTrustedUser checks if a user was explicitly approved by admin/API.
@@ -549,6 +574,8 @@ func (d *Detector) IsExplicitTrustedUser(userID string) bool {
 
 // AddApprovedUser adds user IDs to the list of approved users.
 func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
+	d.trustLock.Lock()
+	defer d.trustLock.Unlock()
 	d.lock.Lock()
 	defer d.lock.Unlock()
 	ts := user.Timestamp
@@ -577,17 +604,21 @@ func (d *Detector) AddApprovedUser(user approved.UserInfo) error {
 
 // RemoveApprovedUser removes approved user for given IDs
 func (d *Detector) RemoveApprovedUser(id string) error {
-	d.lock.Lock()
-	delete(d.approvedUsers, id)
-	d.lock.Unlock()
-
-	if d.userStorage != nil {
+	d.trustLock.Lock()
+	defer d.trustLock.Unlock()
+	d.lock.RLock()
+	storage := d.userStorage
+	d.lock.RUnlock()
+	if storage != nil {
 		ctx, cancel := d.ctxWithStoreTimeout()
 		defer cancel()
-		if err := d.userStorage.Delete(ctx, id); err != nil {
+		if err := storage.Delete(ctx, id); err != nil {
 			return fmt.Errorf("failed to delete approved user %s from storage: %w", id, err)
 		}
 	}
+	d.lock.Lock()
+	delete(d.approvedUsers, id)
+	d.lock.Unlock()
 	return nil
 }
 

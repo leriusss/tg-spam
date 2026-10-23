@@ -76,7 +76,7 @@ func TestLearningUnavailableDoesNotBuildTrust(t *testing.T) {
 	require.Equal(t, 1, d.approvedUsers[req.UserID].Count)
 	require.Len(t, d.hamHistory.Last(20), 1)
 
-	// only the successfully checked user may acquire the existing restart bypass.
+	// only completed checks survive a restart; one check does not reach the threshold.
 	require.NoError(t, db.Close())
 	db, err = engine.NewSqlite(path, "trust-test")
 	require.NoError(t, err)
@@ -86,8 +86,11 @@ func TestLearningUnavailableDoesNotBuildTrust(t *testing.T) {
 	require.Equal(t, approved.SourceManual, d.approvedUsers["manual"].Source)
 	require.Equal(t, approved.SourceAuto, d.approvedUsers["subject"].Source)
 	_, checks = d.Check(req)
-	require.Equal(t, "pre-approved", checks[0].Name)
+	require.NotContains(t, responseNames(checks), "pre-approved")
+	require.Contains(t, responseNames(checks), "classifier")
+	require.Contains(t, responseNames(checks), "similarity")
 	req.UserID = "outage-only"
+	d.hamHistory = spamcheck.NewLastRequests(20)
 	store.readErr = errors.New("snapshot unavailable")
 	require.Error(t, d.UpdateSpam("additional lottery prize"))
 	for range 5 {

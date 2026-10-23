@@ -48,8 +48,9 @@ func TestHanBeforeAutoBypassAndWithoutLearning(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			d := tgspam.NewDetector(tgspam.Config{FirstMessageOnly: true, MaxAllowedEmoji: -1, MinMsgLen: 1})
 			filter := NewSpamFilter(d, SpamConfig{Han: HanConfig{Enabled: mode != "disabled", Ratio: 0.7, MinCount: 20}})
-			msg := Message{ID: 1, From: User{ID: 42}, Text: "обычный текст"}
+			msg := Message{ID: 1, ChatID: -100, From: User{ID: 42}, Text: "обычный текст"}
 			filter.OnMessage(msg, false)
+			msg.ID++
 			filter.OnMessage(msg, false)
 			require.Equal(t, approved.SourceAuto, d.ApprovedUsers()[0].Source)
 			if mode == "manual" {

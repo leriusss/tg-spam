@@ -40,6 +40,9 @@ type userReports struct {
 
 // DirectUserReport handles messages replied with "/report" by regular users
 func (r *userReports) DirectUserReport(ctx context.Context, update tbapi.Update) error {
+	if update.Message == nil || update.Message.From == nil || update.Message.Chat.ID != r.primChatID {
+		return fmt.Errorf("report must originate from the protected chat")
+	}
 	origMsg := update.Message.ReplyToMessage
 	if origMsg == nil {
 		return fmt.Errorf("must reply to a message to report it")
@@ -77,7 +80,13 @@ func (r *userReports) DirectUserReport(ctx context.Context, update tbapi.Update)
 	}
 
 	// validate reporter is approved user
-	if !r.bot.IsApprovedUser(update.Message.From.ID) {
+	approved := false
+	if scoped, ok := r.bot.(interface{ IsApprovedUserInChat(int64, int64) bool }); ok {
+		approved = scoped.IsApprovedUserInChat(update.Message.From.ID, r.primChatID)
+	} else {
+		approved = r.bot.IsApprovedUser(update.Message.From.ID)
+	}
+	if !approved {
 		log.Printf("[INFO] report rejected: reporter %d (%s) not in approved list",
 			update.Message.From.ID, update.Message.From.UserName)
 		// still delete the /report command to keep chat clean
