@@ -53,10 +53,11 @@ type TelegramListener struct {
 	AggressiveCleanup       bool                // delete all messages from user when banned via /spam command
 	AggressiveCleanupLimit  int                 // max messages to delete in aggressive cleanup mode
 
-	adminHandler   *admin
-	reportsHandler *userReports
-	chatID         int64
-	adminChatID    int64
+	senderFeedbackAt time.Time
+	adminHandler     *admin
+	reportsHandler   *userReports
+	chatID           int64
+	adminChatID      int64
 
 	msgs struct {
 		once sync.Once
@@ -306,6 +307,10 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				continue
 			}
 
+			if l.procSenderSpam(update) {
+				continue
+			}
+
 			// handle spam reports from superusers
 			fromSuper := l.SuperUsers.IsSuper(update.Message.From.UserName, update.Message.From.ID)
 			if update.Message.ReplyToMessage != nil && fromSuper {
@@ -363,6 +368,17 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	}
 
 	msg := transform(update.Message)
+	hanText := bot.HanOwnText(update.Message.Text, hanEntities(update.Message.Entities))
+	if update.Message.Caption != "" {
+		if update.Message.Text != "" {
+			hanText += "\n"
+		}
+		hanText += bot.HanOwnText(update.Message.Caption, hanEntities(update.Message.CaptionEntities))
+	}
+	if hanText != msg.Text {
+		msg.HanText = &hanText
+	}
+
 	textPresent := strings.TrimSpace(msg.Text) != ""
 	mediaKey, mediaStatus := extractMediaLocatorKey(update.Message)
 	legacyContentAdmitted := msg.Image != nil || msg.WithVideoNote || msg.WithVideo || msg.WithForward ||
@@ -406,7 +422,10 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		if err := l.Locator.AddMediaMessage(ctx, mediaKey, fromChat, identity, locatorUserName, msg.ID); err != nil {
 			log.Printf("[WARN] failed to add media message to locator: kind=%s msg_id=%d: %v", mediaKey.Kind, msg.ID, err)
 		} else {
-			log.Printf("[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d", mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID)
+			log.Printf(
+				"[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d",
+				mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID,
+			)
 		}
 	}
 
@@ -437,6 +456,17 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 	}
 
 	resp := l.Bot.OnMessage(*msg, false)
+
+	if resp.HanDeleteOnly {
+		if l.Dry || l.TrainingMode {
+			return nil
+		}
+		if l.RecoveryJournal == nil || l.adminHandler == nil || l.adminHandler.recovery == nil {
+			return fmt.Errorf("han deletion requires durable moderation journal")
+		}
+		_, err := l.enqueueAutomatic(update, msg, resp)
+		return err
+	}
 
 	if !resp.Send { // not spam
 		return nil

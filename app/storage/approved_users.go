@@ -208,7 +208,8 @@ func (au *ApprovedUsers) Delete(ctx context.Context, id string) error {
 
 	// check if user exists first
 	var user approvedUsersInfo
-	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source FROM approved_users WHERE uid = ? AND gid = ?")
+	query := au.Adopt("SELECT uid, gid, name, timestamp, COALESCE(NULLIF(source, ''), 'unknown') AS source " +
+		"FROM approved_users WHERE uid = ? AND gid = ?")
 	if err := au.GetContext(ctx, &user, query, id, au.GID()); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("[DEBUG] approved user %q not found, nothing to delete", id)

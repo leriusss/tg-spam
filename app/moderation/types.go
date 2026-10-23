@@ -35,6 +35,9 @@ func DefaultLimits() Limits { return Limits{Receipts: 500, Actions: 5000, Retain
 
 // Plan contains validated authority and original card context; never Telegram credentials.
 type Plan struct {
+	DeleteOnly                        bool
+	Reason                            string
+	RequesterID                       int64
 	CommandID                         string
 	Origin                            string
 	Card                              bool

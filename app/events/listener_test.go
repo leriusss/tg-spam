@@ -840,20 +840,14 @@ func TestTelegramListener_DoWithForwarded(t *testing.T) {
 
 	require.Len(t, mockAPI.SendCalls(), 2)
 	assert.Equal(t, "startup", mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text)
-	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, "detection results")
+	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, "числовым ID")
 	assert.Equal(t, int64(123), mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).ChatID)
 
-	require.Len(t, b.UpdateSpamCalls(), 1)
-	assert.Equal(t, "text 123", b.UpdateSpamCalls()[0].Msg)
+	// A forwarded content match and a username-only superuser must never authorize moderation.
+	assert.Empty(t, b.UpdateSpamCalls())
+	assert.Empty(t, b.RemoveApprovedUserCalls())
+	assert.Empty(t, mockAPI.RequestCalls())
 
-	assert.Len(t, mockAPI.RequestCalls(), 2)
-	assert.Equal(t, int64(123), mockAPI.RequestCalls()[0].C.(tbapi.DeleteMessageConfig).ChatID)
-	assert.Equal(t, 999999, mockAPI.RequestCalls()[0].C.(tbapi.DeleteMessageConfig).MessageID)
-	assert.Equal(t, int64(123), mockAPI.RequestCalls()[1].C.(tbapi.BanChatMemberConfig).ChatID)
-	assert.Equal(t, int64(88), mockAPI.RequestCalls()[1].C.(tbapi.BanChatMemberConfig).UserID)
-
-	assert.Len(t, b.RemoveApprovedUserCalls(), 1)
-	assert.Equal(t, int64(88), b.RemoveApprovedUserCalls()[0].ID)
 }
 
 func TestTelegramListener_DoWithDirectSpamReport(t *testing.T) {

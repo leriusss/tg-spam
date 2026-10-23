@@ -8,8 +8,11 @@ import (
 )
 
 const (
-	SourceManual  = "manual"
-	SourceAuto    = "auto"
+	// SourceManual records explicit administrator approval.
+	SourceManual = "manual"
+	// SourceAuto records automatic approval.
+	SourceAuto = "auto"
+	// SourceUnknown records approval without known provenance.
 	SourceUnknown = "unknown"
 )
 

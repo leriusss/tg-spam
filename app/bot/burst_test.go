@@ -75,7 +75,7 @@ func TestBurstDetectorMaxMessagesPerUserIsBounded(t *testing.T) {
 	d := NewBurstDetector(BurstConfig{Enabled: true, Threshold: 100, MaxMessagesPerUser: 3})
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		d.Check(1, 10, 100+i, "limited time offer", now.Add(time.Duration(i)*time.Second))
 	}
 
@@ -102,7 +102,7 @@ func TestBurstDetectorEmptyMessagesDoNotBurst(t *testing.T) {
 	d := NewBurstDetector(BurstConfig{Enabled: true})
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		decision := d.Check(1, 10, 100+i, " \n\t ", now.Add(time.Duration(i)*time.Second))
 		assert.False(t, decision.Spam)
 	}
@@ -153,7 +153,7 @@ func TestBurstDetectorRejectsNonExactSimilaritySafely(t *testing.T) {
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 
 	assert.False(t, d.Config().Enabled)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		decision := d.Check(1, 10, 100+i, "limited time offer", now.Add(time.Duration(i)*time.Second))
 		assert.False(t, decision.Spam)
 	}
@@ -165,7 +165,7 @@ func TestBurstDetectorParallelCalls(t *testing.T) {
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

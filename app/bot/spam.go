@@ -42,6 +42,7 @@ type SpamConfig struct {
 	GroupID           string
 	Dry               bool
 	ContentExtraction ContentExtractionConfig
+	Han               HanConfig
 	Burst             BurstConfig
 }
 
@@ -111,10 +112,13 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		firstName, lastName, isPremium = "", "", false // channels don't have personal user fields
 	}
 
+	hanResponse, hanMatched := s.hanResponse(msg, strconv.FormatInt(checkUserID, 10))
+
 	spamReq := spamcheck.Request{Msg: msgText, CheckOnly: checkOnly,
 		UserID: strconv.FormatInt(checkUserID, 10), UserName: checkUserName,
 		FirstName: firstName, LastName: lastName, IsPremium: isPremium}
 	spamReq.AuthoredText = &msg.Text
+	spamReq.SuppressHamRecording = hanMatched
 	if msg.Image != nil {
 		spamReq.Meta.Images = 1
 	}
@@ -173,11 +177,16 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	detectorSpam, checkResults := s.Check(spamReq)
 	if burstDecision.Spam {
 		checkResults = append(checkResults, spamcheck.Response{
-			Name:           "burst",
-			Spam:           true,
-			Details:        fmt.Sprintf("%s: repeated %d times in %ds", burstDecision.Reason, burstDecision.Count, burstDecision.WindowSeconds),
+			Name: "burst",
+			Spam: true,
+			Details: fmt.Sprintf(
+				"%s: repeated %d times in %ds", burstDecision.Reason, burstDecision.Count, burstDecision.WindowSeconds,
+			),
 			ExtraDeleteIDs: burstDecision.ExtraDeleteIDs,
 		})
+	}
+	if hanMatched {
+		checkResults = append(checkResults, hanResponse.CheckResults...)
 	}
 	crs := make([]string, 0, len(checkResults))
 	for _, cr := range checkResults {
@@ -200,6 +209,10 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 			DeleteReplyTo: true, User: User{Username: msg.From.Username, ID: msg.From.ID, DisplayName: msg.From.DisplayName},
 			ChannelID: msg.SenderChat.ID,
 		}
+	}
+	if hanMatched {
+		hanResponse.CheckResults = checkResults
+		return hanResponse
 	}
 	log.Printf("[DEBUG] user %s is not a spammer, %s", displayUsername, checkResultStr)
 	return Response{CheckResults: checkResults} // not a spam

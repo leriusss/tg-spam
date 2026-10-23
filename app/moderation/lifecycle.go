@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
+	DeleteOnly          bool     `db:"-"`
+	RequesterID         int64    `db:"-"`
+	Reason              string   `db:"-"`
+	RequestState        string   `db:"-"`
+	RequestExpires      int64    `db:"-"`
 	Ref                 string   `db:"ref"`
 	Receipt             string   `db:"receipt"`
 	Destination         int64    `db:"destination"`
@@ -37,6 +43,7 @@ type Demand struct {
 
 func (j *Journal) migrateLifecycle(ctx context.Context) error {
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_reasons (gid TEXT NOT NULL, receipt TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_demands (gid TEXT NOT NULL, receipt TEXT NOT NULL, action_id TEXT NOT NULL, origin TEXT NOT NULL, active BOOLEAN NOT NULL, accepted_at BIGINT NOT NULL, PRIMARY KEY(gid,action_id,origin))`,
 		`CREATE TABLE IF NOT EXISTS moderation_cards (gid TEXT NOT NULL, receipt TEXT NOT NULL, ref TEXT NOT NULL, destination BIGINT NOT NULL, chat_id BIGINT NOT NULL, identity_id BIGINT NOT NULL, identity_kind TEXT NOT NULL, message_id INTEGER NOT NULL, text TEXT NOT NULL, user_name TEXT NOT NULL, display_name TEXT NOT NULL, PRIMARY KEY(gid,receipt), UNIQUE(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS moderation_withdrawals (gid TEXT NOT NULL, receipt TEXT NOT NULL, origin TEXT NOT NULL, PRIMARY KEY(gid,receipt,origin))`,
@@ -87,7 +94,7 @@ func permanent(until int64, now time.Time) bool {
 
 func (j *Journal) matching(ctx context.Context, tx journalTx, p Plan, a Action, now time.Time) (Action, bool, error) {
 	var rows []Action
-	q := `SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY id`
+	q := `SELECT id,kind,message_id,until_date,state,code,next_at FROM moderation_actions WHERE gid=? AND receipt=? AND (kind=? OR (? IN ('original_delete','cleanup_delete') AND kind IN ('original_delete','cleanup_delete'))) AND message_id=? ORDER BY CASE WHEN kind IN ('original_delete','cleanup_delete') AND state='confirmed' THEN 0 WHEN kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') THEN 1 ELSE 2 END,id`
 	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(q), j.db.GID(), p.Key, a.Kind, a.Kind, a.MessageID); err != nil {
 		return Action{}, false, journalError(err)
 	}
@@ -101,6 +108,11 @@ func (j *Journal) matchRows(
 	for _, old := range rows {
 		if a.ID != "" && old.ID == a.ID {
 			return old, true, nil
+		}
+		// a pending sender request is not an executable deletion demand.
+		if deleteKind(a.Kind) && old.State == Manual && old.Code == "sender_command_pending_confirmation" &&
+			a.State != Manual && p.RequesterID == 0 && !strings.HasPrefix(p.Origin, "report:sender:") {
+			continue
 		}
 		// Explicit approval is a new demand, not an automatic retry of a terminal result.
 		if (strings.HasPrefix(p.Origin, "operator:") || strings.HasPrefix(p.Origin, "report:approval:")) &&
@@ -218,7 +230,7 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 		return journalError(err)
 	}
 	var rows []Action
-	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY id`), j.db.GID(), p.Key); err != nil {
+	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,code,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY CASE WHEN kind IN ('original_delete','cleanup_delete') AND state='confirmed' THEN 0 WHEN kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') THEN 1 ELSE 2 END,id`), j.db.GID(), p.Key); err != nil {
 		return journalError(err)
 	}
 	for _, a := range p.Actions {
@@ -246,6 +258,34 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 			return journalError(e)
 		}
 		changed = changed || n > 0
+	}
+	if p.Reason != "" {
+		var prior []string
+		reasonErr := tx.SelectContext(ctx, &prior,
+			j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`), j.db.GID(), p.Key)
+		if reasonErr != nil {
+			return journalError(reasonErr)
+		}
+		merged := ""
+		if len(prior) > 0 {
+			merged = prior[0]
+		}
+		for line := range strings.SplitSeq(p.Reason, "\n") {
+			if line != "" && !slices.Contains(strings.Split(merged, "\n"), line) {
+				if merged != "" {
+					merged += "\n"
+				}
+				merged += line
+			}
+		}
+		if len(prior) == 0 || merged != prior[0] {
+			reasonErr = j.exec(ctx, tx, `INSERT INTO moderation_reasons VALUES (?,?,?) ON CONFLICT(gid,receipt) DO UPDATE SET reason=excluded.reason`,
+				j.db.GID(), p.Key, merged)
+			if reasonErr != nil {
+				return reasonErr
+			}
+			changed = true
+		}
 	}
 	if p.Card {
 		res, e := tx.ExecContext(
@@ -401,7 +441,7 @@ func (j *Journal) withdrawUnwanted(ctx context.Context, tx journalTx, receipt st
 	return j.exec(
 		ctx,
 		tx,
-		`UPDATE moderation_actions SET state=CASE WHEN uncertain=TRUE THEN 'manual_review' ELSE 'canceled' END,code=CASE WHEN uncertain=TRUE THEN 'withdrawn_request_outcome_unknown' ELSE 'withdrawn_before_execution' END WHERE gid=? AND receipt=? AND (state='pending' OR (state='manual_review' AND code IN ('manual_report_pending_decision','legacy_context_only'))) AND kind NOT IN ('notice','card') AND NOT EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id AND d.active=TRUE)`,
+		`UPDATE moderation_actions SET state=CASE WHEN uncertain=TRUE THEN 'manual_review' ELSE 'canceled' END,code=CASE WHEN uncertain=TRUE THEN 'withdrawn_request_outcome_unknown' ELSE 'withdrawn_before_execution' END WHERE gid=? AND receipt=? AND (state='pending' OR (state='manual_review' AND code IN ('manual_report_pending_decision','legacy_context_only','sender_command_pending_confirmation'))) AND kind NOT IN ('notice','card') AND NOT EXISTS (SELECT 1 FROM moderation_demands d WHERE d.gid=moderation_actions.gid AND d.action_id=moderation_actions.id AND d.active=TRUE)`,
 		j.db.GID(),
 		receipt,
 	)
@@ -473,6 +513,19 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 		if err != nil {
 			return journalError(err)
 		}
+		var deleteRequests []string
+		if e := tx.SelectContext(ctx, &deleteRequests, j.db.Adopt(`SELECT receipt FROM moderation_delete_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt); e != nil {
+			return journalError(e)
+		}
+		c.DeleteOnly = len(deleteRequests) > 0
+		var reasons []string
+		if reasonErr := tx.SelectContext(ctx, &reasons, j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`),
+			j.db.GID(), c.Receipt); reasonErr != nil {
+			return journalError(reasonErr)
+		}
+		if len(reasons) > 0 {
+			c.Reason = reasons[0]
+		}
 		var held int
 		err = tx.GetContext(
 			ctx,
@@ -502,6 +555,22 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 				j.db.GID(),
 				c.Receipt,
 			)
+		}
+		if err == nil {
+			var requests []struct {
+				State     string `db:"state"`
+				Requester int64  `db:"requester"`
+				Expires   int64  `db:"expires_at"`
+			}
+			err = tx.SelectContext(ctx, &requests, j.db.Adopt(`SELECT state,expires_at,requester FROM moderation_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt)
+			if len(requests) > 0 {
+				c.RequesterID = requests[0].Requester
+				c.RequestState = requests[0].State
+				c.RequestExpires = requests[0].Expires
+				if c.RequestState == "pending" && c.RequestExpires <= time.Now().UnixMilli() {
+					c.RequestState = "expired"
+				}
+			}
 		}
 		c.Held = held > 0
 		return journalError(err)
@@ -650,6 +719,20 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 	fresh := false
 	err := j.transaction(ctx, func(tx journalTx) error {
 		fresh = false
+		var deleteOnly int
+		if e := tx.GetContext(ctx, &deleteOnly, j.db.Adopt(`SELECT count(*) FROM moderation_delete_requests WHERE gid=? AND receipt=?`), j.db.GID(), c.Receipt); e != nil {
+			return journalError(e)
+		}
+		if deleteOnly > 0 {
+			return errors.New("delete-only card requires its dedicated decision")
+		}
+		request, allowed, requestErr := j.requestDecision(ctx, tx, c, verb, now)
+		if requestErr != nil {
+			return requestErr
+		}
+		if request && !allowed {
+			return nil
+		}
 		result, e := tx.ExecContext(
 			ctx,
 			j.db.Adopt(`INSERT INTO moderation_decisions VALUES (?,?,?,?,?,?) ON CONFLICT(gid,id) DO NOTHING`),
@@ -745,6 +828,15 @@ func (j *Journal) Decide(ctx context.Context, id string, c Card, verb string, op
 						MessageDate:  date,
 					},
 				)
+			}
+			if request {
+				for _, item := range c.Actions {
+					if item.Kind == "cleanup_delete" && item.State == Manual {
+						item.State = ""
+						item.ID = ""
+						p.Actions = append(p.Actions, item)
+					}
+				}
 			}
 			if operationErr := j.mergePlan(ctx, tx, p, now); operationErr != nil {
 				return operationErr

@@ -35,6 +35,19 @@ TG-Spam's spam detection algorithm is multifaceted, incorporating several criter
 
 TG-Spam can also run as a server, providing a simple HTTP API to check messages for spam. This is useful for integration with other tools, not related to Telegram. For more details, see [Running with webapi server](#running-with-webapi-server) section below. In addition, it provides WEB UI to perform some useful admin tasks. For more details see [WEB UI](#web-ui) section below. All the spam detection modules can be also used as a library. For more details, see [Using tg-spam as a library](#using-tg-spam-as-a-library) section below.
 
+### Optional Han script restriction
+
+`--han.enabled` / `HAN_ENABLED` is off by default. It deletes only the particular
+message whose own text/caption has at least `--han.min-count=20` (`HAN_MIN_COUNT`)
+Han letters and a Han/all-letters fraction of at least `--han.ratio=0.7`
+(`HAN_RATIO`). Requires `--moderation-recovery`; invalid settings fail startup.
+Han alone requests no automatic ban, cleanup, training or trust removal. Independent
+detector/burst verdicts retain their ban/cleanup; Han matches do not record ham history
+or accumulate automatic trust. Both decision reasons are retained in the persistent card.
+Manual trust, superusers, dry and training modes retain their safety gates.
+Han is a Unicode script shared by Chinese and Japanese writing; this is not
+language detection. See [configuration and worked examples](docs/HAN_SCRIPT_RULE.md).
+
 ## Installation
 
 - The primary method of installation is via Docker. TG-Spam is available as a Docker image, making it easy to deploy and run as a container. The image is available on Docker Hub at [umputun/tg-spam](https://hub.docker.com/r/umputun/tg-spam) as well as on GitHub Packages at [ghcr.io/umputun/tg-spam](https://ghcr.io/umputun/tg-spam).
@@ -547,6 +560,11 @@ duplicates:
       --duplicates.threshold=           duplicate messages to trigger spam (0=disabled) (default: 0) [$DUPLICATES_THRESHOLD]
       --duplicates.window=              time window for duplicate detection (default: 1h) [$DUPLICATES_WINDOW]
 
+han:
+      --han.enabled                     delete messages dominated by Han script [$HAN_ENABLED]
+      --han.ratio=                      minimum Han fraction among letters (greater than 0.5, at most 1) (default: 0.7) [$HAN_RATIO]
+      --han.min-count=                  minimum Han letters required (at least 2) (default: 20) [$HAN_MIN_COUNT]
+
 report:
       --report.enabled                  enable user spam reporting [$REPORT_ENABLED]
       --report.threshold=               number of reports to trigger admin notification (default: 2) [$REPORT_THRESHOLD]
@@ -870,3 +888,22 @@ func main() {
 При включённом moderation recovery сервисные карточки показывают компактные русские результаты.
 Технические операции и данные детекции доступны через «Подробнее». Полный исходный текст сохраняется отдельно для обучения.
 Примеры и ограничения: [compact moderation review](docs/review/compact-moderation.md).
+
+### Channel and anonymous `/spam` commands
+
+Replying `/spam` as a channel submits a pending review request to the configured administrator chat when moderation recovery is enabled. A numeric authorized personal user must approve the bound recovery card within 15 minutes; channel names and shared Telegram sender IDs never authorize moderation. The request authorizes no learning, trust change, ban or deletion before approval. Independent detector/administrator authority continues even when the request is pending, rejected or expired. Requests and discussion feedback are rate limited and durable across restart. See [the authority, validation and rollout contract](docs/operations/sender-spam-confirmation.md).
+
+### Reproducible UI test tooling
+
+The e2e workflow pins the Go CLI to the existing `playwright-go v0.5200.1`
+dependency and prepares its matching `playwright-core@1.52.0` from npm using
+`tools/playwright/package-lock.json` and `npm ci` integrity verification. Node is
+pinned to 22.14.0 (bundled npm 10.9.2), on Ubuntu 24.04. The driver layout is
+`PLAYWRIGHT_DRIVER_PATH/package/cli.js`; `PLAYWRIGHT_NODEJS_PATH` points at Node.
+This avoids the old driver's retired ZIP download hosts without upgrading Go dependencies.
+
+Pull requests and manual runs bypass browser cache restoration, assert the
+browser path is absent, install Chromium and system dependencies, then run the
+complete e2e suite. Successful installation alone is not an e2e result.
+Master push runs can cache browsers using a key containing the driver/Node
+versions, platform and lockfile hashes. Go build caches do not supply browsers.

@@ -322,7 +322,8 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 				Details: fmt.Sprintf("classifier spam suppressed: meaningful_tokens=%d probability=%.2f%% threshold=%.2f%%",
 					len(meaningfulTokens), decision.probability, d.MinSpamProbability),
 			})
-			log.Printf("[INFO] classifier spam verdict suppressed for short message: user_id=%s message_id=%d meaningful_tokens=%d probability=%.2f threshold=%.2f reason=%s",
+			log.Printf("[INFO] classifier spam verdict suppressed for short message: user_id=%s "+
+				"message_id=%d meaningful_tokens=%d probability=%.2f threshold=%.2f reason=%s",
 				req.UserID, req.Meta.MessageID, len(meaningfulTokens), decision.probability, d.MinSpamProbability,
 				shortMessageClassifierGuardName)
 		} else {
@@ -372,7 +373,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 		d.spamHistory.Push(req)
 		return true, cr
 	}
-	if d.samplesErr != nil {
+	if d.samplesErr != nil || req.SuppressHamRecording {
 		return false, cr
 	}
 
@@ -872,11 +873,6 @@ func (d *Detector) tokenize(inp string) map[string]int {
 	return tokenFrequency
 }
 
-// isSpam checks if a given message is similar to any of the known bad messages
-func (d *Detector) isSpamSimilarityHigh(msg string) spamcheck.Response {
-	return d.isSpamSimilarityHighTokens(d.tokenize(msg))
-}
-
 func (d *Detector) isSpamSimilarityHighTokens(tokenizedMessage map[string]int) spamcheck.Response {
 	maxSimilarity := 0.0
 	for _, spam := range d.tokenizedSpam {
@@ -1004,11 +1000,6 @@ func (d *Detector) isCasSpam(msgID string) spamcheck.Response {
 		details = "not found"
 	}
 	return spamcheck.Response{Name: "cas", Spam: false, Details: details}
-}
-
-// isSpamClassified classify tokens from a document
-func (d *Detector) isSpamClassified(msg string) spamcheck.Response {
-	return d.classifyTokens(d.tokenize(msg)).response
 }
 
 func (d *Detector) classifyTokens(tm map[string]int) classifierDecision {

@@ -17,6 +17,9 @@ import (
 func cardDetails(c moderation.Card) string {
 	var text strings.Builder
 	text.WriteString("Подробности модерации\n")
+	if c.Reason != "" {
+		fmt.Fprintf(&text, "Причина: %s\n", c.Reason)
+	}
 	if c.ChatID != 0 {
 		fmt.Fprintf(&text, "Чат: %d\n", c.ChatID)
 	}
@@ -91,6 +94,21 @@ func truncateRunes(s string, n int) string {
 }
 
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
+	if c.DeleteOnly {
+		return deleteOnlyKeyboard(c, allowed)
+	}
+	if c.RequestState == "pending" || c.RequestState == "expired" || c.RequestState == "reject_report" {
+		rows := [][]tbapi.InlineKeyboardButton{tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref))}
+		if allowed && c.RequestState == "pending" {
+			rows = append(rows, tbapi.NewInlineKeyboardRow(
+				tbapi.NewInlineKeyboardButtonData("Подтвердить модерацию", "M+:"+c.Ref),
+				tbapi.NewInlineKeyboardButtonData("Отклонить запрос", "MR:"+c.Ref)))
+		}
+		if c.RequestState == "expired" || c.RequestState == "reject_report" {
+			rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Закрыть запрос", "MC:"+c.Ref)))
+		}
+		return tbapi.InlineKeyboardMarkup{InlineKeyboard: rows}
+	}
 	live, manual, decision, _ := cardWork(c)
 	rows := [][]tbapi.InlineKeyboardButton{}
 	main := []tbapi.InlineKeyboardButton{}
@@ -132,6 +150,9 @@ func (r *recovery) notifyCard(ctx context.Context, a moderation.Action) moderati
 		IdentityID:   c.IdentityID,
 		IdentityKind: c.IdentityKind,
 		MessageID:    c.MessageID,
+	}
+	if c.DeleteOnly {
+		authority.Kind = "original_delete"
 	}
 	allowed := r.gate(authority)
 	if r.superName != nil && r.superName(c.UserName, c.IdentityID) {
@@ -190,6 +211,10 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	j := a.recovery.journal
 	c, err := j.CardView(ctx, parts[1])
 	if err != nil {
+		stale, lookupErr := j.SupersededDeleteCard(ctx, parts[1])
+		if lookupErr == nil && stale {
+			return a.answerRecoveryCallback(ctx, q, "Этот запрос заменён. Используйте новую карточку; прежнее подтверждение не действует")
+		}
 		return fmt.Errorf("load moderation card: %w", err)
 	}
 	bound, err := j.CardBound(ctx, c, q.Message.Chat.ID, q.Message.MessageID)
@@ -198,6 +223,29 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	}
 	if !bound {
 		return fmt.Errorf("callback is not bound to this moderation card")
+	}
+	if c.DeleteOnly {
+		return a.originalDeleteCallback(ctx, q, c, parts[0])
+	}
+	request, err := j.IsRequest(ctx, c.Receipt)
+	if err != nil {
+		return fmt.Errorf("request authority unavailable: %w", err)
+	}
+	if request {
+		if q.From.ID <= 0 || q.From.IsBot || sharedTelegramUser(q.From.ID) || !a.superUsers.IsSuper("", q.From.ID) {
+			return a.answerRecoveryCallback(ctx, q, "Подтверждение доступно только уполномоченному пользователю с числовым ID")
+		}
+		if c.RequestState == "expired" && (parts[0] == "M+" || parts[0] == "MR") {
+			return a.answerRecoveryCallback(ctx, q, "Срок запроса истёк. Модерация и обучение не разрешены")
+		}
+		closedRequest := c.RequestState == "expired" || c.RequestState == "reject_report"
+		if c.RequestState != "approve_report" && (!closedRequest || parts[0] != "MC") && parts[0] != "M+" && parts[0] != "MR" &&
+			parts[0] != "M?" && parts[0] != "MB" && !strings.HasPrefix(parts[0], "MP") {
+			return a.answerRecoveryCallback(ctx, q, "Для запроса доступны подтверждение, отказ и подробности")
+		}
+		if a.superUsers.IsSuper(c.UserName, c.IdentityID) || a.targetExplicitlyApproved(c.IdentityID) {
+			return a.answerRecoveryCallback(ctx, q, "Цель защищена политикой полномочий или явного доверия")
+		}
 	}
 	if pageText, historyPage := strings.CutPrefix(parts[0], "MP"); historyPage {
 		page, parseErr := strconv.Atoi(pageText)
@@ -265,11 +313,20 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	if a.softBan {
 		c.RequestedBanKind = "restrict"
 	}
-	fresh, err := j.Decide(ctx, q.ID, c, verb, q.From.ID, time.Now())
+	decisionID := q.ID
+	if request && (verb == "approve_report" || verb == "reject_report") {
+		decisionID = "sender-request:" + c.Receipt
+	}
+	fresh, err := j.Decide(ctx, decisionID, c, verb, q.From.ID, time.Now())
 	if err != nil {
 		return fmt.Errorf("record moderation decision: %w", err)
 	}
 	if fresh {
+		if request && verb == "approve_report" {
+			if e := a.bot.RemoveApprovedUser(c.IdentityID); e != nil {
+				return fmt.Errorf("trust update failed; decision retained")
+			}
+		}
 		var learningErr error
 		if (verb == "approve" || verb == "approve_report") && c.Text != "" {
 			learningErr = a.bot.UpdateSpam(c.Text)
@@ -285,7 +342,7 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 		if learningErr != nil {
 			return fmt.Errorf("local learning/approval failed; decision retained for manual review")
 		}
-		if err = j.EndDecision(ctx, q.ID); err != nil {
+		if err = j.EndDecision(ctx, decisionID); err != nil {
 			return fmt.Errorf("record callback completion: %w", err)
 		}
 	}
@@ -315,6 +372,10 @@ func (r *userReports) recoveryReportDecision(ctx context.Context, q *tbapi.Callb
 	a := r.recoveryAdmin
 	j := a.recovery.journal
 	receipt := fmt.Sprintf("source:%d:%d:user:%d", r.primChatID, msgID, uid)
+	isRequest, requestErr := j.IsRequest(ctx, receipt)
+	if requestErr != nil || isRequest {
+		return fmt.Errorf("sender request requires its bound moderation card")
+	}
 	c, contextErr := j.CardView(ctx, receipt)
 	var reports []storage.Report
 	if r.Storage != nil {
@@ -496,6 +557,10 @@ func (a *admin) recoveryLegacyCallback(q *tbapi.CallbackQuery) error {
 	if msgID <= 0 {
 		return fmt.Errorf("legacy callback lacks exact source message ID")
 	}
+	pendingRequest, requestErr := a.recovery.journal.IsRequest(context.Background(), key)
+	if requestErr != nil || pendingRequest {
+		return fmt.Errorf("sender request cannot adopt legacy callback authority")
+	}
 	name, _ := a.extractUsername(q.Message.Text)
 	p := moderation.Plan{
 		UserName:     name,
@@ -639,6 +704,9 @@ func (r *userReports) recoveryBanReporter(ctx context.Context, q *tbapi.Callback
 func (a *admin) recoveryCardDisplay(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card) error {
 	authority := moderation.Action{Kind: "ban", ChatID: c.ChatID, IdentityID: c.IdentityID,
 		IdentityKind: c.IdentityKind, MessageID: c.MessageID}
+	if c.DeleteOnly {
+		authority.Kind = "original_delete"
+	}
 	allowed := a.recovery.gate == nil || a.recovery.gate(authority)
 	if a.recovery.superName != nil && a.recovery.superName(c.UserName, c.IdentityID) {
 		allowed = false

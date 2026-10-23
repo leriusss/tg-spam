@@ -5,7 +5,6 @@ import (
 	"context"
 	"log"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -655,9 +654,9 @@ func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {
 	matching.handler.locator = locator
 	matchingMsg := replayAdminMessage(userOrigin(202, "second"), sameText)
 	require.NoError(t, matching.handler.MsgHandler(tbapi.Update{Message: matchingMsg}))
-	assert.Equal(t, []int64{202}, matching.actions().approvedRemovals)
-	assert.Equal(t, []int64{202}, matching.actions().userBans)
-	assert.Equal(t, []int{1002}, matching.actions().messageDeletes)
+	// A stored content match now requires the durable selection flow, even with a reliable forward author.
+	assertNoModerationActions(t, matching.actions())
+	assert.Equal(t, 1, matching.actions().feedback)
 }
 
 func TestAdminForwardOfflineReplaySafetyInvariants(t *testing.T) {
@@ -669,5 +668,5 @@ func TestAdminForwardOfflineReplaySafetyInvariants(t *testing.T) {
 	assert.NotNil(t, r.api)
 	assert.NotNil(t, r.bot)
 	assert.NotNil(t, r.locator)
-	assert.False(t, strings.Contains(t.TempDir(), "/opt/antispam-bots/runtime"))
+	assert.NotContains(t, t.TempDir(), "/opt/antispam-bots/runtime")
 }

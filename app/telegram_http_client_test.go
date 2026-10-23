@@ -49,10 +49,10 @@ func TestSanitizeTelegramHTTPError(t *testing.T) {
 
 		assert.NotContains(t, sanitized.Error(), fakeTelegramToken)
 		assert.Contains(t, sanitized.Error(), "/botREDACTED/getUpdates")
-		assert.True(t, errors.Is(sanitized, underlying))
+		require.ErrorIs(t, sanitized, underlying)
 
 		var gotURL *url.Error
-		require.True(t, errors.As(sanitized, &gotURL))
+		require.ErrorAs(t, sanitized, &gotURL)
 		assert.Equal(t, original.Op, gotURL.Op)
 		assert.Same(t, underlying, gotURL.Err)
 	})
@@ -68,9 +68,9 @@ func TestSanitizeTelegramHTTPError(t *testing.T) {
 		sanitized := sanitizeTelegramHTTPError(original)
 
 		assert.NotContains(t, sanitized.Error(), fakeTelegramToken)
-		assert.True(t, errors.Is(sanitized, cause))
+		require.ErrorIs(t, sanitized, cause)
 		var gotURL *url.Error
-		require.True(t, errors.As(sanitized, &gotURL))
+		require.ErrorAs(t, sanitized, &gotURL)
 		assert.True(t, gotURL.Timeout())
 		assert.True(t, gotURL.Temporary())
 	})
@@ -85,9 +85,9 @@ func TestSanitizeTelegramHTTPError(t *testing.T) {
 
 		sanitized := sanitizeTelegramHTTPError(original)
 
-		assert.True(t, errors.Is(sanitized, cause))
+		require.ErrorIs(t, sanitized, cause)
 		var gotURL *url.Error
-		assert.True(t, errors.As(sanitized, &gotURL))
+		assert.ErrorAs(t, sanitized, &gotURL)
 	})
 
 	for name, rawURL := range map[string]string{
@@ -169,7 +169,7 @@ func TestTelegramHTTPClientSuccessfulRequestIsTransparent(t *testing.T) {
 	client := &telegramHTTPClient{client: httpDoerFunc(func(_ *http.Request) (*http.Response, error) {
 		return expected, nil
 	})}
-	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+fakeTelegramToken+"/sendMessage", nil)
+	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot"+fakeTelegramToken+"/sendMessage", http.NoBody)
 	require.NoError(t, err)
 
 	resp, err := client.Do(req)
@@ -189,9 +189,9 @@ func TestTelegramClientConstructorReceivesSanitizedError(t *testing.T) {
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), fakeTelegramToken)
 	assert.Contains(t, err.Error(), "/botREDACTED/getMe")
-	assert.True(t, errors.Is(err, underlying))
+	require.ErrorIs(t, err, underlying)
 	var gotURL *url.Error
-	assert.True(t, errors.As(err, &gotURL))
+	assert.ErrorAs(t, err, &gotURL)
 }
 
 func TestTelegramPollingLoggerDoesNotReceiveToken(t *testing.T) {
@@ -241,11 +241,11 @@ func newCaptureLogger() *captureLogger {
 	return &captureLogger{notify: make(chan struct{}, 1)}
 }
 
-func (l *captureLogger) Println(values ...interface{}) {
+func (l *captureLogger) Println(values ...any) {
 	l.record(fmt.Sprintln(values...))
 }
 
-func (l *captureLogger) Printf(format string, values ...interface{}) {
+func (l *captureLogger) Printf(format string, values ...any) {
 	l.record(fmt.Sprintf(format, values...))
 }
 
