@@ -134,4 +134,5 @@ func TestPostgresDeleteRequestContract(t *testing.T) {
 	j, err := NewJournal(ctx, db, DefaultLimits())
 	require.NoError(t, err)
 	checkDeleteRequest(t, j, db)
+	checkDeleteRenewalContract(t, j, db)
 }

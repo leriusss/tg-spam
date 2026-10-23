@@ -546,7 +546,7 @@ func (l *Locator) DeleteCandidates(ctx context.Context,
 	l.RLock()
 	defer l.RUnlock()
 	var rows []MsgMeta
-	err := l.SelectContext(ctx, &rows, l.Adopt(`SELECT time,chat_id,user_id,user_name,msg_id FROM messages WHERE gid=? AND chat_id=? AND (hash=? OR hash LIKE ?) ORDER BY msg_id DESC,time ASC LIMIT 1000`), l.GID(), chatID, base, base+":%")
+	err := l.SelectContext(ctx, &rows, l.Adopt(`SELECT chat_id,user_id,user_name,msg_id FROM messages WHERE gid=? AND chat_id=? AND (hash=? OR hash LIKE ?) ORDER BY msg_id DESC,time ASC LIMIT 1000`), l.GID(), chatID, base, base+":%")
 	if err != nil {
 		return nil, fmt.Errorf("read delete candidates: %w", err)
 	}

@@ -35,6 +35,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		db.SetMaxOpenConns(1)
 	}
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_delete_request_history (gid TEXT NOT NULL, ref TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, notification_id INTEGER NOT NULL, replaced_by TEXT NOT NULL, action_snapshot TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS moderation_delete_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_requests_rate ON moderation_requests(gid,created_at)`,
@@ -808,7 +809,7 @@ func (j *Journal) Prune(ctx context.Context, now time.Time) error {
 				"moderation_resolutions",
 				"moderation_actions",
 				"moderation_requests",
-				"moderation_delete_requests",
+				"moderation_delete_requests", "moderation_delete_request_history",
 			} {
 				if e := j.exec(ctx, tx, `DELETE FROM `+table+` WHERE gid=? AND receipt=?`, j.db.GID(), id); e != nil {
 					return journalError(e)

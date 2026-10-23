@@ -71,17 +71,30 @@ func (j *Journal) DecideDelete(ctx context.Context,
 		if e := tx.GetContext(ctx, &a, j.db.Adopt(`SELECT id,receipt,kind,chat_id,identity_id,identity_kind,message_id,message_date,until_date,state,code,attempts,deadline,next_at,owner,lease_until,uncertain,generation,delivered,notification_id FROM moderation_actions WHERE gid=? AND receipt=? AND kind='original_delete'`), j.db.GID(), c.Receipt); e != nil {
 			return journalError(e)
 		}
+
+		if remove {
+			var busy int
+			if e := tx.GetContext(ctx, &busy, j.db.Adopt(`SELECT count(*) FROM moderation_actions WHERE gid=? AND chat_id=? AND message_id=? AND kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') AND id!=?`), j.db.GID(), a.ChatID, a.MessageID, a.ID); e != nil {
+				return journalError(e)
+			}
+			if busy > 0 {
+				return nil
+			}
+		}
 		state := "dismiss"
 		if remove {
 			state = "delete"
 		}
-		if e := j.exec(ctx, tx, `INSERT INTO moderation_decisions VALUES (?,?,?,?,?,'done')`, j.db.GID(), "delete-only:"+c.Receipt, c.Receipt, state, operator); e != nil {
+		if e := j.exec(ctx, tx, `INSERT INTO moderation_decisions VALUES (?,?,?,?,?,'done')`, j.db.GID(), "delete-only:"+ref, c.Receipt, state, operator); e != nil {
 			return e
 		}
 		if e := j.exec(ctx, tx, `UPDATE moderation_requests SET state=? WHERE gid=? AND receipt=?`, state, j.db.GID(), c.Receipt); e != nil {
 			return e
 		}
 		if remove && a.State == Manual {
+			if e := j.exec(ctx, tx, `UPDATE moderation_demands SET active=TRUE,accepted_at=? WHERE gid=? AND receipt=? AND origin='delete_request'`, now.UnixMilli(), j.db.GID(), c.Receipt); e != nil {
+				return e
+			}
 			if e := j.exec(ctx, tx, `UPDATE moderation_actions SET state='pending',code='',next_at=? WHERE gid=? AND id=?`, now.UnixMilli(), j.db.GID(), a.ID); e != nil {
 				return e
 			}

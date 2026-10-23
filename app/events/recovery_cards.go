@@ -211,6 +211,10 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	j := a.recovery.journal
 	c, err := j.CardView(ctx, parts[1])
 	if err != nil {
+		stale, lookupErr := j.SupersededDeleteCard(ctx, parts[1])
+		if lookupErr == nil && stale {
+			return a.answerRecoveryCallback(ctx, q, "Этот запрос заменён. Используйте новую карточку; прежнее подтверждение не действует")
+		}
 		return fmt.Errorf("load moderation card: %w", err)
 	}
 	bound, err := j.CardBound(ctx, c, q.Message.Chat.ID, q.Message.MessageID)

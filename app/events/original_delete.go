@@ -83,9 +83,6 @@ func (a *admin) originalDeleteCandidates(u tbapi.Update, locator deleteCandidate
 		if id != 0 && (a.superUsers.IsSuper(name, id) || a.targetExplicitlyApproved(id)) {
 			continue
 		}
-		if row.Time.IsZero() || row.Time.After(time.Now()) {
-			continue
-		}
 		p := moderation.Plan{DeleteOnly: true,
 			Key: fmt.Sprintf("delete:%d:%d",
 				row.ChatID,
@@ -105,7 +102,7 @@ func (a *admin) originalDeleteCandidates(u tbapi.Update, locator deleteCandidate
 			MessageID:    row.MsgID,
 			IdentityKind: kind,
 			IdentityID:   id,
-			MessageDate:  row.Time.Unix(),
+			MessageDate:  locatorMessageDate(a.locator, row.ChatID, row.MsgID),
 			State:        moderation.Manual,
 			Code:         "delete_pending_confirmation"}}
 		_, _, fresh, e := a.recovery.journal.Accept(context.Background(), p, time.Now())
@@ -120,7 +117,7 @@ func (a *admin) originalDeleteCandidates(u tbapi.Update, locator deleteCandidate
 	}
 	if created == 0 {
 		return reply("Новых карточек нет: оригиналы уже зарегистрированы либо защищены правилами доверия и " +
-			"полномочий. Проверьте сохранённые карточки; повторных действий не создано.")
+			"полномочий. Для нового подтверждения нажмите «Создать новый запрос» в карточке; повторных действий не создано.")
 	}
 	return reply(fmt.Sprintf("Найдено совпадений: %d. Подготовлено карточек: %d. Выберите нужный оригинал по чату "+
 		"и номеру сообщения и нажмите «Удалить сообщение» в его карточке (15 минут). "+
@@ -137,6 +134,16 @@ func deleteOnlyKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMar
 				"MD:"+c.Ref),
 				tbapi.NewInlineKeyboardButtonData("Отклонить",
 					"MX:"+c.Ref)))
+	}
+	renewable := true
+	for _, op := range c.Actions {
+		if op.Kind == "original_delete" && (op.State == moderation.Pending || op.State == moderation.Running ||
+			op.State == moderation.Confirmed || op.State == moderation.Absent || op.Uncertain) {
+			renewable = false
+		}
+	}
+	if allowed && renewable {
+		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Создать новый запрос", "MN:"+c.Ref)))
 	}
 	if c.RequestState == "expired" {
 		rows = append(rows, tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Закрыть запрос", "MX:"+c.Ref)))
@@ -174,6 +181,14 @@ func originalDeleteCardText(c moderation.Card, chatName string) string {
 			}
 			if op.MessageDate > 0 {
 				text.WriteString("Дата оригинала: " + cardDate(op.MessageDate) + "\n")
+			} else {
+				text.WriteString("Дата оригинала неизвестна.\n")
+			}
+			if op.Deadline > 0 {
+				text.WriteString("Срок удаления: " + cardDate(op.Deadline/1000) + "\n")
+			}
+			if op.Uncertain {
+				text.WriteString("Результат прежней попытки не установлен; требуется ручная проверка.\n")
 			}
 		}
 	}
@@ -183,16 +198,16 @@ func originalDeleteCardText(c moderation.Card, chatName string) string {
 func (a *admin) originalDeleteCallback(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card, verb string) error {
 	if q.From.ID <= 0 ||
 		q.From.IsBot ||
-		sharedTelegramUser(q.From.ID) ||
-		!a.superUsers.IsSuper("",
-			q.From.ID) ||
-		q.From.ID != c.RequesterID {
+		sharedTelegramUser(q.From.ID) || !a.superUsers.IsSuper("", q.From.ID) {
 		return a.answerRecoveryCallback(ctx, q, "Подтвердить может только создавший запрос уполномоченный пользователь с числовым ID")
 	}
 	if verb == "M?" || verb == "MB" {
 		return a.recoveryCardDisplay(ctx, q, c)
 	}
-	if verb != "MD" && verb != "MX" {
+	if verb != "MN" && q.From.ID != c.RequesterID {
+		return a.answerRecoveryCallback(ctx, q, "Подтвердить может создавший запрос оператор. Для себя нажмите «Создать новый запрос»")
+	}
+	if verb != "MD" && verb != "MX" && verb != "MN" {
 		return a.answerRecoveryCallback(ctx, q, "Эта карточка разрешает только удаление выбранного оригинала или отказ")
 	}
 	if a.dry || a.trainingMode {
@@ -212,8 +227,19 @@ func (a *admin) originalDeleteCallback(ctx context.Context, q *tbapi.CallbackQue
 				a.targetExplicitlyApproved(c.IdentityID))) {
 		return a.answerRecoveryCallback(ctx, q, "Текущие правила безопасности не разрешают удаление этой цели")
 	}
-	_,
-		err := a.recovery.journal.DecideDelete(ctx,
+	if verb == "MN" {
+		fresh, err := a.recovery.journal.RenewDelete(ctx, c.Ref, q.Message.Chat.ID, q.Message.MessageID, q.From.ID, q.ID, time.Now())
+		if err != nil {
+			return a.answerRecoveryCallback(ctx, q, "Новый запрос не создан: проверьте актуальность карточки и состояние удаления")
+		}
+		if !fresh {
+			return a.answerRecoveryCallback(ctx, q, "Новый запрос не нужен: действует ваш запрос либо "+
+				"удаление уже выполняется или завершено")
+		}
+		return a.answerRecoveryCallback(ctx, q, "Новый запрос сохранён. Подтвердите удаление в новой карточке; "+
+			"срок самого удаления не продлён")
+	}
+	fresh, err := a.recovery.journal.DecideDelete(ctx,
 		c.Ref,
 		q.Message.Chat.ID,
 		q.Message.MessageID,
@@ -224,6 +250,9 @@ func (a *admin) originalDeleteCallback(ctx context.Context, q *tbapi.CallbackQue
 		return a.answerRecoveryCallback(ctx,
 			q,
 			"Не удалось подтвердить запрос: проверьте срок, карточку и полномочия. Действия не добавлены")
+	}
+	if !fresh {
+		return a.answerRecoveryCallback(ctx, q, "Запрос уже обработан или удаление выполняется. Повторных действий не добавлено")
 	}
 	return a.answerRecoveryCallback(ctx,
 		q,

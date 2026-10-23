@@ -291,7 +291,8 @@ func TestOriginalDeleteCaptionMediaAndMissingCandidates(t *testing.T) {
 				require.NoError(t, e)
 				require.Contains(t, originalDeleteCardText(c, "Чат"), "Только удаление")
 				buttons := deleteOnlyKeyboard(c, true)
-				require.Len(t, buttons.InlineKeyboard, 2)
+				require.Len(t, buttons.InlineKeyboard, 3)
+				require.Equal(t, "Создать новый запрос", buttons.InlineKeyboard[2][0].Text)
 				require.Equal(t, "Удалить сообщение", buttons.InlineKeyboard[1][0].Text)
 			} else {
 				require.Zero(t, count)
@@ -300,4 +301,159 @@ func TestOriginalDeleteCaptionMediaAndMissingCandidates(t *testing.T) {
 			require.Empty(t, a.bot.(*mocks.BotMock).RemoveApprovedUserCalls())
 		})
 	}
+}
+func TestOriginalDeleteUsesSavedSendDateNotObservation(t *testing.T) {
+	for _, mode := range []string{"different hours", "outside window", "unknown date", "missing observation"} {
+		t.Run(mode, func(t *testing.T) {
+			a, db, u := originalDeleteFixture(t, 0)
+			ctx := context.Background()
+			now := time.Now()
+			sent := now.Add(-40 * time.Hour).Truncate(time.Second).Unix()
+			observed := now.Add(-time.Hour)
+			if mode == "outside window" {
+				sent = now.Add(-50 * time.Hour).Truncate(time.Second).Unix()
+			}
+			if mode == "unknown date" {
+				_, err := db.Exec(`DELETE FROM message_dates WHERE gid=? AND chat_id=? AND msg_id=?`, db.GID(), 123, 801)
+				require.NoError(t, err)
+				sent = 0
+			} else {
+				_, err := db.Exec(`UPDATE message_dates SET message_date=? WHERE gid=? AND chat_id=? AND msg_id=?`, sent, db.GID(), 123, 801)
+				require.NoError(t, err)
+			}
+			if mode == "missing observation" {
+				_, err := db.Exec(`UPDATE messages SET time=NULL WHERE gid=? AND chat_id=? AND msg_id=?`, db.GID(), 123, 801)
+				require.NoError(t, err)
+			} else {
+				_, err := db.Exec(`UPDATE messages SET time=? WHERE gid=? AND chat_id=? AND msg_id=?`, observed, db.GID(), 123, 801)
+				require.NoError(t, err)
+			}
+			require.NoError(t, a.MsgHandler(u))
+			j := a.recovery.journal
+			c, err := j.CardView(ctx, "delete:123:801")
+			require.NoError(t, err)
+			require.Len(t, c.Actions, 1)
+			op := c.Actions[0]
+			require.Equal(t, sent, op.MessageDate)
+			rendered := originalDeleteCardText(c, "fixture")
+			if sent == 0 {
+				require.Contains(t, rendered, "Дата оригинала неизвестна")
+				require.InDelta(t, now.Add(24*time.Hour).UnixMilli(), op.Deadline, 5000)
+			} else {
+				expected := time.Unix(sent, 0).Add(48*time.Hour - 2*time.Minute).UnixMilli()
+				require.Equal(t, expected, op.Deadline)
+				require.Contains(t, rendered, "Дата оригинала: "+cardDate(sent))
+				require.Contains(t, rendered, "Срок удаления: "+cardDate(expected/1000))
+				require.NotContains(t, rendered, "Дата оригинала: "+cardDate(observed.Unix()))
+			}
+			if mode == "outside window" {
+				require.NoError(t, j.BindCard(ctx, c.Receipt, 600))
+				require.NoError(t, a.recoveryCardCallback(cardQuery(c, "MD", "dated")))
+				deletes := 0
+				a.recovery.api = recoveryAPIFunc(func(_ context.Context, req tbapi.Chattable) (*tbapi.APIResponse, error) {
+					if _, ok := req.(tbapi.DeleteMessageConfig); ok {
+						deletes++
+					}
+					return apiOK(tbapi.Message{MessageID: 600}), nil
+				})
+				w := moderation.Worker{Journal: j, Executor: a.recovery}
+				for range 20 {
+					worked, e := w.Step(ctx)
+					require.NoError(t, e)
+					if !worked {
+						break
+					}
+				}
+				after, e := j.CardView(ctx, c.Receipt)
+				require.NoError(t, e)
+				require.Equal(t, moderation.Expired, after.Actions[0].State)
+				require.Zero(t, deletes)
+			}
+		})
+	}
+}
+func TestOriginalDeleteExplicitNewRequestAndStaleDelivery(t *testing.T) {
+	a, db, u := originalDeleteFixture(t, 0)
+	ctx := context.Background()
+	a.superUsers = SuperUsers{"11", "12"}
+	a.recovery.api = recoveryAPIFunc(func(_ context.Context, req tbapi.Chattable) (*tbapi.APIResponse, error) {
+		_, ok := req.(tbapi.CallbackConfig)
+		require.True(t, ok, "renewal and confirmation must not call moderation API")
+		return apiOK(true), nil
+	})
+	require.NoError(t, a.MsgHandler(u))
+	j := a.recovery.journal
+	old, err := j.CardView(ctx, "delete:123:801")
+	require.NoError(t, err)
+	require.NoError(t, j.BindCard(ctx, old.Receipt, 600))
+	require.NoError(t, a.recoveryCardCallback(cardQuery(old, "MX", "dismiss-first")))
+	newRequest := cardQuery(old, "MN", "new-explicit")
+	newRequest.From.ID = 12
+	require.NoError(t, a.recoveryCardCallback(newRequest))
+	current, err := j.CardView(ctx, old.Receipt)
+	require.NoError(t, err)
+	require.NotEqual(t, old.Ref, current.Ref)
+	require.EqualValues(t, 12, current.RequesterID)
+	require.Equal(t, old.Actions[0].Deadline, current.Actions[0].Deadline)
+	require.NoError(t, j.BindCard(ctx, current.Receipt, 601))
+	// A real database close/reopen preserves the new epoch and makes old refs inert.
+	var path string
+	require.NoError(t, db.Get(&path, `SELECT file FROM pragma_database_list WHERE name='main'`))
+	require.NoError(t, db.Close())
+	reopened, err := engine.NewSqlite(path, "delete-test")
+	require.NoError(t, err)
+	defer reopened.Close()
+	j, err = moderation.NewJournal(ctx, reopened, moderation.DefaultLimits())
+	require.NoError(t, err)
+	a.recovery.journal = j
+	a.locator, err = storage.NewLocator(ctx, time.Hour, 1000, reopened)
+	require.NoError(t, err)
+	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.recoveryCardCallback(newRequest))
+	require.NoError(t, a.recoveryCardCallback(cardQuery(old, "MD", "old-confirmation")))
+	wrongOperator := cardQuery(current, "MD", "old-operator-new-ref")
+	wrongOperator.Message.MessageID = 601
+	require.NoError(t, a.recoveryCardCallback(wrongOperator))
+	still, err := j.CardView(ctx, current.Receipt)
+	require.NoError(t, err)
+	require.Equal(t, current.RequestExpires, still.RequestExpires)
+	require.Equal(t, "pending", still.RequestState)
+	confirmed := cardQuery(current, "MD", "current-confirmation")
+	confirmed.From.ID = 12
+	confirmed.Message.MessageID = 601
+	require.NoError(t, a.recoveryCardCallback(confirmed))
+	deletes := 0
+	a.recovery.api = recoveryAPIFunc(func(_ context.Context, req tbapi.Chattable) (*tbapi.APIResponse, error) {
+		switch req.(type) {
+		case tbapi.DeleteMessageConfig:
+			deletes++
+			return apiOK(true), nil
+		case tbapi.CallbackConfig:
+			return apiOK(true), nil
+		default:
+			return apiOK(tbapi.Message{MessageID: 601}), nil
+		}
+	})
+	w := moderation.Worker{Journal: j, Executor: a.recovery}
+	for range 20 {
+		worked, e := w.Step(ctx)
+		require.NoError(t, e)
+		if !worked {
+			break
+		}
+	}
+	require.Equal(t, 1, deletes)
+	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.recoveryCardCallback(newRequest))
+	require.NoError(t, a.recoveryCardCallback(confirmed))
+	for range 20 {
+		worked, e := w.Step(ctx)
+		require.NoError(t, e)
+		if !worked {
+			break
+		}
+	}
+	require.Equal(t, 1, deletes)
+	require.Empty(t, a.bot.(*mocks.BotMock).UpdateSpamCalls())
+	require.Empty(t, a.bot.(*mocks.BotMock).UpdateHamCalls())
 }

@@ -18,7 +18,8 @@ journal cards с точными chat/message ID. Одинаковые ориги
 создать и подтвердить запрос может один и тот же личный пользователь, явно
 уполномоченный по **числовому** superuser ID. Username, SenderChat и общие
 технические From ID не заменяют эту проверку. Другой superuser также не может
-подтвердить чужой запрос.
+подтвердить чужой запрос. Он может отдельно нажать «Создать новый запрос» и
+получить собственную карточку; прежние callbacks после этого недействительны.
 
 Карточка — кандидат, а не доказательство, что переслан именно он. Надёжная identity
 автора пересылки для такого выбора не нужна. Если автор сохранённого оригинала
@@ -60,6 +61,7 @@ notification chat/message ID, точного оригинала, requester и с
 Удаление ещё не разрешено.
 Дата оригинала: …
 [Подробнее] [Удалить сообщение] [Отклонить]
+[Создать новый запрос]
 ```
 
 После выбора: «Решение сохранено. Фактический результат удаления появится в
@@ -72,7 +74,8 @@ notification chat/message ID, точного оригинала, requester и с
 
 ## Журнал и восстановление
 
-`moderation_delete_requests` — только аддитивная metadata класса полномочий;
+`moderation_delete_requests` и `moderation_delete_request_history` — аддитивная
+metadata класса полномочий и истории подтверждений;
 очередь, карточки, решения, deadlines/leases/outcomes остаются существующими.
 До подтверждения единственная core action — manual_review original_delete.
 Dedicated `DecideDelete` атомарно разрешает ровно эту action и пишет числового
@@ -125,7 +128,8 @@ SQLite backup snapshots с integrity/SHA-256. Проверить кандида�
 **Не запускать прежний worker с recovery=true на новых delete-only requests.**
 
 1. Сохранить свежие согласованные копии **актуальных** runtime-БД и экспорт
-   незавершённых actions/decisions/requests, включая moderation_delete_requests.
+   незавершённых actions/decisions/requests, включая moderation_delete_requests
+   и moderation_delete_request_history.
 2. Остановить workers через `docker-compose down`.
 3. Подготовить отдельный приватный rollback override, не перезаписывая текущий
    compose diff. Для всех трёх сервисов задать `MODERATION_RECOVERY: "false"`.
@@ -153,3 +157,49 @@ SQLite backup snapshots с integrity/SHA-256. Проверить кандида�
 `TestDeleteRequestAdmissionWaitsWithinTransactionDeadline` удерживает отдельную
 SQLite write-транзакцию 2 секунды и проверяет сохранение delete request после
 освобождения; модерация/Telegram API до успешного commit не выполняются.
+
+## Исправления ревью: дата и новый явный запрос
+
+Дата оригинала извлекается через существующий date locator из `message_dates`
+по точной паре chat/message внутри gid. Observation time из `messages.time` и дата
+пересылки не используются как MessageDate. Отсутствующий observation timestamp
+(включая SQL NULL) не мешает выбору. Если настоящая дата отсутствует, сохраняется
+MessageDate=0, карточка прямо пишет «Дата оригинала неизвестна». Известная дата
+и абсолютный deadline удаления показываются отдельно. Недавно записанный оригинал
+старше окна удаления не получает новое окно: worker завершает его как expired
+без delete API.
+
+Кнопка «Создать новый запрос» — отдельное явное решение числового уполномоченного
+оператора. После истечения 15 минут или отказа она создаёт новое подтверждение;
+другой уполномоченный оператор может получить собственный запрос, пока original_delete
+не исполняется. Он не подтверждает чужой запрос. Текущий неистёкший запрос того же
+оператора не продлевается. Повтор пересылки ничего не возобновляет.
+
+Сохраняются прежние requester/created_at/expires_at/state/ref/notification и JSON
+снимок original_delete; все прежние решения остаются в журнале. Новая карточка имеет
+новый случайный ref и notification binding. Старые MD/MX/MN callbacks не приобретают
+новые полномочия, в том числе после рестарта. Даже явный MN, который не создал
+новый запрос, записывается как noop: его поздняя доставка не становится согласием.
+Лимиты считают и текущие запросы, и архивированные подтверждения.
+
+Новая карточка использует **ту же** core action с прежними ID, MessageDate,
+attempts, uncertain и абсолютным deadline. Она не создаёт ещё одну delete-операцию.
+Pending/running, confirmed, absent и неизвестный исход прежней попытки не возобновляются.
+При подтверждении также проверяется независимая выполняющаяся операция той же пары;
+ban/cleanup других receipts не изменяются. Новый срок подтверждения не продлевает
+окно удаления, в том числе если старый deadline уже прошёл.
+
+Дополнительные regressions:
+- `TestOriginalDeleteUsesSavedSendDateNotObservation`: разница в несколько часов,
+  старое сообщение с недавним observation, неизвестная настоящая дата, SQL NULL
+  observation, отображение даты/deadline и отсутствие API после окна удаления.
+- `TestDeleteExplicitRenewalContract` (SQLite и PostgreSQL): expired/dismissed,
+  второй оператор, архив решений/исходов, старые updates/callbacks, concurrent
+  confirmations, journal reopen и единственное confirmed удаление.
+- `TestOriginalDeleteExplicitNewRequestAndStaleDelivery`: полный путь карточек с
+  Telegram mocks, фактическое закрытие/открытие SQLite и старые callbacks.
+- `TestDeleteConcurrentRenewalsAndFixedDeadline`: один новый запрос при гонке,
+  сохранение исходного deadline и ноль delete API после его истечения.
+- `TestDeleteRenewalRateHistoryAndNoAutomaticExtension` и
+  `TestDeleteNoopRenewalCallbackCannotBecomeFutureConsent`: лимиты и защита
+  от позднего переигрывания ранее отклонённого явного запроса.
