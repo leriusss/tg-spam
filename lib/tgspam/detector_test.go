@@ -2635,7 +2635,7 @@ func TestDetector_ExplicitTrustedUserProvenance(t *testing.T) {
 		require.Len(t, mockUserStore.WriteCalls(), 2)
 		assert.Equal(t, approved.SourceAuto, mockUserStore.WriteCalls()[1].Au.Source)
 		assert.False(t, d.IsExplicitTrustedUser("auto-user"))
-		assert.False(t, d.IsApprovedUser("auto-user"), "threshold semantics use count > FirstMessagesCount")
+		assert.True(t, d.IsApprovedUser("auto-user"), "the checked threshold is sufficient for reporting")
 
 		spam, cr := d.Check(spamcheck.Request{Msg: "spam after pre-approved", UserID: "auto-user"})
 		assert.False(t, spam)
@@ -3362,12 +3362,8 @@ func TestDetector_ShortMessageApproval(t *testing.T) {
 		spam, _ := d.Check(spamcheck.Request{Msg: "another normal message here", UserID: "456"})
 		assert.False(t, spam)
 
-		// user should NOT be approved yet (need count > FirstMessagesCount)
-		assert.False(t, d.IsApprovedUser("456"))
-
-		// after 3 messages, user is pre-approved (count >= FirstMessagesCount)
-		// but IsApprovedUser returns false because it checks count > FirstMessagesCount
-		// this is the existing behavior, not related to our fix
+		// The third checked message reaches the same threshold for reports and content bypass.
+		assert.True(t, d.IsApprovedUser("456"))
 
 		// 4th message will be pre-approved
 		spam, cr := d.Check(spamcheck.Request{Msg: "fourth normal message", UserID: "456"})
@@ -3380,8 +3376,8 @@ func TestDetector_ShortMessageApproval(t *testing.T) {
 		d.lock.RUnlock()
 		assert.Equal(t, 3, actualCount)
 
-		// IsApprovedUser still returns false (3 > 3 is false)
-		assert.False(t, d.IsApprovedUser("456"))
+		// Bypassed messages do not inflate count; reporting remains allowed at three.
+		assert.True(t, d.IsApprovedUser("456"))
 	})
 
 	t.Run("mix of short and normal messages", func(t *testing.T) {
@@ -3418,9 +3414,8 @@ func TestDetector_ShortMessageApproval(t *testing.T) {
 		assert.False(t, spam)
 
 		// with the mix of short and normal messages, only the normal ones count
-		// after 3 normal messages, count is 3, user is pre-approved but IsApprovedUser
-		// returns false because it checks count > FirstMessagesCount
-		assert.False(t, d.IsApprovedUser("789"))
+		// After three normal messages the threshold is reached; short messages added nothing.
+		assert.True(t, d.IsApprovedUser("789"))
 	})
 
 	t.Run("short messages with storage", func(t *testing.T) {
@@ -3450,16 +3445,16 @@ func TestDetector_ShortMessageApproval(t *testing.T) {
 		d.Check(spamcheck.Request{Msg: "normal message two", UserID: "111"})
 		assert.Len(t, mockUserStore.WriteCalls(), 2)
 
-		// user is not approved yet (need > 2)
-		assert.False(t, d.IsApprovedUser("111"))
+		// Two fully checked messages reach the configured threshold.
+		assert.True(t, d.IsApprovedUser("111"))
 
 		// after 2 messages, count is 2 which equals FirstMessagesCount
 		// so the 3rd message will be pre-approved and won't update storage
 		d.Check(spamcheck.Request{Msg: "normal message three", UserID: "111"})
 		// storage write is NOT called for pre-approved message
 		assert.Len(t, mockUserStore.WriteCalls(), 2)
-		// IsApprovedUser returns false because count (2) is not > FirstMessagesCount (2)
-		assert.False(t, d.IsApprovedUser("111"))
+		// No synthetic increment is required to keep reporting enabled.
+		assert.True(t, d.IsApprovedUser("111"))
 	})
 }
 

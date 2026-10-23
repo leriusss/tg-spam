@@ -2,7 +2,9 @@
 
 ## Дефект и исходное состояние
 
-Проверен `origin/master` `3f5def3cd3845ace790a66c2af595e49ac32f252`.
+Первоначальный отрицательный regression получен на `3f5def3cd3845ace790a66c2af595e49ac32f252`.
+Ветка PR №6 обновлена merge от текущего master `9e47893a6dd97859c2cd9c8794924b268aa46e5a`: сохраняются
+learning consistency, SenderChat confirmation, Han/independent detector/burst, admin original delete, lint и Playwright.
 Regression `TestAutoProgressRestart` до исправления: после 1/2/3 ham-проверок storage возвращал count=0,
 а `WithUserStorage` назначал count=4 при FirstMessagesCount=3. Нулевой случай без строки не повышался.
 Исходный код также изменял approvedUsers под RLock и игнорировал ошибку Write.
@@ -48,7 +50,17 @@ message ID без chat ID не считается надёжной иденти�
 Для нового пользователя создаётся source=auto. Исторические сообщения не перечитываются и не модерируются.
 Порог может меняться между запусками: сравнивается фактический count с новым порогом; достигшие его пользователи
 периодически не перепроверяются. Изменение конфигурации одновременно с Check не поддерживается.
-Метод IsApprovedUser для report eligibility сохраняет прежний строгий `count > N`; detector bypass использует `>= N`.
+И bypass, и достижение автоматического доверия используют `count >= N`: третье уникальное подходящее
+сообщение при N=3 ещё полностью проверяется, после его успешной записи разрешается /report и bypass следующих.
+Синтетического четвёртого increment нет. Жалоба сама не меняет count.
+
+`Detector.IsApprovedUserInChat(userID, chatID)` и `SpamFilter.IsApprovedUserInChat` проверяют только текущий
+source chat; чужой chat progress и unscoped library count не дают право /report. DirectUserReport проверяет
+происхождение из защищаемого чата и использует scoped API. Manual доверие сохраняется независимо от чата.
+Прежний `IsApprovedUser(userID)` сохраняет сигнатуру и агрегатную область (любой сохранённый chat либо
+unscoped count), но также использует >= N. Он не подходит для авторизации chat-local операций.
+Существующие сторонние реализации Bot/Detector без scoped метода продолжают использовать свой прежний API;
+реальный production detector поддерживает scoped проверку. Интерфейсы не расширены обязательным методом.
 
 ## Конкуренция, ошибки и повторы
 
@@ -57,7 +69,7 @@ message ID без chat ID не считается надёжной иденти�
 до захвата trust mutex, под read-блокировкой модели, без глобальной write-блокировки на время внешних проверок.
 Add/Remove/Reset/WithUserStorage используют тот же порядок блокировок. Возвращаемые UserInfo имеют deep copy прогресса.
 Несколько начатых до достижения порога проверок могут завершиться и увеличить count выше N: каждая действительно проверена.
-Spam, CheckOnly, rune-short сообщения и недоступная статистическая модель не увеличивают прогресс.
+Spam, Han-совпадения (SuppressHamRecording), CheckOnly, rune-short сообщения и недоступная статистическая модель не увеличивают прогресс.
 Существующий meaningful-token guard и прочие условия проверки не расширены.
 
 Один SQL UPSERT сохраняет count и окно replay вместе, сохраняя id существующей строки.
@@ -85,14 +97,17 @@ Callers без обоих идентификаторов не могут пол�
 Настоящие SQLite adapters: закрытие/повторное открытие после 0/1/2/3, последовательные рестарты, переход порога,
 ручные и неизвестные записи, Write failure/recovery, удаление, параллельные уникальные и повторные сообщения,
 раздельные chat/user/SenderChat, настоящее OnMessage и недоступная модель после обучения.
+Integration TestDirectUserReportAutoTrustProgress использует настоящий DirectUserReport, detector и SQLite,
+подменяя только Telegram API: N/N−1, reopen, другой chat/SenderChat, manual и повторная доставка.
+TestOnMessageHanDoesNotAdvancePersistedAutoProgress проверяет отсутствие progress при Han до/после порога и рестарта.
 Migration-тест StorageTestSuite запускается также с настоящим PostgreSQL вне short-режима.
 Сетевые проверки заменены mocks; production-БД, Telegram API и реальные moderation actions не используются.
 
 `scripts/check-approved-progress-compat.sh` создаёт только fixtures и компилирует старый adapter/detector из точного
-production commit. Он проверяет SQLite и, если передан COMPAT_POSTGRES_URL отдельного тестового PostgreSQL,
+production commit `9e47893a6dd97859c2cd9c8794924b268aa46e5a`. Он проверяет SQLite и, если передан COMPAT_POSTGRES_URL отдельного тестового PostgreSQL,
 обе схемы: новый код сохраняет count=2, старый binary читает новые строки без schema error и воспроизводит старый bypass,
 новый binary повторно читает тот же count=2. URL рабочего PostgreSQL передавать запрещено.
-Workflow auto-trust-progress включает SQLite/PostgreSQL race, build, changed-code lint и эту проверку старого бинарника.
+Workflow auto-trust-progress включает SQLite/PostgreSQL и DirectUserReport race, build, changed-code lint и эту проверку старого бинарника.
 
 Результаты выполненных команд и CI добавляются в draft PR. Windows full-suite ограничения и прежние lint/setup ошибки
 учитываются отдельно от целевых проверок; исключённые либо не выполненные проверки не считаются PASS.
@@ -106,7 +121,9 @@ Workflow auto-trust-progress включает SQLite/PostgreSQL race, build, cha
 Следить за загрузкой пользователей, ошибками progress persistence, polling и recovery worker.
 
 Откат — возврат прежнего image с **актуальными runtime-БД**, без удаления колонки, восстановления старых БД и replay истории.
-При принятом для ATAS внедрении использовать только docker-compose down / up -d, сохранить recovery и compose diff.
+При принятом для ATAS внедрении использовать только docker-compose down / up -d, сохранить recovery, Han и compose diff.
+Прежний поддерживаемый image здесь — из 9e47893a: он уже понимает Han и delete-only schema/card authority.
+Не откатывать эту функцию на более ранние images без отдельной проверки их ограничений.
 Возврат прежнего бинарника **возвращает прежний дефект доверия**: schema compatibility не исправляет старую версию.
 После работы старой версии часть SQLite progress может стать NULL из-за её INSERT OR REPLACE; повторный переход
 на исправленную версию трактует это как неизвестный нулевой прогресс, без повышения доверия.

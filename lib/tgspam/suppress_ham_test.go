@@ -13,7 +13,7 @@ func TestSuppressHamRecordingPreservesBehavioralChecks(t *testing.T) {
 		d.DuplicateDetection.Threshold = 3
 		d.duplicateDetector = newDuplicateDetector(3, time.Minute)
 		for i := 1; i <= 3; i++ {
-			spam, checks := d.Check(spamcheck.Request{Msg: "正常消息内容你好世界", UserID: "42", Meta: spamcheck.MetaData{MessageID: i}, SuppressHamRecording: suppress})
+			spam, checks := d.Check(spamcheck.Request{Msg: "正常消息内容你好世界", UserID: "42", Meta: spamcheck.MetaData{ChatID: -100, MessageID: i}, SuppressHamRecording: suppress})
 			require.Equal(t, i == 3, spam)
 			if i == 3 {
 				require.True(t, checks[0].Spam)

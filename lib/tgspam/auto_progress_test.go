@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/umputun/tg-spam/app/storage"
@@ -261,4 +262,71 @@ func containsResponse(checks []spamcheck.Response, name string) bool {
 		}
 	}
 	return false
+}
+
+func TestAutoProgressScopedApprovalAPI(t *testing.T) {
+	_, users := autoProgressDB(t)
+	d := autoProgressDetector(t, users, 3)
+	for id := 1; id <= 3; id++ {
+		d.Check(progressRequest("subject", -100, id))
+		require.Equal(t, id == 3, d.IsApprovedUserInChat("subject", -100))
+		require.Equal(t, id == 3, d.IsApprovedUser("subject"), "legacy API remains available at the same threshold")
+		require.False(t, d.IsApprovedUserInChat("subject", -200))
+		require.False(t, d.IsApprovedUserInChat("subject", 0))
+	}
+	d = autoProgressDetector(t, users, 3)
+	require.True(t, d.IsApprovedUserInChat("subject", -100))
+	require.False(t, d.IsApprovedUserInChat("subject", -200))
+	require.NoError(t, d.AddApprovedUser(approved.UserInfo{UserID: "manual"}))
+	require.True(t, d.IsApprovedUserInChat("manual", -200))
+	d.RemoveApprovedUser("subject")
+	require.False(t, d.IsApprovedUserInChat("subject", -100))
+	d = autoProgressDetector(t, users, 3)
+	require.False(t, d.IsApprovedUser("subject"))
+	d.Check(progressRequest("subject", -100, 1))
+	require.Equal(t, 1, d.approvedUsers["subject"].Progress[-100].Count, "removal also resets the replay window")
+}
+
+func TestAutoProgressConcurrentThresholdWaitsForCompletedChecks(t *testing.T) {
+	_, users := autoProgressDB(t)
+	d := autoProgressDetector(t, users, 3)
+	d.Check(progressRequest("subject", -100, 1))
+	d.Check(progressRequest("subject", -100, 2))
+	entered, another, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	defer once.Do(func() { close(release) })
+	d.WithMetaChecks(func(req spamcheck.Request) spamcheck.Response {
+		if req.Meta.MessageID == 3 {
+			close(entered)
+			<-release
+		}
+		if req.Meta.MessageID == 4 {
+			close(another)
+		}
+		return spamcheck.Response{Name: "in-flight check"}
+	})
+	done := make(chan []spamcheck.Response, 2)
+	go func() { _, checks := d.Check(progressRequest("subject", -100, 3)); done <- checks }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("third check did not start")
+	}
+	go func() { _, checks := d.Check(progressRequest("subject", -100, 4)); done <- checks }()
+	select {
+	case <-another:
+	case <-time.After(5 * time.Second):
+		t.Fatal("unfinished third check must not authorize bypass")
+	}
+	once.Do(func() { close(release) })
+	for range 2 {
+		checks := <-done
+		require.Contains(t, responseNames(checks), "classifier")
+		require.NotContains(t, responseNames(checks), "pre-approved")
+	}
+	d = autoProgressDetector(t, users, 3)
+	require.Equal(t, 4, d.approvedUsers["subject"].Progress[-100].Count, "both completed checks persist without lost increments")
+	_, checks := d.Check(progressRequest("subject", -100, 5))
+	require.Contains(t, responseNames(checks), "pre-approved")
+	require.Equal(t, 4, d.approvedUsers["subject"].Progress[-100].Count, "bypass adds no synthetic increment")
 }

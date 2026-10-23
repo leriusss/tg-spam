@@ -240,6 +240,15 @@ func (s *SpamFilter) UpdateHam(msg string) error {
 	return nil
 }
 
+// IsApprovedUserInChat uses scoped progress when supported by the detector.
+// Legacy detector implementations retain their existing approval API.
+func (s *SpamFilter) IsApprovedUserInChat(userID, chatID int64) bool {
+	if scoped, ok := s.Detector.(interface{ IsApprovedUserInChat(string, int64) bool }); ok {
+		return scoped.IsApprovedUserInChat(fmt.Sprintf("%d", userID), chatID)
+	}
+	return s.IsApprovedUser(userID)
+}
+
 // IsApprovedUser checks if user is in the list of approved users
 func (s *SpamFilter) IsApprovedUser(userID int64) bool {
 	return s.Detector.IsApprovedUser(fmt.Sprintf("%d", userID))

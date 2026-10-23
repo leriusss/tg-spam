@@ -5,7 +5,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
-baseline=3f5def3cd3845ace790a66c2af595e49ac32f252
+baseline=9e47893a6dd97859c2cd9c8794924b268aa46e5a
 mkdir "$scratch/old"
 git archive "$baseline" | tar -x -C "$scratch/old"
 cat > "$scratch/check.go" <<'GO'

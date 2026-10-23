@@ -523,8 +523,8 @@ func (d *Detector) ApprovedUsers() (res []approved.UserInfo) {
 	return res
 }
 
-// IsApprovedUser checks if a given user ID is approved.
-// It uses memory cache for approved users and compares the count of messages sent by the user.
+// IsApprovedUser checks manual trust or a reached threshold in any stored scope.
+// It retains the aggregate library API; use IsApprovedUserInChat for chat-local authorization.
 func (d *Detector) IsApprovedUser(userID string) bool {
 	d.lock.RLock()
 	defer d.lock.RUnlock()
@@ -533,15 +533,31 @@ func (d *Detector) IsApprovedUser(userID string) bool {
 	if !ok {
 		return false
 	}
-	if ui.Source == approved.SourceManual || ui.Count > d.FirstMessagesCount {
+	if ui.Source == approved.SourceManual || ui.Count >= d.FirstMessagesCount {
 		return true
 	}
 	for _, progress := range ui.Progress {
-		if progress.Count > d.FirstMessagesCount {
+		if progress.Count >= d.FirstMessagesCount {
 			return true
 		}
 	}
 	return false
+}
+
+// IsApprovedUserInChat checks automatic progress only in the given source chat.
+// Manual trust remains global. Unlike IsApprovedUser, unscoped/other-chat counts
+// cannot authorize a chat-local operation such as a user report.
+func (d *Detector) IsApprovedUserInChat(userID string, chatID int64) bool {
+	d.lock.RLock()
+	defer d.lock.RUnlock()
+	ui, ok := d.approvedUsers[userID]
+	if !ok {
+		return false
+	}
+	if ui.Source == approved.SourceManual {
+		return true
+	}
+	return chatID != 0 && ui.Progress[chatID].Count >= d.FirstMessagesCount
 }
 
 // IsExplicitTrustedUser checks if a user was explicitly approved by admin/API.

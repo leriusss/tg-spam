@@ -5,6 +5,7 @@ on:
       - 'lib/**'
       - 'app/storage/**'
       - 'app/bot/**'
+      - 'app/events/**'
       - 'scripts/check-approved-progress-compat.sh'
       - '.github/workflows/auto-trust-progress.yml'
   workflow_dispatch:
@@ -34,7 +35,7 @@ jobs:
         with:
           go-version: '1.25'
       - name: Detector, SQLite, PostgreSQL and OnMessage race tests
-        run: go test -race -timeout=300s ./lib/tgspam ./app/storage ./app/bot
+        run: go test -race -timeout=300s ./lib/tgspam ./app/storage ./app/bot ./app/events
       - name: Build
         run: go build -race ./...
       - name: Previous binary reads current schemas and retains its known trust defect
@@ -44,4 +45,4 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.6.2
-          args: --new-from-rev=3f5def3cd3845ace790a66c2af595e49ac32f252
+          args: --new-from-rev=9e47893a6dd97859c2cd9c8794924b268aa46e5a
