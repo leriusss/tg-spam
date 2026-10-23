@@ -82,7 +82,17 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 	if !r.gate(a) {
 		return moderation.Outcome{State: moderation.Blocked, Code: "current_safety_gate", Uncertain: a.Uncertain}
 	}
-	if a.ChatID == 0 || a.IdentityID == 0 || (a.IdentityKind != "user" && a.IdentityKind != "sender_chat") ||
+	messageOnly := a.IdentityKind == "message" && a.IdentityID == 0 && a.Kind == "original_delete"
+	if messageOnly {
+		if r.journal == nil {
+			return moderation.Outcome{State: moderation.Blocked, Code: "missing_message_authority"}
+		}
+		valid, e := r.journal.DeleteAuthority(ctx, a)
+		if e != nil || !valid {
+			return moderation.Outcome{State: moderation.Blocked, Code: "invalid_message_authority"}
+		}
+	}
+	if a.ChatID == 0 || (!messageOnly && (a.IdentityID == 0 || (a.IdentityKind != "user" && a.IdentityKind != "sender_chat"))) ||
 		a.IdentityKind == "user" && a.IdentityID < 0 ||
 		a.IdentityKind == "sender_chat" && a.IdentityID > 0 ||
 		(a.Kind == "original_delete" || a.Kind == "cleanup_delete") && a.MessageID <= 0 {
@@ -113,7 +123,7 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		if member.Status == "administrator" || member.Status == "creator" || r.superName(name, a.IdentityID) {
 			return moderation.Outcome{State: moderation.Blocked, Code: "current_superuser_gate", Uncertain: a.Uncertain}
 		}
-	} else {
+	} else if !messageOnly {
 		resp, err := r.api.RequestWithContext(ctx, tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{ChatID: a.IdentityID}})
 		if out := telegramOutcome(resp, err); out.State != moderation.Confirmed {
 			out.Uncertain = a.Uncertain

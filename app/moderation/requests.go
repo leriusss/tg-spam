@@ -18,16 +18,13 @@ func (j *Journal) admitRequest(ctx context.Context, tx journalTx, p Plan, now ti
 			return errors.New("request cannot schedule moderation")
 		}
 	}
-	var total, sender int
-	q := `SELECT count(*) FROM moderation_requests WHERE gid=? AND created_at>?`
-	if err := tx.GetContext(ctx, &total, j.db.Adopt(q), j.db.GID(), now.Add(-time.Minute).UnixMilli()); err != nil {
-		return journalError(err)
+	if err := j.checkRequestRate(ctx, tx, p.RequesterID, p.DeleteOnly, now); err != nil {
+		return err
 	}
-	if err := tx.GetContext(ctx, &sender, j.db.Adopt(q+` AND requester=?`), j.db.GID(), now.Add(-time.Minute).UnixMilli(), p.RequesterID); err != nil {
-		return journalError(err)
-	}
-	if total >= 20 || sender >= 3 {
-		return ErrRequestLimit
+	if p.DeleteOnly {
+		if err := j.exec(ctx, tx, `INSERT INTO moderation_delete_requests VALUES (?,?)`, j.db.GID(), p.Key); err != nil {
+			return err
+		}
 	}
 	return j.exec(ctx, tx, `INSERT INTO moderation_requests VALUES (?,?,?,?,?,?)`, j.db.GID(), p.Key, p.RequesterID, now.UnixMilli(), now.Add(15*time.Minute).UnixMilli(), "pending")
 }
@@ -98,4 +95,24 @@ func (j *Journal) ClaimCommandReply(ctx context.Context, sender int64, scope str
 		return journalError(e)
 	})
 	return fresh, err
+}
+
+// Count prior request epochs as well as current requests; renewal cannot evade rate limits.
+func (j *Journal) checkRequestRate(ctx context.Context, tx journalTx, requester int64, deleteOnly bool, now time.Time) error {
+	var total, sender int
+	q := `SELECT count(*) FROM (SELECT requester,created_at FROM moderation_requests WHERE gid=? UNION ALL SELECT requester,created_at FROM moderation_delete_request_history WHERE gid=?) AS requests WHERE created_at>?`
+	if e := tx.GetContext(ctx, &total, j.db.Adopt(q), j.db.GID(), j.db.GID(), now.Add(-time.Minute).UnixMilli()); e != nil {
+		return journalError(e)
+	}
+	if e := tx.GetContext(ctx, &sender, j.db.Adopt(q+` AND requester=?`), j.db.GID(), j.db.GID(), now.Add(-time.Minute).UnixMilli(), requester); e != nil {
+		return journalError(e)
+	}
+	senderLimit := 3
+	if deleteOnly {
+		senderLimit = 20
+	}
+	if total >= 20 || sender >= senderLimit {
+		return ErrRequestLimit
+	}
+	return nil
 }
