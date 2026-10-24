@@ -66,9 +66,10 @@ type options struct {
 		MaxBackups int    `long:"max-backups" env:"MAX_BACKUPS" default:"10" description:"maximum number of old log files to retain"`
 	} `group:"logger" namespace:"logger" env-namespace:"LOGGER"`
 
-	SuperUsers          events.SuperUsers `long:"super" env:"SUPER_USER" env-delim:"," description:"super-users"`
-	NoSpamReply         bool              `long:"no-spam-reply" env:"NO_SPAM_REPLY" description:"do not reply to spam messages"`
-	SuppressJoinMessage bool              `long:"suppress-join-message" env:"SUPPRESS_JOIN_MESSAGE" description:"delete join message if user is kicked out"`
+	EditorialEmojiExemptions string            `long:"editorial-emoji-exemptions" env:"EDITORIAL_EMOJI_EXEMPTIONS" description:"emoji-only exemptions: comma-separated negative discussion:sender-chat numeric IDs"`
+	SuperUsers               events.SuperUsers `long:"super" env:"SUPER_USER" env-delim:"," description:"super-users"`
+	NoSpamReply              bool              `long:"no-spam-reply" env:"NO_SPAM_REPLY" description:"do not reply to spam messages"`
+	SuppressJoinMessage      bool              `long:"suppress-join-message" env:"SUPPRESS_JOIN_MESSAGE" description:"delete join message if user is kicked out"`
 
 	Delete struct {
 		JoinMessages  bool `long:"join-messages" env:"JOIN_MESSAGES" description:"delete join messages immediately"`
@@ -285,6 +286,9 @@ func main() {
 }
 
 func execute(ctx context.Context, opts options) error {
+	if _, err := bot.ParseEditorialEmojiExemptions(opts.EditorialEmojiExemptions); err != nil {
+		return fmt.Errorf("invalid editorial emoji exemptions: %w", err)
+	}
 	if err := validateHanOptions(opts); err != nil {
 		return err
 	}
@@ -791,6 +795,11 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 		return nil, errors.New("nil datadb or detector")
 	}
 
+	editorialEmoji, err := bot.ParseEditorialEmojiExemptions(opts.EditorialEmojiExemptions)
+	if err != nil {
+		return nil, fmt.Errorf("parse editorial emoji exemptions: %w", err)
+	}
+
 	// make samples store
 	samplesStore, err := storage.NewSamples(ctx, dataDB)
 	if err != nil {
@@ -810,12 +819,13 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 	}
 
 	spamBotParams := bot.SpamConfig{
-		GroupID:      opts.InstanceID,
-		SamplesStore: samplesStore,
-		DictStore:    dictionaryStore,
-		SpamMsg:      opts.Message.Spam,
-		SpamDryMsg:   opts.Message.Dry,
-		Dry:          opts.Dry,
+		EditorialEmoji: editorialEmoji,
+		GroupID:        opts.InstanceID,
+		SamplesStore:   samplesStore,
+		DictStore:      dictionaryStore,
+		SpamMsg:        opts.Message.Spam,
+		SpamDryMsg:     opts.Message.Dry,
+		Dry:            opts.Dry,
 		ContentExtraction: bot.ContentExtractionConfig{
 			Enabled:               opts.ContentExtraction.Enabled,
 			LogDebug:              opts.ContentExtraction.LogDebug,

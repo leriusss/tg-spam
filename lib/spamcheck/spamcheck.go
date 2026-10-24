@@ -7,6 +7,8 @@ import (
 
 // Request is a request to check a message for spam.
 type Request struct {
+	// SkipEmojiCheck is an internal, per-message exemption; JSON clients cannot grant it.
+	SkipEmojiCheck bool `json:"-"`
 	// SuppressHamRecording excludes externally moderated messages from trust and ham history without changing checks.
 	SuppressHamRecording bool `json:"-"`
 	// AuthoredText excludes quoted/replied content; nil uses Msg for non-Telegram callers.

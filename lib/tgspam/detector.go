@@ -243,7 +243,7 @@ func (d *Detector) Check(req spamcheck.Request) (spam bool, cr []spamcheck.Respo
 	}
 
 	// check for emojis if max allowed emojis is set
-	if d.MaxAllowedEmoji >= 0 {
+	if d.MaxAllowedEmoji >= 0 && !req.SkipEmojiCheck {
 		cr = append(cr, d.isManyEmojis(req.Msg))
 	}
 
