@@ -34,8 +34,9 @@ type SpamFilter struct {
 
 // SpamConfig is a full set of parameters for spam bot
 type SpamConfig struct {
-	SamplesStore SamplesStore // storage for spam samples
-	DictStore    DictStore    // storage for stop words and excluded tokens
+	EditorialEmoji EditorialEmojiExemptions
+	SamplesStore   SamplesStore // storage for spam samples
+	DictStore      DictStore    // storage for stop words and excluded tokens
 
 	SpamMsg           string
 	SpamDryMsg        string
@@ -119,6 +120,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		FirstName: firstName, LastName: lastName, IsPremium: isPremium}
 	spamReq.AuthoredText = &msg.Text
 	spamReq.SuppressHamRecording = hanMatched
+	spamReq.SkipEmojiCheck = s.params.EditorialEmoji.Allows(msg.ChatID, msg.SenderChat.ID)
 	if msg.Image != nil {
 		spamReq.Meta.Images = 1
 	}

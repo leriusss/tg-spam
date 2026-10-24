@@ -35,6 +35,12 @@ TG-Spam's spam detection algorithm is multifaceted, incorporating several criter
 
 TG-Spam can also run as a server, providing a simple HTTP API to check messages for spam. This is useful for integration with other tools, not related to Telegram. For more details, see [Running with webapi server](#running-with-webapi-server) section below. In addition, it provides WEB UI to perform some useful admin tasks. For more details see [WEB UI](#web-ui) section below. All the spam detection modules can be also used as a library. For more details, see [Using tg-spam as a library](#using-tg-spam-as-a-library) section below.
 
+### Editorial channel emoji exemption
+
+An optional empty-by-default list skips only the emoji check for exact numeric
+`discussion_id:sender_chat_id` pairs. Other checks and the global emoji limit stay
+unchanged; it does not grant manual trust. See [configuration and scope](docs/editorial-channel-emoji.md).
+
 ### Optional Han script restriction
 
 `--han.enabled` / `HAN_ENABLED` is off by default. It deletes only the particular
