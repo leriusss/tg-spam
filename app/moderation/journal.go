@@ -205,13 +205,20 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 				return journalError(e)
 			}
 			if len(previous) > 0 {
-				id = previous[0]
-				return nil // No automatic re-admission, even with a changed identity or verdict.
-			}
-			var e error
-			p, e = j.prepareHanPlan(ctx, tx, p, now)
-			if e != nil {
-				return e
+				if len(p.Actions) == 0 {
+					id = previous[0]
+					return nil // A Han replay cannot introduce or renew its authority.
+				}
+				// Only Han is frozen. Independent detector/burst requirements use
+				// their original source key and the ordinary merge/demand contract,
+				// even when an unrelated manual receipt already exists for the pair.
+				p.HanActions = nil
+			} else {
+				var e error
+				p, e = j.prepareHanPlan(ctx, tx, p, now)
+				if e != nil {
+					return e
+				}
 			}
 		}
 		id = p.Key

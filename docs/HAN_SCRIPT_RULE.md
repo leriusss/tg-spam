@@ -103,8 +103,12 @@ delete-only с объяснением. Telegram хранит дату с точ�
 
 Перед admission транзакция проверяет существующий receipt по точной тройке
 instance/chat/message, включая прежние delete-only receipts и иную identity.
-Автоматическая повторная доставка ничего не добавляет и не продлевает: ни ban,
-ни другую причину. Все основания первого нового события сохраняются вместе.
+Повтор самого Han ничего не добавляет и не продлевает: Han-ban, остановленный
+Han demand и его deadline не возобновляются. При этом существующий receipt не
+блокирует независимые detector/burst Actions: они проходят прежний merge по
+своему source key, сохраняют отдельный origin и причину в карточке. Это действует
+и при прежнем SenderChat-запросе, delete-only запросе либо историческом Han-only
+receipt. Ручной запрос с другим ключом не подменяет независимый source receipt.
 Открытие карточки только читает историю. Явное решение оператора сохраняет
 свой прежний контракт (в том числе отдельное подтверждение бана/обучения).
 
@@ -198,3 +202,8 @@ worker остаётся гонка с уже прошедшей авториза
 replay и адресное снятие Han demand с сохранением независимого detector demand.
 `TestHanPolicyExplicitOperatorDecisions` сохраняет контракт явных кнопок.
 Полные build/test/race/lint, recovery, reporting, auto-trust и холодный e2e — в CI PR.
+
+Regression ревью PR №13: `TestHanExistingReceiptIndependentListenerWorker` проверяет
+реальные SenderChat/delete-запросы → Han + button/burst → journal → Telegram mocks,
+обратный порядок, исторический Han-only, рестарт, повторы и независимую причину.
+`late button` теперь требует сохранения причины и активного detector demand.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,26 @@ func checkHanPolicyContract(t *testing.T, j *Journal, db *engine.SQL) {
 	after, err := j.CardView(ctx, old)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "old card/history never upgraded by automatic Han")
+	// Existing automatic Han history must not suppress a new independent demand.
+	independent := newHanPlan(901, now)
+	independent.Actions = slices.Clone(independent.HanActions)
+	independent.Reason = "Независимое основание: external button"
+	_, _, _, err = j.Accept(ctx, independent, now)
+	require.NoError(t, err)
+	updated, err := j.CardView(ctx, old)
+	require.NoError(t, err)
+	require.Contains(t, updated.Reason, legacy.Reason)
+	require.Contains(t, updated.Reason, independent.Reason)
+	bans := 0
+	for _, a := range updated.Actions {
+		if a.Kind == "ban" {
+			bans++
+		}
+	}
+	require.Equal(t, 1, bans)
+	for _, d := range updated.Origins {
+		require.NotEqual(t, HanOrigin, d.Origin, "old events acquire only independent authority")
+	}
 	for index, date := range []int64{since - 1, since, 0, now.Add(time.Hour).Unix()} {
 		p := newHanPlan(910+index, now)
 		p.HanActions[1].MessageDate = date
@@ -118,6 +139,24 @@ func checkHanPolicyContract(t *testing.T, j *Journal, db *engine.SQL) {
 		unchanged, e := j.CardView(ctx, key)
 		require.NoError(t, e)
 		require.Equal(t, c, unchanged, "re-delivery cannot reauthorize stopped Han bans or slide deadlines")
+		if !independent {
+			p.Actions = slices.Clone(p.HanActions)
+			_, _, _, e = j.Accept(ctx, p, now.Add(2*time.Minute))
+			require.NoError(t, e)
+			c, e = j.CardView(ctx, key)
+			require.NoError(t, e)
+			for _, d := range c.Origins {
+				if strings.Contains(d.ActionID, ":ban:") {
+					require.Equal(t, d.Origin != HanOrigin, d.Active, "new detector demand must not reactivate stopped Han")
+				}
+			}
+			p.Actions = nil
+			_, _, _, e = j.Accept(ctx, p, now.Add(3*time.Minute))
+			require.NoError(t, e)
+			unchanged, e = j.CardView(ctx, key)
+			require.NoError(t, e)
+			require.Equal(t, c, unchanged, "pure Han replay cannot renew independent or withdrawn work")
+		}
 	}
 	// Unknown authors carry only exact-message deletion authority, never a fake user.
 	p := newHanPlan(930, now)

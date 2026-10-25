@@ -147,7 +147,18 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 				require.Contains(t, mustHanCard(t, j, card.Receipt).Reason, reason)
 			}
 			if mode == "late button" {
-				require.NotContains(t, mustHanCard(t, j, card.Receipt).Reason, "внешняя кнопка со ссылкой", "re-delivery does not rewrite accepted automatic decisions")
+				after := mustHanCard(t, j, card.Receipt)
+				require.Contains(t, after.Reason, "внешняя кнопка со ссылкой", "later independent authority is retained")
+				require.Contains(t, compactCardText(after, "fixture"), "Независимое основание")
+				for _, op := range after.Actions {
+					if op.Kind == "ban" {
+						found := false
+						for _, demand := range after.Origins {
+							found = found || demand.ActionID == op.ID && demand.Origin == "detector" && demand.Active
+						}
+						require.True(t, found, "independent ban is registered even after Han was confirmed")
+					}
+				}
 			}
 			for id := 701; id < 701+count; id++ {
 				require.Equal(t, 1, deletes[id], "confirmed delete cannot be replayed after restart")
