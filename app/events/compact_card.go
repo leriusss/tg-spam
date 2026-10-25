@@ -43,6 +43,9 @@ func compactCardText(c moderation.Card, chatName string) string {
 	}
 	if name == "" {
 		name = "Пользователь"
+		if newHanCard(c) && c.IdentityKind == "message" {
+			name = "Автор не установлен"
+		}
 		if c.IdentityKind == "sender_chat" {
 			name = "Канал"
 		}
@@ -76,7 +79,11 @@ func compactCardText(c moderation.Card, chatName string) string {
 			continue
 		}
 		if shown < 12 {
-			text.WriteString("\n" + html.EscapeString(compactAction(op)))
+			status := compactAction(op)
+			if newHanCard(c) {
+				status = hanActionText(op)
+			}
+			text.WriteString("\n" + html.EscapeString(status))
 		}
 		shown++
 	}

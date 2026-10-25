@@ -35,6 +35,10 @@ func DefaultLimits() Limits { return Limits{Receipts: 500, Actions: 5000, Retain
 
 // Plan contains validated authority and original card context; never Telegram credentials.
 type Plan struct {
+	// HanActions are admitted only for a previously unseen exact original.
+	// Independent Actions retain their own authority when they overlap Han.
+	HanActions                        []Action
+	hanOrigins                        map[string][]string
 	DeleteOnly                        bool
 	Reason                            string
 	RequesterID                       int64

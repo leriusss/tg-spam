@@ -233,6 +233,7 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT id,kind,message_id,until_date,state,code,next_at FROM moderation_actions WHERE gid=? AND receipt=? ORDER BY CASE WHEN kind IN ('original_delete','cleanup_delete') AND state='confirmed' THEN 0 WHEN kind IN ('original_delete','cleanup_delete') AND state IN ('pending','running') THEN 1 ELSE 2 END,id`), j.db.GID(), p.Key); err != nil {
 		return journalError(err)
 	}
+	withdrawals := map[string]int{p.Origin: withdrawn}
 	for _, a := range p.Actions {
 		old, ok, err := j.matchRows(ctx, tx, p, a, rows, now)
 		if err != nil {
@@ -241,23 +242,36 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 		if !ok {
 			return errors.New("registered demand action is missing")
 		}
-		res, e := tx.ExecContext(
-			ctx,
-			j.db.Adopt(`INSERT INTO moderation_demands VALUES (?,?,?,?,?,?) ON CONFLICT(gid,action_id,origin) DO NOTHING`),
-			j.db.GID(),
-			p.Key,
-			old.ID,
-			p.Origin,
-			withdrawn == 0 && held == 0, now.UnixMilli(),
-		)
-		if e != nil {
-			return journalError(e)
+		origins := []string{p.Origin}
+		if p.hanOrigins != nil {
+			origins = p.hanOrigins[actionKey(p.Key, a)]
 		}
-		n, e := res.RowsAffected()
-		if e != nil {
-			return journalError(e)
+		for _, origin := range origins {
+			if _, known := withdrawals[origin]; !known {
+				var count int
+				if e := tx.GetContext(ctx, &count, j.db.Adopt(`SELECT count(*) FROM moderation_withdrawals WHERE gid=? AND receipt=? AND origin=?`), j.db.GID(), p.Key, origin); e != nil {
+					return journalError(e)
+				}
+				withdrawals[origin] = count
+			}
+			res, e := tx.ExecContext(
+				ctx,
+				j.db.Adopt(`INSERT INTO moderation_demands VALUES (?,?,?,?,?,?) ON CONFLICT(gid,action_id,origin) DO NOTHING`),
+				j.db.GID(),
+				p.Key,
+				old.ID,
+				origin,
+				withdrawals[origin] == 0 && held == 0, now.UnixMilli(),
+			)
+			if e != nil {
+				return journalError(e)
+			}
+			n, e := res.RowsAffected()
+			if e != nil {
+				return journalError(e)
+			}
+			changed = changed || n > 0
 		}
-		changed = changed || n > 0
 	}
 	if p.Reason != "" {
 		var prior []string

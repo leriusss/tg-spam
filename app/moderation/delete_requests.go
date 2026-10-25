@@ -30,6 +30,12 @@ func validDeleteRequest(p Plan) bool {
 
 // DeleteAuthority verifies a message-scoped operation without inventing an author.
 func (j *Journal) DeleteAuthority(ctx context.Context, a Action) (bool, error) {
+	if a.Kind == "original_delete" && a.IdentityKind == "message" && a.IdentityID == 0 {
+		ok, err := j.hanDeleteAuthority(ctx, a)
+		if err != nil || ok {
+			return ok, err
+		}
+	}
 	var n int
 	err := j.db.GetContext(ctx, &n, j.db.Adopt(`SELECT count(*) FROM moderation_delete_requests d JOIN moderation_actions a ON d.gid=a.gid AND d.receipt=a.receipt JOIN moderation_requests r ON d.gid=r.gid AND d.receipt=r.receipt WHERE d.gid=? AND a.id=? AND a.receipt=? AND a.chat_id=? AND a.message_id=? AND a.identity_kind=? AND a.identity_id=? AND a.kind='original_delete' AND r.state='delete'`), j.db.GID(), a.ID, a.Receipt, a.ChatID, a.MessageID, a.IdentityKind, a.IdentityID)
 	return n == 1, journalError(err)

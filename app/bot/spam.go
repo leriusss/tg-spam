@@ -84,6 +84,10 @@ func NewSpamFilter(detector Detector, params SpamConfig) *SpamFilter {
 // OnMessage checks if user already approved and if not checks if user is a spammer
 func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) {
 	if msg.From.ID == 0 { // don't check system messages
+		// A Han deletion can use the exact message even without an author.
+		if response, matched := s.hanResponse(msg, strconv.FormatInt(msg.SenderChat.ID, 10)); matched {
+			return response
+		}
 		return Response{}
 	}
 	displayUsername := DisplayName(msg)
@@ -209,7 +213,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		spamRespMsg := fmt.Sprintf("%s: %q (%d)", msgPrefix, displayUsername, msg.From.ID)
 		return Response{Text: spamRespMsg, Send: true, ReplyTo: msg.ID, BanInterval: PermanentBanDuration, CheckResults: checkResults,
 			DeleteReplyTo: true, User: User{Username: msg.From.Username, ID: msg.From.ID, DisplayName: msg.From.DisplayName},
-			ChannelID: msg.SenderChat.ID,
+			ChannelID: msg.SenderChat.ID, HanMatched: hanMatched,
 		}
 	}
 	if hanMatched {

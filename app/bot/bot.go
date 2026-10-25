@@ -15,6 +15,8 @@ var PermanentBanDuration = time.Hour * 24 * 400
 
 // Response describes bot's reaction on particular message
 type Response struct {
+	HanMatched    bool // current automatic Han verdict, including independent spam grounds
+	HanOnly       bool // no independent spam verdict; never learn or select cleanup
 	HanDeleteOnly bool // requires persistent deletion; never ban, cleanup or learn
 	Text          string
 	Send          bool                 // status

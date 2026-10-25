@@ -35,6 +35,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		db.SetMaxOpenConns(1)
 	}
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_han_policy (gid TEXT PRIMARY KEY, since_date BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS moderation_delete_request_history (gid TEXT NOT NULL, ref TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, notification_id INTEGER NOT NULL, replaced_by TEXT NOT NULL, action_snapshot TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS moderation_delete_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
@@ -48,6 +49,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		`CREATE INDEX IF NOT EXISTS idx_moderation_receipt_actions ON moderation_actions(gid,receipt)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_deleted_pair ON moderation_actions(gid,chat_id,message_id,state)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_retention ON moderation_receipts(gid,state,created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_moderation_original_receipt ON moderation_receipts(gid,chat_id,message_id)`,
 	}
 	for _, q := range ddl {
 		if _, err := db.ExecContext(ctx, q); err != nil {
@@ -152,7 +154,10 @@ func (j *Journal) exec(ctx context.Context, tx journalTx, q string, args ...any)
 // Accept binds delivery and creates all actions in one transaction, before local learning/API calls.
 // The returned owner is required to activate the preparation after non-replayable learning.
 func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner string, created bool, err error) {
-	messageOnly := p.DeleteOnly && p.IdentityKind == "message" && p.IdentityID == 0
+	messageOnly := (p.DeleteOnly || len(p.HanActions) > 0) && p.IdentityKind == "message" && p.IdentityID == 0
+	if len(p.HanActions) > 0 && !validHanPlan(p) {
+		return "", "", false, errors.New("invalid automatic Han authority")
+	}
 	if p.DeleteOnly && !validDeleteRequest(p) {
 		return "", "", false, errors.New("invalid delete-only request")
 	}
@@ -172,7 +177,7 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 		sourceKey = fmt.Sprintf("delete:%d:%d", p.ChatID, p.MessageID)
 	}
 	deliveryKey := fmt.Sprintf("delivery:%d:%d", p.DeliveryChat, p.DeliveryMessage)
-	if len(p.Actions) == 0 ||
+	if len(p.Actions)+len(p.HanActions) == 0 ||
 		((p.Key != sourceKey || p.MessageID <= 0) &&
 			(p.Key != deliveryKey || p.DeliveryChat == 0 || p.DeliveryMessage <= 0) &&
 			(p.CommandID == "" || p.Key != "command:"+p.CommandID || p.MessageID != 0)) {
@@ -189,9 +194,26 @@ func (j *Journal) Accept(ctx context.Context, p Plan, now time.Time) (id, owner 
 		owner = token()
 	}
 	overflow := false
+	initial := p
 	err = j.transaction(ctx, func(tx journalTx) error {
 		created = false
 		overflow = false
+		if len(initial.HanActions) > 0 {
+			p = initial
+			var previous []string
+			if e := tx.SelectContext(ctx, &previous, j.db.Adopt(`SELECT id FROM moderation_receipts WHERE gid=? AND chat_id=? AND message_id=? ORDER BY id`), j.db.GID(), p.ChatID, p.MessageID); e != nil {
+				return journalError(e)
+			}
+			if len(previous) > 0 {
+				id = previous[0]
+				return nil // No automatic re-admission, even with a changed identity or verdict.
+			}
+			var e error
+			p, e = j.prepareHanPlan(ctx, tx, p, now)
+			if e != nil {
+				return e
+			}
+		}
 		id = p.Key
 		if p.DeliveryMessage != 0 {
 			var prior string

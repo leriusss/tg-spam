@@ -43,11 +43,11 @@ unchanged; it does not grant manual trust. See [configuration and scope](docs/ed
 
 ### Optional Han script restriction
 
-`--han.enabled` / `HAN_ENABLED` is off by default. It deletes only the particular
+`--han.enabled` / `HAN_ENABLED` is off by default. For new events it deletes the particular
 message whose own text/caption has at least `--han.min-count=20` (`HAN_MIN_COUNT`)
 Han letters and a Han/all-letters fraction of at least `--han.ratio=0.7`
 (`HAN_RATIO`). Requires `--moderation-recovery`; invalid settings fail startup.
-Han alone requests no automatic ban, cleanup, training or trust removal. Independent
+Han also requests an independent author ban; it requests no cleanup, training or trust removal. Independent
 detector/burst verdicts retain their ban/cleanup; Han matches do not record ham history
 or accumulate automatic trust. Both decision reasons are retained in the persistent card.
 Manual trust, superusers, dry and training modes retain their safety gates.
@@ -567,7 +567,7 @@ duplicates:
       --duplicates.window=              time window for duplicate detection (default: 1h) [$DUPLICATES_WINDOW]
 
 han:
-      --han.enabled                     delete messages dominated by Han script [$HAN_ENABLED]
+      --han.enabled                     delete new Han-dominated messages and ban their authors [$HAN_ENABLED]
       --han.ratio=                      minimum Han fraction among letters (greater than 0.5, at most 1) (default: 0.7) [$HAN_RATIO]
       --han.min-count=                  minimum Han letters required (at least 2) (default: 20) [$HAN_MIN_COUNT]
 

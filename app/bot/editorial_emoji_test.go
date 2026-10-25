@@ -147,8 +147,8 @@ func TestEditorialEmojiPreservesOtherChecks(t *testing.T) {
 				res = f.OnMessage(msg, false)
 			}
 			if mode == "han" {
-				require.True(t, res.HanDeleteOnly)
-				require.Zero(t, res.BanInterval)
+				require.True(t, res.HanOnly)
+				require.Positive(t, res.BanInterval)
 				require.Empty(t, d.ApprovedUsers())
 			} else {
 				require.Positive(t, res.BanInterval)

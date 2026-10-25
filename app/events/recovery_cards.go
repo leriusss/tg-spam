@@ -40,7 +40,11 @@ func cardDetails(c moderation.Card) string {
 			fmt.Fprintf(&text, "Ещё операций в журнале: %d\n", len(c.Actions)-i)
 			break
 		}
-		fmt.Fprintf(&text, "\n%s: %s\n", op.Kind, op.State)
+		if newHanCard(c) && (op.Kind == "ban" || op.Kind == "restrict" || op.Kind == "original_delete") {
+			fmt.Fprintf(&text, "\n%s\n", hanActionText(op))
+		} else {
+			fmt.Fprintf(&text, "\n%s: %s\n", op.Kind, op.State)
+		}
 		if op.MessageID > 0 {
 			fmt.Fprintf(&text, "Сообщение: %d\n", op.MessageID)
 		}
@@ -96,6 +100,9 @@ func truncateRunes(s string, n int) string {
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
 	if c.DeleteOnly {
 		return deleteOnlyKeyboard(c, allowed)
+	}
+	if newHanCard(c) && c.IdentityKind == "message" {
+		return tbapi.NewInlineKeyboardMarkup(tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref)))
 	}
 	if c.RequestState == "pending" || c.RequestState == "expired" || c.RequestState == "reject_report" {
 		rows := [][]tbapi.InlineKeyboardButton{tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData("Подробнее", "M?:"+c.Ref))}

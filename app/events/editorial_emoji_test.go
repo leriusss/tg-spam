@@ -23,6 +23,7 @@ func TestEditorialEmojiQueueAndWorker(t *testing.T) {
 			defer db.Close()
 			j, err := moderation.NewJournal(ctx, db, moderation.DefaultLimits())
 			require.NoError(t, err)
+			require.NoError(t, j.EnableHanBans(ctx, time.Unix(1, 0)))
 			l, _, _, _, update := trainingReportFixture(t, true)
 			l.chatID = -100
 			l.adminHandler.primChatID = -100
@@ -75,7 +76,7 @@ func TestEditorialEmojiQueueAndWorker(t *testing.T) {
 				return
 			}
 			if mode == "han" {
-				require.Zero(t, kinds["ban"])
+				require.Equal(t, 1, kinds["ban"])
 				require.Empty(t, d.ApprovedUsers())
 			} else {
 				require.Equal(t, 1, kinds["ban"])
@@ -124,11 +125,7 @@ func TestEditorialEmojiQueueAndWorker(t *testing.T) {
 					now = now.Add(time.Minute)
 				}
 			}
-			if mode == "han" {
-				require.Zero(t, bans)
-			} else {
-				require.Equal(t, 1, bans)
-			}
+			require.Equal(t, 1, bans)
 			require.Len(t, deletes, count)
 			for _, n := range deletes {
 				require.Equal(t, 1, n, "redelivery must not repeat a confirmed original deletion")
