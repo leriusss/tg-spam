@@ -286,6 +286,11 @@ func main() {
 }
 
 func execute(ctx context.Context, opts options) error {
+	return executeWithTelegram(ctx, opts, initializeTelegram)
+}
+
+func executeWithTelegram(ctx context.Context, opts options,
+	initialize func(context.Context, string, string, *telegramHTTPClient) (*tbapi.BotAPI, error)) error {
 	if _, err := bot.ParseEditorialEmojiExemptions(opts.EditorialEmojiExemptions); err != nil {
 		return fmt.Errorf("invalid editorial emoji exemptions: %w", err)
 	}
@@ -383,7 +388,7 @@ func execute(ctx context.Context, opts options) error {
 		telegramClient.cooldown = recoveryJournal.Cooldown
 		telegramClient.pause = recoveryJournal.Pause
 	}
-	tbAPI, err := tbapi.NewBotAPIWithClient(opts.Telegram.Token, tbapi.APIEndpoint, telegramClient)
+	tbAPI, err := initialize(ctx, opts.Telegram.Token, tbapi.APIEndpoint, telegramClient)
 	if err != nil {
 		return fmt.Errorf("can't make telegram bot, %w", err)
 	}
