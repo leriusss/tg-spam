@@ -457,15 +457,21 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 
 	resp := l.Bot.OnMessage(*msg, false)
 
-	if resp.HanDeleteOnly {
+	if resp.HanMatched || resp.HanDeleteOnly {
 		if l.Dry || l.TrainingMode {
 			return nil
 		}
 		if l.RecoveryJournal == nil || l.adminHandler == nil || l.adminHandler.recovery == nil {
 			return fmt.Errorf("han deletion requires durable moderation journal")
 		}
-		_, err := l.enqueueAutomatic(update, msg, resp)
-		return err
+		hanID := int64(0)
+		if resp.HanMatched {
+			hanID, _, _ = hanOriginalIdentity(update.Message)
+		}
+		if resp.HanOnly || resp.HanDeleteOnly || resp.HanMatched && hanID == 0 {
+			_, err := l.enqueueAutomatic(update, msg, resp)
+			return err
+		}
 	}
 
 	if !resp.Send { // not spam

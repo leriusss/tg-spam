@@ -441,6 +441,9 @@ func (a *admin) enqueueForward(
 }
 
 func (l *TelegramListener) enqueueAutomatic(update tbapi.Update, msg *bot.Message, resp bot.Response) (bool, error) {
+	if resp.HanMatched {
+		return l.enqueueHanAutomatic(update, msg, resp)
+	}
 	id := msg.From.ID
 	kind := "user"
 	if msg.SenderChat.ID != 0 {

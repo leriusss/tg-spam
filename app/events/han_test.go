@@ -64,6 +64,7 @@ func TestHanPipeline(t *testing.T) {
 				l.RecoveryJournal = nil
 			}
 			j := l.adminHandler.recovery.journal
+			require.NoError(t, j.EnableHanBans(context.Background(), time.Unix(1, 0)))
 			for range 2 {
 				err := l.procEvents(update)
 				if mode == "no journal" {
@@ -77,9 +78,9 @@ func TestHanPipeline(t *testing.T) {
 			if !want {
 				require.Empty(t, rows)
 			} else {
-				require.Len(t, rows, 3, "one deletion plus card and notice")
+				require.Len(t, rows, 4, "ban and deletion plus card and notice")
 				for _, a := range rows {
-					require.Contains(t, []string{"original_delete", "card", "notice"}, a.Kind)
+					require.Contains(t, []string{"ban", "original_delete", "card", "notice"}, a.Kind)
 				}
 				id, kind := int64(501), "user"
 				if mode == "sender chat" {
@@ -88,7 +89,7 @@ func TestHanPipeline(t *testing.T) {
 				card, err := j.CardView(context.Background(), fmt.Sprintf("source:123:702:%s:%d", kind, id))
 				require.NoError(t, err)
 				require.Contains(t, card.Reason, "28 из 34 букв")
-				require.Contains(t, compactCardText(card, "fixture"), "Только удаление сообщения")
+				require.Contains(t, compactCardText(card, "fixture"), "Удаление и блокировка учитываются отдельно")
 				require.Contains(t, cardDetails(card), "Преобладает письменность Han")
 				require.NotContains(t, compactCardText(card, "fixture"), "Сообщение удалено")
 				require.Equal(t, strings.Repeat("你好世界", 7)+" привет", card.Text)

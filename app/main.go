@@ -133,7 +133,7 @@ type options struct {
 	} `group:"duplicates" namespace:"duplicates" env-namespace:"DUPLICATES"`
 
 	Han struct {
-		Enabled  bool    `long:"enabled" env:"ENABLED" description:"delete messages dominated by Han script"`
+		Enabled  bool    `long:"enabled" env:"ENABLED" description:"delete new Han-dominated messages and ban their authors"`
 		Ratio    float64 `long:"ratio" env:"RATIO" default:"0.7" description:"minimum Han fraction among letters (greater than 0.5, at most 1)"`
 		MinCount int     `long:"min-count" env:"MIN_COUNT" default:"20" description:"minimum Han letters required (at least 2)"`
 	} `group:"han" namespace:"han" env-namespace:"HAN"`
@@ -364,6 +364,11 @@ func executeWithTelegram(ctx context.Context, opts options,
 		recoveryJournal, err = moderation.NewJournal(ctx, dataDB, moderation.DefaultLimits())
 		if err != nil {
 			return fmt.Errorf("can't initialize durable moderation: %w", err)
+		}
+		if opts.Han.Enabled {
+			if err = recoveryJournal.EnableHanBans(ctx, time.Now()); err != nil {
+				return fmt.Errorf("can't initialize Han policy boundary: %w", err)
+			}
 		}
 	}
 

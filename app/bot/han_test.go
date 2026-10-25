@@ -78,8 +78,12 @@ func TestHanBeforeAutoBypassAndWithoutLearning(t *testing.T) {
 			}
 			before := d.ApprovedUsers()
 			resp := filter.OnMessage(msg, false)
-			require.Equal(t, want, resp.HanDeleteOnly)
-			require.Zero(t, resp.BanInterval)
+			require.Equal(t, want, resp.HanOnly)
+			if want {
+				require.Positive(t, resp.BanInterval)
+			} else {
+				require.Zero(t, resp.BanInterval)
+			}
 			if want {
 				require.True(t, resp.DeleteReplyTo)
 				require.Equal(t, msg.ID, resp.ReplyTo)
@@ -100,7 +104,7 @@ func TestHanIncident(t *testing.T) {
 	d := tgspam.NewDetector(tgspam.Config{MaxAllowedEmoji: -1})
 	s := NewSpamFilter(d, SpamConfig{Han: HanConfig{Enabled: true, Ratio: 0.7, MinCount: 20}})
 	resp := s.OnMessage(Message{ID: 1, From: User{ID: 42}, Text: string(text)}, false)
-	require.True(t, resp.HanDeleteOnly)
+	require.True(t, resp.HanOnly)
 }
 
 func TestHanOwnText(t *testing.T) {

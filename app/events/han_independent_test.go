@@ -26,6 +26,7 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 			defer func() { require.NoError(t, db.Close()) }()
 			j, err := moderation.NewJournal(ctx, db, moderation.DefaultLimits())
 			require.NoError(t, err)
+			require.NoError(t, j.EnableHanBans(ctx, time.Unix(1, 0)))
 			l, _, _, loc, update := trainingReportFixture(t, false)
 			d := tgspam.NewDetector(tgspam.Config{FirstMessageOnly: mode == "auto", MinMsgLen: 1, MaxAllowedEmoji: -1})
 			if mode == "stopword" {
@@ -66,11 +67,7 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 			for _, a := range rows {
 				kinds[a.Kind]++
 			}
-			if independent {
-				require.Equal(t, 1, kinds["ban"])
-			} else {
-				require.Zero(t, kinds["ban"])
-			}
+			require.Equal(t, count, kinds["ban"], "one ban decision per new original; shared grounds coalesce")
 			require.Equal(t, count, kinds["original_delete"])
 			if mode == "burst" {
 				require.Equal(t, 2, kinds["cleanup_delete"], "independent burst cleanup must be admitted")
@@ -86,7 +83,11 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 					require.True(t, ok)
 					switch req := c.(type) {
 					case tbapi.GetChatMemberConfig:
-						return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: 501}, Status: "member"}), nil
+						status := "member"
+						if bans > 0 {
+							status = "kicked"
+						}
+						return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: 501}, Status: status}), nil
 					case tbapi.DeleteMessageConfig:
 						deletes[req.MessageID]++
 						return apiOK(true), nil
@@ -135,7 +136,6 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 			l.RecoveryJournal, l.adminHandler.recovery.journal = j, j
 			if mode == "late button" {
 				update.Message.ReplyMarkup = &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{tbapi.NewInlineKeyboardButtonURL("link", "https://example.invalid")}}}
-				independent = true
 			}
 			r.journal = j
 			for range 2 {
@@ -147,17 +147,24 @@ func TestHanIndependentModerationQueueAndWorker(t *testing.T) {
 				require.Contains(t, mustHanCard(t, j, card.Receipt).Reason, reason)
 			}
 			if mode == "late button" {
-				require.Contains(t, mustHanCard(t, j, card.Receipt).Reason, "внешняя кнопка со ссылкой")
+				after := mustHanCard(t, j, card.Receipt)
+				require.Contains(t, after.Reason, "внешняя кнопка со ссылкой", "later independent authority is retained")
+				require.Contains(t, compactCardText(after, "fixture"), "Независимое основание")
+				for _, op := range after.Actions {
+					if op.Kind == "ban" {
+						found := false
+						for _, demand := range after.Origins {
+							found = found || demand.ActionID == op.ID && demand.Origin == "detector" && demand.Active
+						}
+						require.True(t, found, "independent ban is registered even after Han was confirmed")
+					}
+				}
 			}
 			for id := 701; id < 701+count; id++ {
 				require.Equal(t, 1, deletes[id], "confirmed delete cannot be replayed after restart")
 			}
 			require.Len(t, deletes, count)
-			if independent {
-				require.Equal(t, 1, bans)
-			} else {
-				require.Zero(t, bans)
-			}
+			require.Equal(t, 1, bans)
 		})
 	}
 }

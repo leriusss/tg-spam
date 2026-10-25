@@ -136,3 +136,18 @@ func TestPostgresDeleteRequestContract(t *testing.T) {
 	checkDeleteRequest(t, j, db)
 	checkDeleteRenewalContract(t, j, db)
 }
+
+func TestPostgresHanPolicyContract(t *testing.T) {
+	if testing.Short() {
+		t.Skip("PostgreSQL runs in full Linux checks")
+	}
+	ctx := context.Background()
+	pg := containers.NewPostgresTestContainerWithDB(ctx, t, "han_policy")
+	defer pg.Close(ctx)
+	db, err := engine.NewPostgres(ctx, pg.ConnectionString(), "han-contract")
+	require.NoError(t, err)
+	defer db.Close()
+	j, err := NewJournal(ctx, db, DefaultLimits())
+	require.NoError(t, err)
+	checkHanPolicyContract(t, j, db)
+}

@@ -79,8 +79,8 @@ func TestOnMessageHanDoesNotAdvancePersistedAutoProgress(t *testing.T) {
 			msg := Message{ID: 100, ChatID: -100, From: User{ID: 42}, Text: strings.Repeat("中", 24)}
 			for range 3 {
 				res := filter.OnMessage(msg, false)
-				require.True(t, res.HanDeleteOnly)
-				require.Zero(t, res.BanInterval)
+				require.True(t, res.HanOnly)
+				require.Positive(t, res.BanInterval)
 			}
 			after, err := users.Read(ctx)
 			require.NoError(t, err)
@@ -88,7 +88,7 @@ func TestOnMessageHanDoesNotAdvancePersistedAutoProgress(t *testing.T) {
 			require.NoError(t, db.Close())
 			filter = open()
 			res := filter.OnMessage(msg, false)
-			require.True(t, res.HanDeleteOnly)
+			require.True(t, res.HanOnly)
 			after, err = users.Read(ctx)
 			require.NoError(t, err)
 			require.Equal(t, before, after)

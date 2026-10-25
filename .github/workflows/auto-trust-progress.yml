@@ -38,6 +38,10 @@ jobs:
         run: go test -race -timeout=300s ./lib/tgspam ./app/storage ./app/bot ./app/events
       - name: Build
         run: go build -race ./...
+      - name: Han schema and queue survive previous binary and return (isolated copies)
+        run: bash scripts/check-han-policy-compat.sh
+        env:
+          COMPAT_POSTGRES_URL: postgres://postgres:fixture@localhost:5432/compat?sslmode=disable
       - name: Previous binary reads current schemas and retains its known trust defect
         run: bash scripts/check-approved-progress-compat.sh
         env:
