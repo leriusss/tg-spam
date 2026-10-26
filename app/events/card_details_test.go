@@ -386,3 +386,12 @@ func TestDetailsIndependentReasonsAndNoInventedConfirmation(t *testing.T) {
 	c.Text = "Сообщение удалено, автор заблокирован"
 	require.Equal(t, "Действия не выполнены; проверьте результаты", detailResult(c, now), "free text cannot determine journal outcomes")
 }
+
+func TestDetailsCanceledActionIsNotAwaited(t *testing.T) {
+	now := time.Now()
+	c := detailExamples(now)[0].Card
+	c.Actions[1].State = moderation.Canceled
+	require.Equal(t, "Часть действий отменена до выполнения", detailResult(c, now))
+	require.Contains(t, detailActions(c, now), "Блокировка автора — отменено до выполнения")
+	require.NotContains(t, safeDetail("пример.рф/path"), "пример.рф")
+}
