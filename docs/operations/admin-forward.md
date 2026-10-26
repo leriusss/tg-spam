@@ -52,13 +52,32 @@ membership facts across overlapping forward batches are reused unless a later un
 exists; confirmed original deletions are also reused by the existing exact-pair
 contract. Unknown API results retain uncertainty and retry/manual states.
 
-The batch key is a hash of primary chat plus the sorted exact original set (not the
-forward delivery or operator). Re-forwarding the same set, callbacks and restarts
-cannot create another decision, slide the selection expiry, renew completed work,
-or extend delete deadlines. Deletion deadlines are clamped to the first recorded
-batch deadline, existing actions and Telegram message age. A different explicit
-selection creates its own durable history; existing delete-only receipts are never
-upgraded or rewritten and their deadlines are still respected.
+Delivery and decision are different identities. `moderation_forward_deliveries`
+persists the positive Telegram update ID, admin chat/message ID, numeric operator,
+request receipt, previous receipt and reason. A deterministic receipt is derived
+from the protected chat and that delivery tuple, not from candidate content or a
+random value. Conflicting reused IDs fail closed. The same delivery is recognized
+before locator lookup, including after locator retention or a database reopen.
+The same callback cannot decide another request: refs, anchors, snapshots, requester,
+state and expiry remain bound to the original card.
+
+A new actual forward creates a separate decision/view epoch. It can select the
+second original after the first was handled, or create a fresh 15-minute selection
+after expiry. The first recorded delete deadlines (including expired selections
+and old delete-only actions) remain immutable. New author evidence after an old
+unknown-author deletion requires a separately labelled explicit ban decision.
+A previous permanent refusal is terminal on redelivery; a fresh forward produces
+an explicit retry-review card, not an automatic restart. Old cards/history stay
+unchanged and do not gain new authority.
+
+Confirmed or unresolved operations are referenced through
+`moderation_forward_links`, never copied into another execution queue. New cards
+show and follow the existing results. When everything is confirmed, the new forward
+shows a saved-result card with zero new moderation actions. Concurrent distinct
+forwards/selections also reuse pending work. A shared operation's state change
+dirties its linked cards, without renewing any selection or deadline. Uncertain
+outcomes remain uncertain; a new forward cannot blindly repeat an unknown effect.
+Retention keeps referenced source results and unresolved linked work intact.
 
 A result card says `Принято: удалить сообщение №… и заблокировать автора`, then
 shows separate deletion and blocking states. Unknown authors explicitly show no
@@ -99,6 +118,10 @@ historical handler to continue validating pre-existing delete-only/identity hist
 that handler is not compiled into production. New runtime routing is tested through
 TelegramListener, not that oracle. No test assertion or workflow is disabled.
 
+The delivery lifecycle scenarios run against SQLite and PostgreSQL in full CI:
+`TestAdminForwardDeliverySQLite` and `TestAdminForwardDeliveryPostgres`. They use
+the actual listener, journal, worker, card bindings and a real database reopen.
+
 Generate the synthetic renderer examples (no Telegram/network) with:
 
 ```sh
@@ -111,7 +134,8 @@ No deployment or rollback is authorized in this PR. For a separately approved
 future rollout: record the actual pre-release image digest/config and take consistent
 SQLite backups (including all current runtime state) plus sanitized counts/quick_check.
 Keep a private export of unfinished moderation receipts/actions/demands/decisions,
-requests, cards/bindings and forward batch snapshots. Preserve message_authors too.
+requests, cards/bindings, forward batch snapshots, forward deliveries and action
+links. Preserve message_authors too.
 
 If rolling back later, export unfinished work from the THEN-current DB first,
 disable recovery and manual-forward admission in the approved previous image/config,

@@ -48,14 +48,20 @@ type forwardFixture struct {
 	unknownBan    bool
 	unknownDelete bool
 	currentAdmin  bool
+	lastForward   tbapi.Update
 	now           time.Time
 }
 
-func newForwardFixture(t *testing.T) *forwardFixture {
+func newForwardFixture(t *testing.T) *forwardFixture { return newForwardFixtureDB(t, nil) }
+
+func newForwardFixtureDB(t *testing.T, db *engine.SQL) *forwardFixture {
 	t.Helper()
 	ctx := context.Background()
-	db, err := engine.NewSqlite(filepath.Join(t.TempDir(), "forward.db"), "forward-test")
-	require.NoError(t, err)
+	var err error
+	if db == nil {
+		db, err = engine.NewSqlite(filepath.Join(t.TempDir(), "forward.db"), "forward-test")
+		require.NoError(t, err)
+	}
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	loc, err := storage.NewLocator(ctx, time.Hour, 1000, db)
 	require.NoError(t, err)
@@ -142,6 +148,9 @@ func (f *forwardFixture) listen(t *testing.T, updates ...tbapi.Update) {
 	t.Helper()
 	ch := make(chan tbapi.Update, len(updates))
 	for _, u := range updates {
+		if u.Message != nil && u.Message.Chat.ID == 456 && u.Message.ForwardOrigin != nil {
+			f.lastForward = u
+		}
 		ch <- u
 	}
 	close(ch)
@@ -166,8 +175,11 @@ func (f *forwardFixture) settle(t *testing.T) {
 }
 func (f *forwardFixture) card(t *testing.T) moderation.Card {
 	t.Helper()
-	var id string
-	require.NoError(t, f.db.Get(&id, "SELECT receipt FROM moderation_forward_batches LIMIT 1"))
+	delivery := moderation.ForwardDelivery{UpdateID: f.lastForward.UpdateID, ChatID: 456, MessageID: f.lastForward.Message.MessageID}
+	admission, found, err := f.j.LookupForwardDelivery(context.Background(), delivery, f.lastForward.Message.From.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	id := admission.Receipt
 	c, err := f.j.CardView(context.Background(), id)
 	require.NoError(t, err)
 	return c
@@ -176,7 +188,7 @@ func (f *forwardFixture) choose(t *testing.T, verb string, alter func(*tbapi.Cal
 	t.Helper()
 	c := f.card(t)
 	var anchor int
-	require.NoError(t, f.db.Get(&anchor, "SELECT notification_id FROM moderation_actions WHERE kind='card' AND receipt=?", c.Receipt))
+	require.NoError(t, f.db.Get(&anchor, f.db.Adopt("SELECT notification_id FROM moderation_actions WHERE kind='card' AND receipt=? AND gid=?"), c.Receipt, f.db.GID()))
 	require.Positive(t, anchor)
 	q := &tbapi.CallbackQuery{ID: "fixture-callback", From: &tbapi.User{ID: 11}, Data: verb + ":" + c.Ref, Message: &tbapi.Message{Chat: tbapi.Chat{ID: 456}, MessageID: anchor, Text: "forged text and identity 999"}}
 	if alter != nil {
@@ -539,6 +551,7 @@ func TestAdminForwardReplayDeadlineAndOneCard(t *testing.T) {
 	u := manualForwardUpdate()
 	u.Message.From.ID = 12
 	u.Message.MessageID++
+	u.UpdateID++
 	f.listener.SuperUsers = SuperUsers{"11", "12"}
 	f.listen(t, u)
 	f.settle(t)
@@ -550,7 +563,7 @@ func TestAdminForwardReplayDeadlineAndOneCard(t *testing.T) {
 		}
 	}
 	// Different candidate sets must also reuse confirmed SenderChat membership facts.
-	f.listen(t, originalForwardUpdate(802, -501), manualForwardUpdate())
+	f.listen(t, originalForwardUpdate(802, -501), nextForwardUpdate(2))
 	f.settle(t)
 	var ref string
 	var anchor int
@@ -728,4 +741,11 @@ func TestAdminForwardConflictingSourceCannotBeRepairedByNameOrForward(t *testing
 	require.Empty(t, f.banCalls)
 	require.Empty(t, f.deleteCalls)
 	require.Equal(t, "source_author_conflict", f.card(t).Forward.Targets[0].Blocked)
+}
+
+func nextForwardUpdate(n int) tbapi.Update {
+	u := manualForwardUpdate()
+	u.UpdateID += n
+	u.Message.MessageID += n
+	return u
 }

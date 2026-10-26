@@ -115,6 +115,9 @@ func (r *recovery) notifyCard(ctx context.Context, a moderation.Action) moderati
 		req = m
 	} else {
 		m := tbapi.NewMessage(a.ChatID, compactCardText(c, r.chatName))
+		if c.Forward != nil && c.Forward.Delivery.ChatID == a.ChatID {
+			m.ReplyParameters = tbapi.ReplyParameters{MessageID: c.Forward.Delivery.MessageID}
+		}
 		m.ParseMode = tbapi.ModeHTML
 		m.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
 		m.ReplyMarkup = buttons

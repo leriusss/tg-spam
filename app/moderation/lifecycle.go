@@ -544,6 +544,9 @@ func (j *Journal) cardView(ctx context.Context, ref string, readOnly bool) (Card
 			return journalError(e)
 		}
 		c.DeleteOnly = len(deleteRequests) > 0
+		if e := j.readForwardLinks(ctx, tx, &c); e != nil {
+			return e
+		}
 		c.Forward, err = j.forwardBatch(ctx, tx, c.Receipt)
 		if err != nil {
 			return err

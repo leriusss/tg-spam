@@ -50,6 +50,19 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		return reply("Отказ: пересылка требует уполномоченного личного пользователя с проверенным числовым ID.")
 	}
 
+	delivery := moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: m.Chat.ID, MessageID: m.MessageID}
+	if !diagnostic && a.recovery != nil {
+		_, seen, e := a.recovery.journal.LookupForwardDelivery(context.Background(), delivery, m.From.ID)
+		if e != nil {
+			return reply(
+				"Пересылка не принята: отсутствует идентификатор Telegram update или он противоречит сохранённой доставке.",
+			)
+		}
+		if seen {
+			return nil
+		} // the existing persistent card/decision is unchanged, even after locator retention
+	}
+
 	source := m
 	if diagnostic {
 		source = m.ReplyToMessage
@@ -179,23 +192,30 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 			),
 		)
 	}
-	if a.forwardingDisabled {
-		return reply("Отказ: ручная модерация пересылкой отключена настройкой бота.")
-	}
 	if a.recovery == nil {
 		return reply("Отказ: recovery journal отключён. Действия не приняты.")
 	}
-	if a.dry {
-		return reply("Отказ: dry-режим запрещает модерацию.")
+	blockReason := ""
+	switch {
+	case a.forwardingDisabled:
+		blockReason = "forwarding_disabled"
+	case a.dry:
+		blockReason = "dry_mode"
+	case a.trainingMode:
+		blockReason = "training_mode"
 	}
-	if a.trainingMode {
-		return reply("Отказ: training-режим запрещает эту ручную модерацию.")
+	if blockReason != "" {
+		for i := range targets {
+			targets[i].Blocked = blockReason
+		}
 	}
-	_, _, err = a.recovery.journal.AcceptForward(
+
+	_, err = a.recovery.journal.AcceptForward(
 		context.Background(),
 		a.primChatID,
 		a.adminChatID,
 		m.From.ID,
+		delivery,
 		targets,
 		time.Now(),
 	)
@@ -274,8 +294,14 @@ func forwardCardPage(c moderation.Card, chatName string, page int) string {
 	b := c.Forward
 	var out strings.Builder
 	fmt.Fprintf(&out, "Ручная модерация — %s\n", html.EscapeString(chatName))
+	if b.Delivery.MessageID > 0 {
+		fmt.Fprintf(&out, "Пересылка №%d.\n", b.Delivery.MessageID)
+	}
+	out.WriteString(forwardDecisionReason(b.Reason))
 	if b.State == "pending" && b.Expires > time.Now().UnixMilli() {
-		if len(b.Targets) == 2 {
+		if len(b.Targets) == 1 {
+			out.WriteString("Подтвердите новое явное решение для указанного оригинала.\n")
+		} else if len(b.Targets) == 2 {
 			out.WriteString("Найдены 2 разных сообщения. Выберите одно или обработайте оба.\n")
 		} else {
 			fmt.Fprintf(&out, "Найдено разных сообщений: %d. Выберите одно или обработайте все перечисленные.\n", len(b.Targets))
@@ -294,6 +320,15 @@ func forwardCardPage(c moderation.Card, chatName string, page int) string {
 		}
 		fmt.Fprintf(&out, "\n№%d · %s\n«%s»\n", t.MessageID, date, html.EscapeString(truncateRunes(inertSpamText(t.Text), 40)))
 		if !containsForwardIndex(b.Selected, i) {
+			if t.DeleteConfirmed {
+				out.WriteString("Удаление уже подтверждено; повторного удаления не будет.\n")
+			}
+			if t.BanConfirmed {
+				out.WriteString("Блокировка уже подтверждена; повторного бана не будет.\n")
+			}
+			if t.PreviousRefusal != "" {
+				out.WriteString("Предыдущий отказ: " + forwardReason(t.PreviousRefusal) + ".\n")
+			}
 			if t.IdentityID == 0 {
 				out.WriteString("Автор не подтверждён: доступно только точное удаление.\n")
 			}
@@ -302,7 +337,11 @@ func forwardCardPage(c moderation.Card, chatName string, page int) string {
 			}
 			continue
 		}
-		if t.IdentityID != 0 {
+		if b.Reason == "gate_refused" {
+			fmt.Fprintf(&out, "Сообщение №%d: новые действия запрещены правилами безопасности.\n", t.MessageID)
+		} else if b.Reason == "already_confirmed" || b.Reason == "ongoing" {
+			fmt.Fprintf(&out, "Сохранённый результат для сообщения №%d.\n", t.MessageID)
+		} else if t.IdentityID != 0 {
 			fmt.Fprintf(&out, "Принято: удалить сообщение №%d и заблокировать автора.\n", t.MessageID)
 		} else {
 			fmt.Fprintf(&out, "Принято: удалить сообщение №%d. Блокировка: отказ — "+
@@ -396,6 +435,12 @@ func (a *admin) forwardCallback(ctx context.Context, q *tbapi.CallbackQuery, c m
 }
 
 func forwardChoiceLabel(t moderation.ForwardTarget) string {
+	if t.PreviousRefusal != "" {
+		return fmt.Sprintf("Подтвердить новую попытку №%d", t.MessageID)
+	}
+	if t.DeleteConfirmed && t.IdentityID != 0 && !t.BanConfirmed {
+		return fmt.Sprintf("Подтвердить блокировку автора №%d", t.MessageID)
+	}
 	if t.IdentityID == 0 {
 		return fmt.Sprintf("Удалить №%d (автор неизвестен)", t.MessageID)
 	}
@@ -413,6 +458,7 @@ func forwardReason(code string) string {
 		"forward_identity_mismatch":                     "числовой автор пересылки не совпадает с исходным update",
 		"forward_operator_revoked":                      "числовой оператор больше не уполномочен",
 		"current_safety_gate":                           "текущие правила безопасности запрещают действие",
+		"forwarding_disabled":                           "модерация пересылкой отключена настройкой бота",
 		"dry_mode":                                      "включён dry-режим",
 		"training_mode":                                 "включён training-режим",
 		"current_chat_gate":                             "исходный чат больше не разрешён",
@@ -423,4 +469,29 @@ func forwardReason(code string) string {
 		return reason
 	}
 	return code
+}
+
+func forwardDecisionReason(reason string) string {
+	switch reason {
+	case "gate_refused":
+		return "Отказ сохранён для этой пересылки. Повтор update не возобновит действия; новое решение требует новой пересылки.\n"
+	case "followup":
+		return "Новая пересылка — отдельный запрос. Предыдущий выбор сохранён.\n"
+	case "expired_choice":
+		return "Предыдущий выбор истёк. Это новый запрос; срок удаления оригиналов не продлён.\n"
+	case "identity_review":
+		return "Новое явное решение: ранее было разрешено только удаление. Подтвердите блокировку автора.\n"
+	case "manual_review":
+		return "Предыдущий запрос требует ручного решения. Новая пересылка создала отдельный запрос; подтвердите действия.\n"
+	case "deadline_review":
+		return "Срок предыдущего действия истёк. Новый запрос не продлевает срок удаления оригинала.\n"
+	case "retry_review":
+		return "Ранее получен постоянный отказ. Новая попытка требует вашего явного подтверждения.\n"
+	case "already_confirmed":
+		return "Всё уже подтверждено. Показан существующий результат; повторных API-действий нет.\n"
+	case "ongoing":
+		return "Действия уже выполняются или требуют проверки неизвестного результата. Новых повторов не добавлено.\n"
+	default:
+		return ""
+	}
 }
