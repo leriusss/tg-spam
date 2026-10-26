@@ -208,8 +208,11 @@ jobs:
           done
           tag="verify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$SHA"
           if [[ "$AUTOMATIC" == true ]]; then tag="sha-$SHA"; fi
-          docker buildx imagetools create --metadata-file /tmp/metadata.json             --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"             --annotation "index:org.opencontainers.image.revision=$SHA"             -t "$IMAGE:$tag" "${sources[@]}"
-          digest=$(jq -r '."containerimage.digest"' /tmp/metadata.json)
+          docker buildx imagetools create --metadata-file /tmp/metadata.json \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "index:org.opencontainers.image.revision=$SHA" \
+            -t "$IMAGE:$tag" "${sources[@]}"
+          digest=$(jq -er '."containerimage.descriptor".digest' /tmp/metadata.json)
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$tag -> $IMAGE@$digest (revision $SHA)" >> "$GITHUB_STEP_SUMMARY"
