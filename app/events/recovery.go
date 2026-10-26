@@ -82,6 +82,15 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 	if !r.gate(a) {
 		return moderation.Outcome{State: moderation.Blocked, Code: "current_safety_gate", Uncertain: a.Uncertain}
 	}
+	if r.journal != nil {
+		requester, e := r.journal.ForwardRequester(ctx, a.Receipt)
+		if e != nil {
+			return moderation.Outcome{Retry: true, Code: "forward_authority_unavailable", Uncertain: a.Uncertain}
+		}
+		if requester != 0 && (r.superName == nil || !r.superName("", requester)) {
+			return moderation.Outcome{State: moderation.Blocked, Code: "forward_operator_revoked", Uncertain: a.Uncertain}
+		}
+	}
 	messageOnly := a.IdentityKind == "message" && a.IdentityID == 0 && a.Kind == "original_delete"
 	if messageOnly {
 		if r.journal == nil {
@@ -343,101 +352,6 @@ func (a *admin) acceptRecovery(p moderation.Plan, learn func() error) (bool, err
 		return true, fmt.Errorf("activate durable moderation: %w", err)
 	}
 	return true, nil
-}
-
-func (a *admin) enqueueForward(
-	update tbapi.Update,
-	identityID int64,
-	msgID int,
-	knownExact bool,
-	learnText string,
-	cleanup bool,
-) error {
-	if update.Message == nil || update.Message.Chat.ID == 0 {
-		return fmt.Errorf("missing delivery chat; durable action blocked")
-	}
-	kind := "user"
-	if identityID < 0 {
-		kind = "sender_chat"
-	}
-	key := fmt.Sprintf("delivery:%d:%d", update.Message.Chat.ID, update.Message.MessageID)
-	if knownExact {
-		key = fmt.Sprintf("source:%d:%d:%s:%d", a.primChatID, msgID, kind, identityID)
-	}
-	p := moderation.Plan{
-		Origin: "forward", Card: true, SourceText: learnText,
-		Key:             key,
-		ChatID:          a.primChatID,
-		MessageID:       msgID,
-		IdentityID:      identityID,
-		IdentityKind:    kind,
-		Destination:     a.adminChatID,
-		DeliveryChat:    update.Message.Chat.ID,
-		DeliveryMessage: update.Message.MessageID,
-	}
-	p.Origin = fmt.Sprintf("forward:%d:%d", p.DeliveryChat, p.DeliveryMessage)
-	identity := adminForwardOriginIdentity(update.Message.ForwardOrigin)
-	p.UserName = identity.Name
-	base := moderation.Action{ChatID: a.primChatID, IdentityID: identityID, IdentityKind: kind}
-	if identityID != a.primChatID {
-		ban := base
-		ban.Kind = "ban"
-		ban.UntilDate = time.Now().Add(bot.PermanentBanDuration).Unix()
-		p.Actions = append(p.Actions, ban)
-	}
-	if msgID > 0 {
-		del := base
-		del.Kind = "original_delete"
-		del.MessageID = msgID
-		del.MessageDate = locatorMessageDate(a.locator, a.primChatID, msgID)
-		p.Actions = append(p.Actions, del)
-	} else {
-		del := base
-		del.Kind = "original_delete"
-		del.State = moderation.Manual
-		del.Code = "locator_fallback_original_unlocated"
-		p.Actions = append(p.Actions, del)
-	}
-	if cleanup && identityID != a.primChatID {
-		var ids []int
-		var err error
-		if scoped, ok := a.locator.(interface {
-			GetUserMessageIDsInChat(context.Context, int64, int64, int) ([]int, error)
-		}); ok {
-			ids, err = scoped.GetUserMessageIDsInChat(
-				context.Background(),
-				identityID,
-				a.primChatID,
-				a.aggressiveCleanupLimit,
-			)
-		} else {
-			ids, err = a.locator.GetUserMessageIDs(context.Background(), identityID, a.aggressiveCleanupLimit)
-		}
-		if err != nil {
-			item := base
-			item.Kind = "cleanup_delete"
-			item.State = moderation.Manual
-			item.Code = "cleanup_selection_unavailable"
-			p.Actions = append(p.Actions, item)
-		}
-		for _, id := range ids {
-			if id == msgID {
-				continue
-			}
-			del := base
-			del.Kind = "cleanup_delete"
-			del.MessageID = id
-			del.MessageDate = locatorMessageDate(a.locator, a.primChatID, id)
-			p.Actions = append(p.Actions, del)
-		}
-	}
-	return a.submitRecovery(p, func() error {
-		_ = a.bot.RemoveApprovedUser(identityID)
-		if learnText != "" {
-			return a.bot.UpdateSpam(learnText)
-		}
-		return nil
-	})
 }
 
 func (l *TelegramListener) enqueueAutomatic(update tbapi.Update, msg *bot.Message, resp bot.Response) (bool, error) {

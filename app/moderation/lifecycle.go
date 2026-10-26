@@ -11,30 +11,31 @@ import (
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
-	RecordedAt          int64       `db:"-"`
-	OriginalDate        int64       `db:"-"`
-	Audit               []CardAudit `db:"-"`
-	DeleteOnly          bool        `db:"-"`
-	RequesterID         int64       `db:"-"`
-	Reason              string      `db:"-"`
-	RequestState        string      `db:"-"`
-	RequestExpires      int64       `db:"-"`
-	Ref                 string      `db:"ref"`
-	Receipt             string      `db:"receipt"`
-	Destination         int64       `db:"destination"`
-	ChatID              int64       `db:"chat_id"`
-	IdentityID          int64       `db:"identity_id"`
-	IdentityKind        string      `db:"identity_kind"`
-	MessageID           int         `db:"message_id"`
-	Text                string      `db:"text"`
-	UserName            string      `db:"user_name"`
-	DisplayName         string      `db:"display_name"`
-	Actions             []Action    `db:"-"`
-	Origins             []Demand    `db:"-"`
-	Held                bool        `db:"-"`
-	Resolved            []string    `db:"-"`
-	IncompleteDecisions int         `db:"-"`
-	RequestedBanKind    string      `db:"-"`
+	Forward             *ForwardBatch `db:"-"`
+	RecordedAt          int64         `db:"-"`
+	OriginalDate        int64         `db:"-"`
+	Audit               []CardAudit   `db:"-"`
+	DeleteOnly          bool          `db:"-"`
+	RequesterID         int64         `db:"-"`
+	Reason              string        `db:"-"`
+	RequestState        string        `db:"-"`
+	RequestExpires      int64         `db:"-"`
+	Ref                 string        `db:"ref"`
+	Receipt             string        `db:"receipt"`
+	Destination         int64         `db:"destination"`
+	ChatID              int64         `db:"chat_id"`
+	IdentityID          int64         `db:"identity_id"`
+	IdentityKind        string        `db:"identity_kind"`
+	MessageID           int           `db:"message_id"`
+	Text                string        `db:"text"`
+	UserName            string        `db:"user_name"`
+	DisplayName         string        `db:"display_name"`
+	Actions             []Action      `db:"-"`
+	Origins             []Demand      `db:"-"`
+	Held                bool          `db:"-"`
+	Resolved            []string      `db:"-"`
+	IncompleteDecisions int           `db:"-"`
+	RequestedBanKind    string        `db:"-"`
 }
 
 // Demand records independent provenance, not a second scheduling queue.
@@ -543,6 +544,13 @@ func (j *Journal) cardView(ctx context.Context, ref string, readOnly bool) (Card
 			return journalError(e)
 		}
 		c.DeleteOnly = len(deleteRequests) > 0
+		c.Forward, err = j.forwardBatch(ctx, tx, c.Receipt)
+		if err != nil {
+			return err
+		}
+		if c.Forward != nil && c.Forward.State == "pending" && c.Forward.Expires <= time.Now().UnixMilli() {
+			c.Forward.State = "expired"
+		}
 		var reasons []string
 		if reasonErr := tx.SelectContext(ctx, &reasons, j.db.Adopt(`SELECT reason FROM moderation_reasons WHERE gid=? AND receipt=?`),
 			j.db.GID(), c.Receipt); reasonErr != nil {

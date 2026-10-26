@@ -188,6 +188,9 @@ func NewLocator(ctx context.Context, ttl time.Duration, minSize int, db *engine.
 	if err := engine.InitTable(ctx, db, cfg); err != nil {
 		return nil, fmt.Errorf("failed to init locator storage: %w", err)
 	}
+	if err := res.initMessageAuthors(ctx); err != nil {
+		return nil, err
+	}
 	if err := res.initMessageDates(ctx); err != nil {
 		return nil, err
 	}

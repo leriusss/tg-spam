@@ -324,7 +324,7 @@ func TestDetailsPageReturnAndOriginalDate(t *testing.T) {
 
 func TestDetailsRequestNavigationAuthorizationAndStaleRef(t *testing.T) {
 	a, _, u := originalDeleteFixture(t, 501)
-	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.legacyForward(u))
 	j := a.recovery.journal
 	c, err := j.ReadCardView(context.Background(), "delete:123:801")
 	require.NoError(t, err)

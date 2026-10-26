@@ -52,6 +52,12 @@ func (l *Locator) RecordMessageDate(ctx context.Context, chatID int64, msgID int
 	if err != nil {
 		return fmt.Errorf("prune locator message dates: %w", err)
 	}
+	_, err = l.ExecContext(ctx, l.Adopt(`DELETE FROM message_authors WHERE gid=? AND NOT EXISTS(
+ SELECT 1 FROM messages WHERE messages.gid=message_authors.gid AND messages.chat_id=message_authors.chat_id
+ AND messages.msg_id=message_authors.msg_id)`), l.GID())
+	if err != nil {
+		return fmt.Errorf("prune locator authors: %w", err)
+	}
 	return nil
 }
 

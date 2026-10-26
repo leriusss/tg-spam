@@ -49,6 +49,16 @@ func (j *Journal) requestDecision(
 	if len(rows) == 0 {
 		return false, true, nil
 	}
+	if rows[0].State == "expired" && (verb == "approve_report" || verb == "reject_report") {
+		var closed int
+		if e := tx.GetContext(ctx, &closed, j.db.Adopt(`SELECT count(*) FROM moderation_decisions WHERE gid=? AND receipt=? AND verb='close'`), j.db.GID(), c.Receipt); e != nil {
+			return true, false, journalError(e)
+		}
+		if closed > 0 {
+			return true, false, nil
+		}
+		return true, false, errors.New("confirmation request expired; no moderation authorized")
+	}
 	if rows[0].State != "pending" {
 		if verb == "approve_report" || verb == "reject_report" || verb == "cancel" {
 			return true, false, nil

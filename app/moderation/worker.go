@@ -34,6 +34,8 @@ func (w *Worker) Step(ctx context.Context) (bool, error) {
 	var result Outcome
 	if a.Code == "previously_confirmed_pair" && deleteKind(a.Kind) {
 		result = Outcome{State: Confirmed, Code: a.Code}
+	} else if a.Code == "previously_confirmed_membership" && (a.Kind == "ban" || a.Kind == "restrict") {
+		result = Outcome{State: Confirmed, Code: a.Code}
 	} else if a.Attempts > 320 {
 		result = Outcome{State: Failed, Code: "attempt_budget_exhausted", Uncertain: a.Uncertain}
 	} else if !now.Add(15 * time.Second).Before(time.UnixMilli(a.Deadline)) {
