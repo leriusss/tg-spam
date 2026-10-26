@@ -1,0 +1,99 @@
+{
+  "passed": true,
+  "source": "real Go renderer fixtures",
+  "viewport": 420,
+  "screenshots": [
+    {
+      "id": "01-han-confirmed",
+      "png": "01-han-confirmed.png"
+    },
+    {
+      "id": "02-historical-han",
+      "png": "02-historical-han.png"
+    },
+    {
+      "id": "03-ban-waits",
+      "png": "03-ban-waits.png"
+    },
+    {
+      "id": "04-ban-refused",
+      "png": "04-ban-refused.png"
+    },
+    {
+      "id": "05-delete-expired",
+      "png": "05-delete-expired.png"
+    },
+    {
+      "id": "06-absent",
+      "png": "06-absent.png"
+    },
+    {
+      "id": "07-unknown-outcome",
+      "png": "07-unknown-outcome.png"
+    },
+    {
+      "id": "08-unknown-author",
+      "png": "08-unknown-author.png"
+    },
+    {
+      "id": "09-request-pending",
+      "png": "09-request-pending.png"
+    },
+    {
+      "id": "09-request-reject_report",
+      "png": "09-request-reject_report.png"
+    },
+    {
+      "id": "09-request-expired",
+      "png": "09-request-expired.png"
+    },
+    {
+      "id": "10-ban-unban-new",
+      "png": "10-ban-unban-new.png"
+    },
+    {
+      "id": "11-long-history",
+      "png": "11-long-history.png"
+    },
+    {
+      "id": "12-old-incomplete",
+      "png": "12-old-incomplete.png"
+    },
+    {
+      "id": "15-emoji",
+      "png": "15-emoji.png"
+    },
+    {
+      "id": "16-classifier",
+      "png": "16-classifier.png"
+    },
+    {
+      "id": "17-similarity",
+      "png": "17-similarity.png"
+    },
+    {
+      "id": "18-cas",
+      "png": "18-cas.png"
+    },
+    {
+      "id": "19-multiple-reasons",
+      "png": "19-multiple-reasons.png"
+    },
+    {
+      "id": "20-unrecognized-reason",
+      "png": "20-unrecognized-reason.png"
+    },
+    {
+      "id": "21-cas-error",
+      "png": "21-cas-error.png"
+    },
+    {
+      "id": "13-long-last",
+      "png": "13-long-last.png"
+    },
+    {
+      "id": "14-technical",
+      "png": "14-technical.png"
+    }
+  ]
+}

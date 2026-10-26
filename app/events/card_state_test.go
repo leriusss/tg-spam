@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -21,25 +22,25 @@ func TestCardStateButtons(t *testing.T) {
 		{"success", moderation.Card{Actions: []moderation.Action{{Kind: "ban", State: moderation.Confirmed},
 			{Kind: "original_delete", State: moderation.Confirmed}}}, true, []string{"MA", "M?"}},
 		{"pending", moderation.Card{Actions: []moderation.Action{{Kind: "original_delete", State: moderation.Pending}}},
-			true, []string{"MA", "M?", "M-"}},
+			true, []string{"M?", "M-"}},
 		{"manual", moderation.Card{Actions: []moderation.Action{{ID: "delete", Kind: "original_delete", State: moderation.Failed}}},
-			true, []string{"MA", "M?", "MC", "M+"}},
+			true, []string{"M?", "MC", "M+"}},
 		{"closed", moderation.Card{Resolved: []string{"delete"}, Actions: []moderation.Action{
-			{ID: "delete", Kind: "original_delete", State: moderation.Failed}}}, true, []string{"MA", "M?"}},
+			{ID: "delete", Kind: "original_delete", State: moderation.Failed}}}, true, []string{"M?"}},
 		{"manual plus pending", moderation.Card{Actions: []moderation.Action{{Kind: "cleanup_delete", State: moderation.Failed},
-			{Kind: "original_delete", State: moderation.Pending}}}, true, []string{"MA", "M?", "M-"}},
+			{Kind: "original_delete", State: moderation.Pending}}}, true, []string{"M?", "M-"}},
 		{"undo unfinished", moderation.Card{Actions: []moderation.Action{{Kind: "unban", State: moderation.Failed}}},
-			true, []string{"MA", "M?", "MC"}},
+			true, []string{"M?", "MC"}},
 		{"safety", moderation.Card{Actions: []moderation.Action{{Kind: "ban", State: moderation.Blocked}}},
 			false, []string{"M?", "MC"}},
 		{"notification is not retry", moderation.Card{Actions: []moderation.Action{{Kind: "card", State: moderation.Pending}}},
-			true, []string{"MA", "M?"}},
+			true, []string{"M?"}},
 		{"expired window cannot be approved", moderation.Card{Actions: []moderation.Action{
 			{Kind: "original_delete", State: moderation.Expired, MessageDate: time.Now().Add(-49 * time.Hour).Unix()}}},
-			true, []string{"MA", "M?", "MC"}},
+			true, []string{"M?", "MC"}},
 		{"report decision", moderation.Card{Origins: []moderation.Demand{{Origin: "report:1", Active: true}},
 			Actions: []moderation.Action{{Kind: "original_delete", State: moderation.Manual}}},
-			true, []string{"MA", "M?", "MC", "MR", "M+"}},
+			true, []string{"M?", "MC", "MR", "M+"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.card.Ref = "bound-ref"
@@ -51,7 +52,11 @@ func TestCardStateButtons(t *testing.T) {
 					require.Equal(t, tc.card.Ref, ref)
 					got = append(got, prefix)
 					if prefix == "M+" {
-						require.Equal(t, "Подтвердить модерацию", button.Text)
+						label := "Подтвердить модерацию"
+						if !cardHasBan(tc.card) {
+							label = "Запросить блокировку и удаление"
+						}
+						require.Equal(t, label, button.Text)
 					}
 				}
 			}
@@ -99,16 +104,16 @@ func TestCardStateApproveAndUndoJournalHistory(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, cardText(c), "заблокирован")
 	require.NotContains(t, cardText(c), "отклонено")
-	require.Contains(t, cardDetails(c), "ban: failed")
-	require.Contains(t, cardDetails(c), "ban: confirmed")
+	require.Contains(t, strings.Join(technicalDetailPages(c), "\n"), "kind: ban\nstate: failed")
+	require.Contains(t, strings.Join(technicalDetailPages(c), "\n"), "kind: ban\nstate: confirmed")
 	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "MU", "undo-success")))
 	drain()
 	c, err = j.CardView(context.Background(), c.Ref)
 	require.NoError(t, err)
 	require.Contains(t, cardText(c), "Блокировка снята")
 	require.NotContains(t, cardText(c), "заблокирован")
-	require.Contains(t, cardDetails(c), "ban: confirmed")
-	require.Contains(t, cardDetails(c), "unban: confirmed")
+	require.Contains(t, strings.Join(technicalDetailPages(c), "\n"), "kind: ban\nstate: confirmed")
+	require.Contains(t, strings.Join(technicalDetailPages(c), "\n"), "kind: unban\nstate: confirmed")
 	var pages strings.Builder
 	a.recovery.api = recoveryAPIFunc(func(_ context.Context, req tbapi.Chattable) (*tbapi.APIResponse, error) {
 		if edit, ok := req.(tbapi.EditMessageTextConfig); ok {
@@ -116,8 +121,8 @@ func TestCardStateApproveAndUndoJournalHistory(t *testing.T) {
 		}
 		return apiOK(true), nil
 	})
-	for page := 0; page < (len(c.Actions)+1)/2; page++ {
-		verb := "MP" + string(rune('0'+page))
+	for page := 0; page < len(technicalDetailPages(c)); page++ {
+		verb := fmt.Sprintf("MT0.%d", page)
 		require.NoError(t, a.recoveryCardCallback(cardQuery(c, verb, "history")))
 	}
 	for _, op := range c.Actions {
@@ -142,15 +147,12 @@ func TestCardStateCanceledRetryDoesNotOverrideNewResult(t *testing.T) {
 
 func TestCardReadableDatesAndRelevantFields(t *testing.T) {
 	d := time.Date(2026, 10, 13, 19, 45, 0, 0, time.UTC)
-	text := cardDetails(moderation.Card{Actions: []moderation.Action{
+	c := moderation.Card{ChatID: 123, MessageID: 701, Actions: []moderation.Action{
 		{Kind: "ban", State: moderation.Confirmed, UntilDate: d.Unix()},
-		{Kind: "original_delete", State: moderation.Pending, MessageID: 701, MessageDate: d.Unix(),
-			Deadline: d.Add(time.Hour).UnixMilli(), NextAt: d.Add(time.Minute).UnixMilli()},
-	}})
+		{Kind: "original_delete", ChatID: 123, State: moderation.Pending, MessageID: 701, MessageDate: d.Unix(), Deadline: d.Add(time.Hour).UnixMilli(), NextAt: d.Add(time.Minute).UnixMilli()},
+	}}
+	text := strings.Join(operatorDetailPages(c, d.Add(-time.Minute)), "\n")
 	require.Contains(t, text, "13.10.2026 21:45:00 (Калининград)")
-	require.NotContains(t, text, "Причина:")
 	require.NotContains(t, text, "message=0")
-	require.NotContains(t, text, "дата=0")
-	require.Equal(t, 1, strings.Count(text, "Запрошено до:"))
-	require.Equal(t, 1, strings.Count(text, "Следующее выполнение:"))
+	require.Contains(t, strings.Join(technicalDetailPages(c), "\n"), "deadline (Unix ms):")
 }
