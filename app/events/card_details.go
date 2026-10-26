@@ -17,7 +17,7 @@ import (
 type detailSection struct{ title, body string }
 
 var (
-	hanDetailPattern  = regexp.MustCompile(`Преобладает письменность Han: (\d+) из (\d+) букв \(([\d.]+)%\); порог ([\d.]+)%, минимум (\d+)`)
+	hanDetailPattern  = regexp.MustCompile(`^Преобладает письменность Han: (\d+) из (\d+) букв \(([\d.]+)%\); порог ([\d.]+)%, минимум (\d+)`)
 	credentialPattern = regexp.MustCompile(`(?i)(?:https?://[^\s<>]*bot\d+:[^\s<>]+|\b\d{5,}:[a-z0-9_-]{15,}|bearer\s+[a-z0-9._-]+|(?:token|api_key|password|secret|authorization)\s*[=:]\s*[^\s&<>]+)`)
 	detailLinkPattern = regexp.MustCompile(`(?i)(?:https?://[^\s<>]+|tg://[^\s<>]+|@[a-z0-9_]+|[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}|(?:[\p{L}0-9-]+\.)+[\p{L}]{2,}(?:[/?:][^\s<>]*)?)`)
 )

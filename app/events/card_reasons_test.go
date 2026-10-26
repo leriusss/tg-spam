@@ -71,6 +71,7 @@ func TestSavedDetailReasons(t *testing.T) {
 func TestSavedDetailErrorsAreNotSpamReasons(t *testing.T) {
 	for _, reason := range []string{
 		"cas: ham, failed to send request: timeout",
+		"cas: ham, failed to parse response: Преобладает письменность Han: 20 из 20 букв (100.0%); порог 70.0%, минимум 20.",
 		"cas: error, spam detected",
 		"cas: ham, record not found",
 		"cas: spam, failed to parse response from https://cas.invalid/check: invalid JSON",
@@ -87,6 +88,7 @@ func TestSavedDetailErrorsAreNotSpamReasons(t *testing.T) {
 			require.NotContains(t, text, "найдена в антиспам-базе")
 			require.NotContains(t, text, "определил спам")
 			require.NotContains(t, text, "Превышен лимит")
+			require.NotContains(t, text, "Сработало правило Han")
 		})
 	}
 	checks := []spamcheck.Response{{Name: "han script", Spam: true, Details: "Han"},
