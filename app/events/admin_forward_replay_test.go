@@ -147,7 +147,7 @@ func assertNoModerationActions(t *testing.T, got replayActions) {
 }
 
 func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
-	run := func(t *testing.T, msg *tbapi.Message, supers SuperUsers, disabled bool) (string, *mocks.TbAPIMock, *mocks.BotMock) {
+	run := func(t *testing.T, msg *tbapi.Message, role string, disabled bool) (string, *mocks.TbAPIMock, *mocks.BotMock) {
 		t.Helper()
 		updates := make(chan tbapi.Update, 1)
 		updates <- tbapi.Update{UpdateID: 700, Message: msg}
@@ -163,9 +163,13 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 		}
 		botMock := &mocks.BotMock{}
 		locator := &mocks.LocatorMock{}
+		contextAPI := &forwardTestAPI{TbAPIMock: api, call: func(_ context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
+			m := c.(tbapi.GetChatMemberConfig)
+			return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: m.UserID}, Status: role}), nil
+		}}
 		listener := TelegramListener{
-			TbAPI: api, Bot: botMock, Locator: locator,
-			Group: "123", AdminGroup: "456", SuperUsers: supers,
+			TbAPI: contextAPI, Bot: botMock, Locator: locator,
+			Group: "123", AdminGroup: "456",
 			DisableAdminSpamForward: disabled,
 		}
 
@@ -179,7 +183,7 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 	}
 
 	t.Run("A ordinary authorized admin message reaches handler and is ignored", func(t *testing.T) {
-		logs, api, botMock := run(t, replayAdminMessage(nil, "ordinary admin text"), SuperUsers{"11"}, false)
+		logs, api, botMock := run(t, replayAdminMessage(nil, "ordinary admin text"), "administrator", false)
 		assert.Contains(t, logs, "outcome=admin_chat_received")
 		assert.Contains(t, logs, "outcome=missing_origin")
 		assert.Empty(t, api.RequestCalls())
@@ -187,9 +191,9 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 		assert.Empty(t, botMock.UpdateSpamCalls())
 	})
 
-	t.Run("B unauthorized admin-chat sender is rejected before handler", func(t *testing.T) {
-		logs, api, botMock := run(t, replayAdminMessage(userOrigin(501, "source"), "forward"), nil, false)
-		assert.Contains(t, logs, "outcome=unauthorized_sender")
+	t.Run("B ordinary admin-chat member is rejected before moderation", func(t *testing.T) {
+		logs, api, botMock := run(t, replayAdminMessage(userOrigin(501, "source"), "forward"), "member", false)
+		assert.Contains(t, logs, "outcome=forward_operator_revoked")
 		assert.NotContains(t, logs, "admin report received:")
 		assert.Empty(t, api.RequestCalls())
 		require.Len(t, api.SendCalls(), 1)
@@ -198,7 +202,7 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 	})
 
 	t.Run("C disabled forwarding stops after authorization with structured log", func(t *testing.T) {
-		logs, api, botMock := run(t, replayAdminMessage(userOrigin(501, "source"), "forward"), SuperUsers{"11"}, true)
+		logs, api, botMock := run(t, replayAdminMessage(userOrigin(501, "source"), "forward"), "administrator", true)
 		assert.Contains(t, logs, "outcome=admin_chat_received")
 		assert.Contains(t, logs, "outcome=forwarding_disabled")
 		assert.NotContains(t, logs, "admin report received:")
@@ -234,8 +238,12 @@ func TestAdminForwardPhase1ListenerWiresExplicitApprovalLock(t *testing.T) {
 			return storage.MsgMeta{UserID: 501, UserName: "source", MsgID: 701}, true
 		},
 	}
+	contextAPI := &forwardTestAPI{TbAPIMock: api, call: func(_ context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
+		m := c.(tbapi.GetChatMemberConfig)
+		return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: m.UserID}, Status: "administrator"}), nil
+	}}
 	listener := TelegramListener{
-		TbAPI: api, Bot: explicitBot, Locator: locator,
+		TbAPI: contextAPI, Bot: explicitBot, Locator: locator,
 		Group: "123", AdminGroup: "456", SuperUsers: SuperUsers{"11"},
 	}
 

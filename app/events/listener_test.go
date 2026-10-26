@@ -833,6 +833,12 @@ func TestTelegramListener_DoWithForwarded(t *testing.T) {
 	updChan <- updMsg
 	close(updChan)
 	mockAPI.GetUpdatesChanFunc = func(config tbapi.UpdateConfig) tbapi.UpdatesChannel { return updChan }
+	l.TbAPI = &forwardTestAPI{TbAPIMock: mockAPI, call: func(_ context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
+		m := c.(tbapi.GetChatMemberConfig)
+		require.Equal(t, int64(123), m.ChatID)
+		require.Equal(t, int64(77), m.UserID)
+		return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: 77, UserName: "umputun"}, Status: "member"}), nil
+	}}
 
 	err = l.Do(ctx)
 	require.EqualError(t, err, "telegram update chan closed")
@@ -840,7 +846,7 @@ func TestTelegramListener_DoWithForwarded(t *testing.T) {
 
 	require.Len(t, mockAPI.SendCalls(), 2)
 	assert.Equal(t, "startup", mockAPI.SendCalls()[0].C.(tbapi.MessageConfig).Text)
-	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, "числовым ID")
+	assert.Contains(t, mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).Text, "владелец или администратор этого админ-чата")
 	assert.Equal(t, int64(123), mockAPI.SendCalls()[1].C.(tbapi.MessageConfig).ChatID)
 
 	// A forwarded content match and a username-only superuser must never authorize moderation.

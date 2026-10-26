@@ -137,7 +137,7 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		if chat, err := l.TbAPI.GetChat(tbapi.ChatInfoConfig{ChatConfig: tbapi.ChatConfig{ChatID: l.chatID}}); err == nil {
 			chatName = chat.Title
 		}
-		adapter := &recovery{chatName: chatName, journal: l.RecoveryJournal, api: api,
+		adapter := &recovery{adminChatID: l.adminChatID, chatName: chatName, journal: l.RecoveryJournal, api: api,
 			gate:       func(a moderation.Action) bool { return l.recoveryBlockReason(a, isExplicitlyApproved) == "" },
 			gateReason: func(a moderation.Action) string { return l.recoveryBlockReason(a, isExplicitlyApproved) },
 			superName:  func(name string, id int64) bool { return l.SuperUsers.IsSuper(name, id) },
@@ -193,13 +193,13 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			}
 
 			// handle admin chat messages. can be just messages (MsgHandler will ignore those)
-			// or forwards of undetected spam by admins to admin's chat (in this case MsgHandler will process them and ban/train)
+			// or personal forwards admitted by MsgHandler using current admin-chat roles.
 			if update.Message != nil && update.Message.Chat.ID == l.adminChatID {
-				fromName, fromID := "", int64(0)
+				fromID := int64(0)
 				if update.Message.From != nil {
-					fromName, fromID = update.Message.From.UserName, update.Message.From.ID
+					fromID = update.Message.From.ID
 				}
-				_ = l.isAdminChat(update.Message.Chat.ID, fromName, fromID)
+				log.Printf("[DEBUG] admin chat message: outcome=admin_chat_received")
 				if l.DisableAdminSpamForward {
 					log.Printf("[INFO] admin report ignored: outcome=forwarding_disabled admin_msg_id=%d admin_id=%d",
 						update.Message.MessageID, fromID)
