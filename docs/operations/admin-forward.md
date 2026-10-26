@@ -75,7 +75,9 @@ result, an authorized user replies to the forward with
 `/forward_status@ExactBotUsername`. Only the addressed bot responds with its own
 chat-scoped search result and existing allowed alternatives. The diagnostic command
 never admits or replays work. No cross-bot coordinator or new service is introduced.
-Genuine storage errors and safety refusals remain visible.
+Genuine storage errors and safety refusals for matched originals remain visible.
+Bots without candidates stay quiet even in disabled/dry/training modes; the
+addressed diagnostic remains read-only and does not require recovery to be enabled.
 
 ## Tests and review artifacts
 

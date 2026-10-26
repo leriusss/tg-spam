@@ -244,7 +244,7 @@ func TestAdminForwardPhase1ListenerWiresExplicitApprovalLock(t *testing.T) {
 	assert.Empty(t, baseBot.UpdateSpamCalls())
 	assert.Empty(t, api.RequestCalls())
 	require.Len(t, api.SendCalls(), 1)
-	assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "recovery journal")
+	assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "безопасный поиск")
 }
 
 func TestAdminForwardPhase1SafetyLogsAndFeedback(t *testing.T) {

@@ -138,17 +138,10 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			chatName = chat.Title
 		}
 		adapter := &recovery{chatName: chatName, journal: l.RecoveryJournal, api: api,
-			gate: func(a moderation.Action) bool {
-				if a.Kind == "notice" || a.Kind == "card" {
-					return a.ChatID == l.adminChatID && l.adminChatID != 0
-				}
-				if a.Kind == "unban" || a.Kind == "restore" {
-					return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID)
-				}
-				return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID) &&
-					!l.SuperUsers.IsSuper("", a.IdentityID) && !isExplicitlyApproved(a.IdentityID) &&
-					(a.IdentityID != a.ChatID || a.Kind == "original_delete")
-			}, superName: func(name string, id int64) bool { return l.SuperUsers.IsSuper(name, id) }}
+			gate:       func(a moderation.Action) bool { return l.recoveryBlockReason(a, isExplicitlyApproved) == "" },
+			gateReason: func(a moderation.Action) string { return l.recoveryBlockReason(a, isExplicitlyApproved) },
+			superName:  func(name string, id int64) bool { return l.SuperUsers.IsSuper(name, id) },
+		}
 		l.adminHandler.recovery = adapter
 		workerCtx, stop := context.WithCancel(ctx)
 		done := make(chan struct{})
@@ -944,4 +937,35 @@ func (s SuperUsers) IsSuper(userName string, userID int64) bool {
 		}
 	}
 	return false
+}
+
+func (l *TelegramListener) recoveryBlockReason(a moderation.Action, explicit func(int64) bool) string {
+	if a.Kind == "notice" || a.Kind == "card" {
+		if a.ChatID != l.adminChatID || l.adminChatID == 0 {
+			return "notification_destination_changed"
+		}
+		return ""
+	}
+	if l.Dry {
+		return "dry_mode"
+	}
+	if l.TrainingMode {
+		return "training_mode"
+	}
+	if !l.isChatAllowed(a.ChatID) {
+		return "current_chat_gate"
+	}
+	if a.Kind == "unban" || a.Kind == "restore" {
+		return ""
+	}
+	if l.SuperUsers.IsSuper("", a.IdentityID) {
+		return "current_superuser_gate"
+	}
+	if explicit(a.IdentityID) {
+		return "explicit_trust_gate"
+	}
+	if a.IdentityID == a.ChatID && a.Kind != "original_delete" {
+		return "anonymous_admin_gate"
+	}
+	return ""
 }

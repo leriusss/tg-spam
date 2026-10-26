@@ -26,6 +26,9 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 	if m == nil || m.Chat.ID != a.adminChatID || m.From == nil || m.From.IsBot || m.SenderChat != nil {
 		return nil
 	}
+	if m.ForwardOrigin != nil && m.ForwardOrigin.SenderUser != nil && m.ForwardOrigin.SenderUser.IsBot {
+		return nil
+	}
 	diagnostic := false
 	command := "/forward_status@" + a.botUsername
 	if a.botUsername != "" && strings.EqualFold(strings.TrimSpace(m.Text), command) && m.ReplyToMessage != nil {
@@ -46,18 +49,7 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 	if m.From.ID <= 0 || sharedTelegramUser(m.From.ID) || !a.superUsers.IsSuper("", m.From.ID) {
 		return reply("Отказ: пересылка требует уполномоченного личного пользователя с проверенным числовым ID.")
 	}
-	if a.forwardingDisabled {
-		return reply("Отказ: ручная модерация пересылкой отключена настройкой бота.")
-	}
-	if a.recovery == nil {
-		return reply("Отказ: recovery journal отключён. Действия не приняты.")
-	}
-	if a.dry {
-		return reply("Отказ: dry-режим запрещает модерацию.")
-	}
-	if a.trainingMode {
-		return reply("Отказ: training-режим запрещает эту ручную модерацию.")
-	}
+
 	source := m
 	if diagnostic {
 		source = m.ReplyToMessage
@@ -170,6 +162,18 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 			),
 		)
 	}
+	if a.forwardingDisabled {
+		return reply("Отказ: ручная модерация пересылкой отключена настройкой бота.")
+	}
+	if a.recovery == nil {
+		return reply("Отказ: recovery journal отключён. Действия не приняты.")
+	}
+	if a.dry {
+		return reply("Отказ: dry-режим запрещает модерацию.")
+	}
+	if a.trainingMode {
+		return reply("Отказ: training-режим запрещает эту ручную модерацию.")
+	}
 	_, _, err = a.recovery.journal.AcceptForward(
 		context.Background(),
 		a.primChatID,
@@ -196,7 +200,7 @@ func forwardPageKeyboard(c moderation.Card, page int) tbapi.InlineKeyboardMarkup
 				rows,
 				tbapi.NewInlineKeyboardRow(
 					tbapi.NewInlineKeyboardButtonData(
-						fmt.Sprintf("Удалить и заблокировать №%d", t.MessageID),
+						forwardChoiceLabel(t),
 						fmt.Sprintf("MF%d:%s", i, c.Ref),
 					),
 				),
@@ -241,7 +245,7 @@ func forwardActionLabel(a moderation.Action) string {
 		if a.Uncertain {
 			return "результат API неизвестен: " + a.Code
 		}
-		return a.State + ": " + a.Code
+		return forwardReason(a.Code)
 	}
 }
 
@@ -273,6 +277,12 @@ func forwardCardPage(c moderation.Card, chatName string, page int) string {
 		}
 		fmt.Fprintf(&out, "\n№%d · %s\n«%s»\n", t.MessageID, date, html.EscapeString(truncateRunes(inertSpamText(t.Text), 40)))
 		if !containsForwardIndex(b.Selected, i) {
+			if t.IdentityID == 0 {
+				out.WriteString("Автор не подтверждён: доступно только точное удаление.\n")
+			}
+			if t.Blocked != "" {
+				out.WriteString("Отказ: " + forwardReason(t.Blocked) + ".\n")
+			}
 			continue
 		}
 		if t.IdentityID != 0 {
@@ -366,4 +376,33 @@ func (a *admin) forwardCallback(ctx context.Context, q *tbapi.CallbackQuery, c m
 		return a.answerRecoveryCallback(ctx, q, "Решение уже принято или истекло; повторных действий нет")
 	}
 	return a.answerRecoveryCallback(ctx, q, "Принято. Независимые результаты удаления и блокировки появятся в этой карточке")
+}
+
+func forwardChoiceLabel(t moderation.ForwardTarget) string {
+	if t.IdentityID == 0 {
+		return fmt.Sprintf("Удалить №%d (автор неизвестен)", t.MessageID)
+	}
+	return fmt.Sprintf("Удалить и заблокировать №%d", t.MessageID)
+}
+
+func forwardReason(code string) string {
+	reasons := map[string]string{
+		"telegram_403":                                  "Telegram отказал в операции (telegram_403)",
+		"telegram_400":                                  "Telegram отклонил операцию (telegram_400)",
+		"current_superuser_gate":                        "цель защищена полномочиями superuser/администратора",
+		"explicit_trust_gate":                           "цель имеет явное ручное доверие",
+		"anonymous_admin_gate":                          "публикация от имени самого защищаемого чата",
+		"forward_identity_mismatch":                     "числовой автор пересылки не совпадает с исходным update",
+		"forward_operator_revoked":                      "числовой оператор больше не уполномочен",
+		"current_safety_gate":                           "текущие правила безопасности запрещают действие",
+		"dry_mode":                                      "включён dry-режим",
+		"training_mode":                                 "включён training-режим",
+		"current_chat_gate":                             "исходный чат больше не разрешён",
+		"deadline_manual_action_required":               "срок выполнения истёк; автоматических действий больше не будет",
+		"delete_refused_age_not_proven_manual_required": "Telegram отказал в удалении; возраст сообщения не доказан",
+	}
+	if reason, ok := reasons[code]; ok {
+		return reason
+	}
+	return code
 }

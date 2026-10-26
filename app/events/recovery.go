@@ -22,11 +22,12 @@ type contextualTelegram interface {
 }
 
 type recovery struct {
-	chatName  string
-	journal   *moderation.Journal
-	api       contextualTelegram
-	gate      func(moderation.Action) bool
-	superName func(string, int64) bool
+	gateReason func(moderation.Action) string
+	chatName   string
+	journal    *moderation.Journal
+	api        contextualTelegram
+	gate       func(moderation.Action) bool
+	superName  func(string, int64) bool
 }
 
 // telegramOutcome classifies typed errors, not strings that might contain credentials.
@@ -80,7 +81,7 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		return r.notify(ctx, a)
 	}
 	if !r.gate(a) {
-		return moderation.Outcome{State: moderation.Blocked, Code: "current_safety_gate", Uncertain: a.Uncertain}
+		return moderation.Outcome{State: moderation.Blocked, Code: r.blockReason(a), Uncertain: a.Uncertain}
 	}
 	if r.journal != nil {
 		requester, e := r.journal.ForwardRequester(ctx, a.Receipt)
@@ -150,7 +151,7 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		return moderation.Outcome{Retry: true, Uncertain: a.Uncertain, Code: "request_not_started"}
 	}
 	if !r.gate(a) {
-		return moderation.Outcome{State: moderation.Blocked, Code: "current_safety_gate", Uncertain: a.Uncertain}
+		return moderation.Outcome{State: moderation.Blocked, Code: r.blockReason(a), Uncertain: a.Uncertain}
 	}
 	if a.Kind == "ban" || a.Kind == "restrict" {
 		if a.Uncertain && a.IdentityKind == "sender_chat" {
@@ -535,4 +536,11 @@ func reportBatchOrigin(report storage.Report) string {
 		return fmt.Sprintf("report:%d", report.ID)
 	}
 	return "report"
+}
+
+func (r *recovery) blockReason(a moderation.Action) string {
+	if r.gateReason != nil {
+		return r.gateReason(a)
+	}
+	return "current_safety_gate"
 }

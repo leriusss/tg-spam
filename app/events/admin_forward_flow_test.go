@@ -3,9 +3,11 @@ package events
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -289,7 +291,7 @@ func TestAdminForwardUnknownAuthorAndMiss(t *testing.T) {
 }
 
 func TestAdminForwardGatesAndSpoofing(t *testing.T) {
-	for _, gate := range []string{"outsider", "username-only", "bot", "sender-chat", "plain", "service-forward", "dry", "training", "superuser", "manual-trust", "admin-target", "other-chat", "operator-revoked"} {
+	for _, gate := range []string{"outsider", "username-only", "bot", "sender-chat", "plain", "service-forward", "forwarded-bot-card", "dry", "training", "superuser", "manual-trust", "admin-target", "other-chat", "operator-revoked"} {
 		t.Run(gate, func(t *testing.T) {
 			f := newForwardFixture(t)
 			u := manualForwardUpdate()
@@ -300,6 +302,8 @@ func TestAdminForwardGatesAndSpoofing(t *testing.T) {
 			case "username-only":
 				u.Message.From.ID = 12
 				u.Message.From.UserName = "11"
+			case "forwarded-bot-card":
+				u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 501, IsBot: true}}
 			case "bot":
 				u.Message.From.IsBot = true
 			case "sender-chat":
@@ -482,19 +486,39 @@ func TestAdminForwardRendererExamples(t *testing.T) {
 		t.Skip("set FORWARD_CARD_EXAMPLES to export renderer examples")
 	}
 	require.NoError(t, os.MkdirAll(dir, 0o700))
-	for _, many := range []bool{false, true} {
+	for _, mode := range []string{"false", "true", "unknown", "partial", "expired"} {
 		f := newForwardFixture(t)
 		updates := []tbapi.Update{originalForwardUpdate(801, 501)}
-		if many {
+		if mode == "true" || mode == "expired" {
 			updates = append(updates, originalForwardUpdate(802, 502))
+		}
+		if mode == "partial" {
+			f.failBan = true
+		}
+		if mode == "unknown" {
+			updates = nil
+			require.NoError(t, f.loc.AddMessage(context.Background(), "same fixture original", 123, 501, "legacy", 801))
 		}
 		updates = append(updates, manualForwardUpdate())
 		f.listen(t, updates...)
 		f.settle(t)
+		if mode == "expired" {
+			_, err := f.db.Exec("UPDATE moderation_forward_batches SET expires_at=?", time.Now().Add(-time.Minute).UnixMilli())
+			require.NoError(t, err)
+		}
 		c := f.card(t)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("forward-%t.html", many)), []byte("<meta charset=utf-8><pre>"+forwardCardText(c, "Тестовый чат")+"</pre>"), 0o600))
+		var buttons strings.Builder
+		for _, row := range forwardKeyboard(c).InlineKeyboard {
+			for _, button := range row {
+				fmt.Fprintf(&buttons, "<button disabled>%s</button>", html.EscapeString(button.Text))
+			}
+			buttons.WriteString("<br>")
+		}
+		page := "<!doctype html><meta charset=utf-8><title>Renderer fixture</title><style>body{font:16px system-ui;max-width:720px;margin:32px auto}pre{white-space:pre-wrap}button{margin:4px;padding:8px}</style><pre>" + forwardCardText(c, "Тестовый чат") + "</pre>" + buttons.String()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "forward-"+mode+".html"), []byte(page), 0o600))
 	}
 }
+
 func TestAdminForwardReplayDeadlineAndOneCard(t *testing.T) {
 	f := newForwardFixture(t)
 	f.listen(t, originalForwardUpdate(801, -501), manualForwardUpdate())
