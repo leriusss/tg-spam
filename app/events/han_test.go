@@ -90,7 +90,7 @@ func TestHanPipeline(t *testing.T) {
 				require.NoError(t, err)
 				require.Contains(t, card.Reason, "28 из 34 букв")
 				require.Contains(t, compactCardText(card, "fixture"), "Удаление и блокировка учитываются отдельно")
-				require.Contains(t, cardDetails(card), "Преобладает письменность Han")
+				require.Contains(t, cardDetails(card), "Сработало правило Han")
 				require.NotContains(t, compactCardText(card, "fixture"), "Сообщение удалено")
 				require.Equal(t, strings.Repeat("你好世界", 7)+" привет", card.Text)
 			}

@@ -300,9 +300,11 @@ func TestRecoveryReportCallbackAfterStorageTTLAndInfo(t *testing.T) {
 		return apiOK(true), nil
 	})
 	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "M?", "info")))
-	require.NotContains(t, edited, c.Text)
-	require.Contains(t, edited, "Данные детекции")
-	require.Contains(t, edited, "canceled")
+	require.Contains(t, edited, "<blockquote>"+c.Text+"</blockquote>")
+	require.Contains(t, edited, "Подробный разбор проверок не сохранён")
+	require.Contains(t, edited, "отменено до выполнения")
+	require.NoError(t, a.recoveryCardCallback(cardQuery(c, "MT0.0", "technical")))
+	require.Contains(t, edited, "state: canceled")
 	require.Empty(t, a.bot.(*mocks.BotMock).UpdateSpamCalls())
 	require.Empty(t, a.bot.(*mocks.BotMock).UpdateHamCalls())
 }

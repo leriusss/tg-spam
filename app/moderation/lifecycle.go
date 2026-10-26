@@ -11,27 +11,30 @@ import (
 
 // Card keeps original context separate from presentation/statuses and exposes the SQL action view.
 type Card struct {
-	DeleteOnly          bool     `db:"-"`
-	RequesterID         int64    `db:"-"`
-	Reason              string   `db:"-"`
-	RequestState        string   `db:"-"`
-	RequestExpires      int64    `db:"-"`
-	Ref                 string   `db:"ref"`
-	Receipt             string   `db:"receipt"`
-	Destination         int64    `db:"destination"`
-	ChatID              int64    `db:"chat_id"`
-	IdentityID          int64    `db:"identity_id"`
-	IdentityKind        string   `db:"identity_kind"`
-	MessageID           int      `db:"message_id"`
-	Text                string   `db:"text"`
-	UserName            string   `db:"user_name"`
-	DisplayName         string   `db:"display_name"`
-	Actions             []Action `db:"-"`
-	Origins             []Demand `db:"-"`
-	Held                bool     `db:"-"`
-	Resolved            []string `db:"-"`
-	IncompleteDecisions int      `db:"-"`
-	RequestedBanKind    string   `db:"-"`
+	RecordedAt          int64       `db:"-"`
+	OriginalDate        int64       `db:"-"`
+	Audit               []CardAudit `db:"-"`
+	DeleteOnly          bool        `db:"-"`
+	RequesterID         int64       `db:"-"`
+	Reason              string      `db:"-"`
+	RequestState        string      `db:"-"`
+	RequestExpires      int64       `db:"-"`
+	Ref                 string      `db:"ref"`
+	Receipt             string      `db:"receipt"`
+	Destination         int64       `db:"destination"`
+	ChatID              int64       `db:"chat_id"`
+	IdentityID          int64       `db:"identity_id"`
+	IdentityKind        string      `db:"identity_kind"`
+	MessageID           int         `db:"message_id"`
+	Text                string      `db:"text"`
+	UserName            string      `db:"user_name"`
+	DisplayName         string      `db:"display_name"`
+	Actions             []Action    `db:"-"`
+	Origins             []Demand    `db:"-"`
+	Held                bool        `db:"-"`
+	Resolved            []string    `db:"-"`
+	IncompleteDecisions int         `db:"-"`
+	RequestedBanKind    string      `db:"-"`
 }
 
 // Demand records independent provenance, not a second scheduling queue.
@@ -488,8 +491,16 @@ func (j *Journal) withdrawTX(ctx context.Context, tx journalTx, receipt, origin 
 
 // CardView loads original context, not a text reconstructed from Telegram notification statuses.
 func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
+	return j.cardView(ctx, ref, false)
+}
+
+func (j *Journal) cardView(ctx context.Context, ref string, readOnly bool) (Card, error) {
 	var c Card
-	err := j.transaction(ctx, func(tx journalTx) error {
+	run := j.transaction
+	if readOnly {
+		run = j.readCardTransaction
+	}
+	err := run(ctx, func(tx journalTx) error {
 		err := tx.GetContext(
 			ctx,
 			&c,
@@ -587,6 +598,9 @@ func (j *Journal) CardView(ctx context.Context, ref string) (Card, error) {
 			}
 		}
 		c.Held = held > 0
+		if err == nil && readOnly {
+			err = j.readCardAudit(ctx, tx, &c)
+		}
 		return journalError(err)
 	})
 	return c, journalError(err)
