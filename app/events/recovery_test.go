@@ -162,10 +162,10 @@ func TestRecoveryForwardRedeliveryAndUnknownOriginal(t *testing.T) {
 				}
 			}
 			update := tbapi.Update{Message: msg}
-			require.NoError(t, r.handler.MsgHandler(update))
-			require.NoError(t, r.handler.MsgHandler(update))
+			require.NoError(t, r.handler.legacyForward(update))
+			require.NoError(t, r.handler.legacyForward(update))
 			msg.MessageID = 101
-			require.NoError(t, r.handler.MsgHandler(update))
+			require.NoError(t, r.handler.legacyForward(update))
 			require.Empty(t, r.api.RequestCalls(), "handler enqueues before API; worker is the API owner")
 			if exact {
 				require.Len(t, r.bot.UpdateSpamCalls(), 1)
@@ -196,7 +196,7 @@ func TestRecoveryFallbackKeepsOwnChatAndManualOriginal(t *testing.T) {
 	m := replayAdminMessage(userOrigin(501, "source"), "spam")
 	m.Chat = tbapi.Chat{ID: 999}
 	m.MessageID = 44
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: m}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: m}))
 	rows, err := j.Snapshot(context.Background())
 	require.NoError(t, err)
 	for _, a := range rows {
@@ -287,7 +287,7 @@ func TestRecoveryAdminSafetyRejectCreatesNoReceipt(t *testing.T) {
 	m := replayAdminMessage(userOrigin(501, "source"), "spam")
 	m.Chat = tbapi.Chat{ID: 999}
 	m.MessageID = 44
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: m}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: m}))
 	rows, err := j.Snapshot(context.Background())
 	require.NoError(t, err)
 	require.Empty(t, rows)

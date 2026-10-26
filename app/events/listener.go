@@ -138,17 +138,10 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			chatName = chat.Title
 		}
 		adapter := &recovery{chatName: chatName, journal: l.RecoveryJournal, api: api,
-			gate: func(a moderation.Action) bool {
-				if a.Kind == "notice" || a.Kind == "card" {
-					return a.ChatID == l.adminChatID && l.adminChatID != 0
-				}
-				if a.Kind == "unban" || a.Kind == "restore" {
-					return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID)
-				}
-				return !l.Dry && !l.TrainingMode && l.isChatAllowed(a.ChatID) &&
-					!l.SuperUsers.IsSuper("", a.IdentityID) && !isExplicitlyApproved(a.IdentityID) &&
-					(a.IdentityID != a.ChatID || a.Kind == "original_delete")
-			}, superName: l.SuperUsers.IsSuper}
+			gate:       func(a moderation.Action) bool { return l.recoveryBlockReason(a, isExplicitlyApproved) == "" },
+			gateReason: func(a moderation.Action) string { return l.recoveryBlockReason(a, isExplicitlyApproved) },
+			superName:  func(name string, id int64) bool { return l.SuperUsers.IsSuper(name, id) },
+		}
 		l.adminHandler.recovery = adapter
 		workerCtx, stop := context.WithCancel(ctx)
 		done := make(chan struct{})
@@ -171,6 +164,8 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 		l.reportsHandler.recoveryAdmin = l.adminHandler
 	}
 
+	l.adminHandler.botUsername = l.BotUsername
+	l.adminHandler.forwardingDisabled = l.DisableAdminSpamForward
 	adminForwardStatus := "enabled"
 	if l.DisableAdminSpamForward {
 		adminForwardStatus = "disabled"
@@ -204,13 +199,10 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				if update.Message.From != nil {
 					fromName, fromID = update.Message.From.UserName, update.Message.From.ID
 				}
-				if !l.isAdminChat(update.Message.Chat.ID, fromName, fromID) {
-					continue
-				}
+				_ = l.isAdminChat(update.Message.Chat.ID, fromName, fromID)
 				if l.DisableAdminSpamForward {
 					log.Printf("[INFO] admin report ignored: outcome=forwarding_disabled admin_msg_id=%d admin_id=%d",
 						update.Message.MessageID, fromID)
-					continue
 				}
 				if err := l.adminHandler.MsgHandler(update); err != nil {
 					log.Printf("[WARN] admin report failed: outcome=moderation_failed admin_msg_id=%d error=%v",
@@ -263,7 +255,8 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 				// we need to process an edited message as a new message, so we create a new update object
 				// and copy the edited message to the message field.
 				editedUpdate := tbapi.Update{
-					Message: update.EditedMessage,
+					UpdateID: update.UpdateID,
+					Message:  update.EditedMessage,
 				}
 				if err := l.procEvents(editedUpdate); err != nil {
 					log.Printf("[WARN] failed to process edited message update: %v", err)
@@ -426,6 +419,25 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 				"[DEBUG] media locator registered: kind=%s version=%d msg_id=%d target_id=%d",
 				mediaKey.Kind, mediaKey.Version, msg.ID, locatorUserID,
 			)
+		}
+	}
+
+	if evidence, ok := l.Locator.(interface {
+		RecordMessageAuthor(context.Context, int64, int, storage.MessageAuthor) error
+	}); ok && update.UpdateID > 0 {
+		author := storage.MessageAuthor{Source: "telegram_update", UpdateID: update.UpdateID}
+		if update.Message.SenderChat != nil && update.Message.SenderChat.ID < 0 {
+			author.Kind = "sender_chat"
+			author.ID = update.Message.SenderChat.ID
+		} else if update.Message.SenderChat == nil && update.Message.From != nil &&
+			update.Message.From.ID > 0 && !sharedTelegramUser(update.Message.From.ID) {
+			author.Kind = "user"
+			author.ID = update.Message.From.ID
+		}
+		if author.ID != 0 {
+			if err := evidence.RecordMessageAuthor(ctx, fromChat, msg.ID, author); err != nil {
+				log.Printf("[WARN] locator author provenance unavailable: message_id=%d", msg.ID)
+			}
 		}
 	}
 
@@ -925,4 +937,35 @@ func (s SuperUsers) IsSuper(userName string, userID int64) bool {
 		}
 	}
 	return false
+}
+
+func (l *TelegramListener) recoveryBlockReason(a moderation.Action, explicit func(int64) bool) string {
+	if a.Kind == "notice" || a.Kind == "card" {
+		if a.ChatID != l.adminChatID || l.adminChatID == 0 {
+			return "notification_destination_changed"
+		}
+		return ""
+	}
+	if l.Dry {
+		return "dry_mode"
+	}
+	if l.TrainingMode {
+		return "training_mode"
+	}
+	if !l.isChatAllowed(a.ChatID) {
+		return "current_chat_gate"
+	}
+	if a.Kind == "unban" || a.Kind == "restore" {
+		return ""
+	}
+	if l.SuperUsers.IsSuper("", a.IdentityID) {
+		return "current_superuser_gate"
+	}
+	if explicit(a.IdentityID) {
+		return "explicit_trust_gate"
+	}
+	if a.IdentityID == a.ChatID && a.Kind != "original_delete" {
+		return "anonymous_admin_gate"
+	}
+	return ""
 }

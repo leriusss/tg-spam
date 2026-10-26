@@ -192,7 +192,8 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 		assert.Contains(t, logs, "outcome=unauthorized_sender")
 		assert.NotContains(t, logs, "admin report received:")
 		assert.Empty(t, api.RequestCalls())
-		assert.Empty(t, api.SendCalls())
+		require.Len(t, api.SendCalls(), 1)
+		assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "Отказ:")
 		assert.Empty(t, botMock.UpdateSpamCalls())
 	})
 
@@ -202,7 +203,8 @@ func TestAdminForwardOfflineReplayRoutingMatrix(t *testing.T) {
 		assert.Contains(t, logs, "outcome=forwarding_disabled")
 		assert.NotContains(t, logs, "admin report received:")
 		assert.Empty(t, api.RequestCalls())
-		assert.Empty(t, api.SendCalls())
+		require.Len(t, api.SendCalls(), 1)
+		assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "Отказ:")
 		assert.Empty(t, botMock.UpdateSpamCalls())
 	})
 }
@@ -242,7 +244,7 @@ func TestAdminForwardPhase1ListenerWiresExplicitApprovalLock(t *testing.T) {
 	assert.Empty(t, baseBot.UpdateSpamCalls())
 	assert.Empty(t, api.RequestCalls())
 	require.Len(t, api.SendCalls(), 1)
-	assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "explicitly approved")
+	assert.Contains(t, api.SendCalls()[0].C.(tbapi.MessageConfig).Text, "безопасный поиск")
 }
 
 func TestAdminForwardPhase1SafetyLogsAndFeedback(t *testing.T) {
@@ -252,7 +254,7 @@ func TestAdminForwardPhase1SafetyLogsAndFeedback(t *testing.T) {
 	defer log.SetOutput(oldOutput)
 
 	r := newAdminForwardReplay(t, storage.MsgMeta{UserID: 202, UserName: "second", MsgID: 1002}, true)
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(101, "first"), "SENSITIVE MESSAGE CONTENT")}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(101, "first"), "SENSITIVE MESSAGE CONTENT")}))
 	assertNoModerationActions(t, r.actions())
 	assert.Contains(t, logs.String(), "locator identity mismatch; destructive action blocked")
 	assert.Contains(t, logs.String(), "outcome=identity_mismatch")
@@ -263,7 +265,7 @@ func TestAdminForwardPhase1SafetyLogsAndFeedback(t *testing.T) {
 	logs.Reset()
 	approved := newAdminForwardReplay(t, storage.MsgMeta{UserID: 101, UserName: "first", MsgID: 1001}, true)
 	approved.approved[101] = true
-	require.NoError(t, approved.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(101, "first"), "text")}))
+	require.NoError(t, approved.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(101, "first"), "text")}))
 	assertNoModerationActions(t, approved.actions())
 	assert.Contains(t, logs.String(), "outcome=approved_target")
 	require.Len(t, approved.api.SendCalls(), 1)
@@ -275,7 +277,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 
 	t.Run("D personal user locator hit plans full moderation", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 		got := r.actions()
 		assert.Equal(t, []int64{501}, got.approvedRemovals)
 		assert.Equal(t, []string{"text"}, got.spamUpdates)
@@ -286,7 +288,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 
 	t.Run("E personal user locator miss uses destructive sender fallback without delete", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 		got := r.actions()
 		assert.Equal(t, []int64{501}, got.approvedRemovals)
 		assert.Equal(t, []string{"text"}, got.spamUpdates)
@@ -298,7 +300,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("E approved user locator miss is blocked before fallback mutations", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		r.approved[501] = true
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 		assertNoModerationActions(t, r.actions())
 		assert.Equal(t, 1, r.actions().feedback)
 	})
@@ -306,7 +308,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("F hidden sender is blocked before locator", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginHiddenUser, SenderUserName: "hidden"}, "text")
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Zero(t, r.actions().locatorLookups)
 		assert.Equal(t, 1, r.actions().feedback)
@@ -319,7 +321,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("G missing ForwardOrigin is a silent no-op with or without text", func(t *testing.T) {
 		for _, text := range []string{"ordinary", ""} {
 			r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
-			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(nil, text)}))
+			require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(nil, text)}))
 			assertNoModerationActions(t, r.actions())
 			assert.Zero(t, r.actions().feedback)
 		}
@@ -328,7 +330,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("H user origin with nil SenderUser is blocked without panic", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginUser}, "text")
-		assert.NotPanics(t, func() { require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg})) })
+		assert.NotPanics(t, func() { require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg})) })
 		assertNoModerationActions(t, r.actions())
 		assert.Equal(t, 1, r.actions().feedback)
 	})
@@ -336,7 +338,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("H user origin with zero SenderUser ID is blocked", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(userOrigin(0, "malformed"), "text")
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Zero(t, r.actions().locatorLookups)
 		assert.Equal(t, 1, r.actions().feedback)
@@ -345,7 +347,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("H unknown origin type is blocked", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: "unsupported"}, "text")
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Zero(t, r.actions().locatorLookups)
 		assert.Equal(t, 1, r.actions().feedback)
@@ -354,7 +356,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("I hidden origin locator hit is not trusted", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginHiddenUser, SenderUserName: "hidden"}, "text")
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Zero(t, r.actions().locatorLookups)
 		assert.Equal(t, 1, r.actions().feedback)
@@ -363,11 +365,11 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("J chat origin requires matching locator and has no miss fallback", func(t *testing.T) {
 		origin := &tbapi.MessageOrigin{Type: tbapi.MessageOriginChat, SenderChat: &tbapi.Chat{ID: -200, UserName: "chat"}}
 		r := newAdminForwardReplay(t, storage.MsgMeta{UserID: -200, UserName: "chat", MsgID: 704}, true)
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(origin, "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(origin, "text")}))
 		assert.Equal(t, []int64{-200}, r.actions().channelBans)
 
 		miss := newAdminForwardReplay(t, storage.MsgMeta{}, false)
-		require.NoError(t, miss.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(origin, "text")}))
+		require.NoError(t, miss.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(origin, "text")}))
 		assertNoModerationActions(t, miss.actions())
 		assert.Equal(t, 1, miss.actions().feedback)
 	})
@@ -376,7 +378,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		channel := storage.MsgMeta{UserID: -100200, UserName: "channel", MsgID: 702}
 		r := newAdminForwardReplay(t, channel, true)
 		origin := &tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100200, UserName: "channel"}, MessageID: 702}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(origin, "channel text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(origin, "channel text")}))
 		got := r.actions()
 		assert.Equal(t, []int64{-100200}, got.approvedRemovals)
 		assert.Equal(t, []int64{-100200}, got.channelBans)
@@ -386,7 +388,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("K channel origin locator miss is blocked", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		origin := &tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100200, UserName: "channel"}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(origin, "channel text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(origin, "channel text")}))
 		assertNoModerationActions(t, r.actions())
 		assert.Equal(t, 1, r.actions().feedback)
 	})
@@ -401,7 +403,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 			return nil, nil
 		}
 		origin := &tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300, UserName: "approved_channel"}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(origin, "official text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(origin, "official text")}))
 		got := r.actions()
 		assertNoModerationActions(t, got)
 		assert.Equal(t, 1, got.feedback)
@@ -410,7 +412,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("approved user locator hit remains protected from every mutation", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		r.approved[501] = true
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 		assertNoModerationActions(t, r.actions())
 		assert.Equal(t, 1, r.actions().feedback)
 	})
@@ -420,7 +422,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		msg := replayAdminMessage(userOrigin(501, "source"), "")
 		msg.Caption = "caption text"
 		msg.Photo = []tbapi.PhotoSize{{FileID: "fake-photo"}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assert.Equal(t, "caption text", r.locator.MessageCalls()[0].Msg)
 		assert.Equal(t, []string{"caption text"}, r.actions().spamUpdates)
 	})
@@ -429,7 +431,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		msg := replayAdminMessage(userOrigin(501, "source"), "")
 		msg.Photo = []tbapi.PhotoSize{{FileID: "bot-specific", FileUniqueID: "stable-photo", Width: 10, Height: 10}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		got := r.actions()
 		assert.Equal(t, 1, got.locatorLookups)
 		assert.Empty(t, got.spamUpdates)
@@ -441,7 +443,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(userOrigin(501, "source"), "")
 		msg.Video = &tbapi.Video{FileID: "bot-specific", FileUniqueID: "stable-video"}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Equal(t, 1, r.actions().locatorLookups)
 	})
@@ -451,7 +453,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		text := "safe https://example.com"
 		msg := replayAdminMessage(userOrigin(501, "source"), text)
 		msg.Entities = []tbapi.MessageEntity{{Type: "url", Offset: 5, Length: 19}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assert.Equal(t, text, r.locator.MessageCalls()[0].Msg)
 		assert.Equal(t, []string{text}, r.actions().spamUpdates)
 	})
@@ -461,7 +463,7 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 		url := "https://example.com"
 		msg := replayAdminMessage(userOrigin(501, "source"), "text")
 		msg.ReplyMarkup = &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{{URL: &url}}}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assert.Equal(t, []string{"text"}, r.actions().spamUpdates)
 		assert.Equal(t, []int64{501}, r.actions().userBans)
 	})
@@ -469,8 +471,8 @@ func TestAdminForwardOfflineReplayOriginAndContentMatrix(t *testing.T) {
 	t.Run("R duplicate report repeats every destructive action", func(t *testing.T) {
 		r := newAdminForwardReplay(t, locatedUser, true)
 		update := tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}
-		require.NoError(t, r.handler.MsgHandler(update))
-		require.NoError(t, r.handler.MsgHandler(update))
+		require.NoError(t, r.handler.legacyForward(update))
+		require.NoError(t, r.handler.legacyForward(update))
 		got := r.actions()
 		assert.Len(t, got.approvedRemovals, 2)
 		assert.Len(t, got.spamUpdates, 2)
@@ -499,7 +501,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 	for _, kind := range []storage.MediaKind{storage.MediaPhoto, storage.MediaVideo, storage.MediaDocument, storage.MediaAnimation} {
 		t.Run("matching "+string(kind), func(t *testing.T) {
 			r := newAdminForwardReplay(t, user, true)
-			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(kind)}))
+			require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: media(kind)}))
 			got := r.actions()
 			assert.Empty(t, got.spamUpdates)
 			assert.Equal(t, []int64{501}, got.userBans)
@@ -512,7 +514,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 
 	t.Run("wrong target is blocked after malicious locator result", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: 202, MsgID: 702}, true)
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: media(storage.MediaPhoto)}))
 		assertNoModerationActions(t, r.actions())
 		assert.NotEmpty(t, r.api.SendCalls())
 	})
@@ -522,20 +524,20 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		r := newAdminForwardReplay(t, located, true)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
 		msg.Photo = []tbapi.PhotoSize{{FileUniqueID: "stable-channel-photo"}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 	})
 
 	t.Run("wrong source chat is blocked", func(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{ChatID: 999, UserID: 501, MsgID: 702}, true)
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: media(storage.MediaPhoto)}))
 		assertNoModerationActions(t, r.actions())
 	})
 
 	t.Run("approved user and sender chat stay locked", func(t *testing.T) {
 		r := newAdminForwardReplay(t, user, true)
 		r.approved[501] = true
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: media(storage.MediaPhoto)}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: media(storage.MediaPhoto)}))
 		assertNoModerationActions(t, r.actions())
 
 		channel := storage.MsgMeta{ChatID: replayPrimaryChatID, UserID: -100300, UserName: "channel", MsgID: 703}
@@ -543,7 +545,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		r.approved[-100300] = true
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
 		msg.Video = &tbapi.Video{FileUniqueID: "stable-channel-video"}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 	})
 
@@ -552,7 +554,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		r := newAdminForwardReplay(t, channel, true)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
 		msg.Document = &tbapi.Document{FileUniqueID: "stable-channel-document"}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		got := r.actions()
 		assert.Empty(t, got.spamUpdates)
 		assert.Equal(t, []int64{-100300}, got.channelBans)
@@ -571,7 +573,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		fixtures[2].MediaGroupID = "album"
 		for _, msg := range fixtures {
 			r := newAdminForwardReplay(t, user, true)
-			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 			assertNoModerationActions(t, r.actions())
 			assert.Empty(t, r.locator.MessageByMediaCalls())
 		}
@@ -588,7 +590,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		for _, msg := range fixtures {
 			msg.Photo = []tbapi.PhotoSize{{FileUniqueID: "stable-photo"}}
 			r := newAdminForwardReplay(t, user, true)
-			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 			assertNoModerationActions(t, r.actions())
 			assert.Empty(t, r.locator.MessageByMediaCalls())
 		}
@@ -598,7 +600,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 		msg := replayAdminMessage(&tbapi.MessageOrigin{Type: tbapi.MessageOriginChannel, Chat: &tbapi.Chat{ID: -100300}}, "")
 		msg.Animation = &tbapi.Animation{FileUniqueID: "stable-channel-animation"}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		assertNoModerationActions(t, r.actions())
 		assert.Empty(t, r.locator.MessageCalls())
 	})
@@ -608,7 +610,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 		msg := media(storage.MediaVideo)
 		externalURL := "https://example.com"
 		msg.ReplyMarkup = &tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{{{Text: "button", URL: &externalURL}}}}
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 		got := r.actions()
 		assert.Empty(t, got.spamUpdates)
 		assert.Equal(t, []int64{501}, got.userBans)
@@ -620,7 +622,7 @@ func TestAdminForwardCaptionlessMediaPhase2A(t *testing.T) {
 			r := newAdminForwardReplay(t, user, true)
 			msg := media(kind)
 			msg.Caption = "caption text"
-			require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+			require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 			assert.Len(t, r.locator.MessageCalls(), 1)
 			assert.Empty(t, r.locator.MessageByMediaCalls())
 			assert.Equal(t, []string{"caption text"}, r.actions().spamUpdates)
@@ -643,7 +645,7 @@ func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {
 	r := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 	r.handler.locator = locator
 	msg := replayAdminMessage(userOrigin(101, "first"), sameText)
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: msg}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: msg}))
 
 	// the newest identical-text record belongs to 202, while Telegram's reliable
 	// ForwardOrigin says 101. Phase 1 must fail closed before every mutation.
@@ -653,7 +655,7 @@ func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {
 	matching := newAdminForwardReplay(t, storage.MsgMeta{}, false)
 	matching.handler.locator = locator
 	matchingMsg := replayAdminMessage(userOrigin(202, "second"), sameText)
-	require.NoError(t, matching.handler.MsgHandler(tbapi.Update{Message: matchingMsg}))
+	require.NoError(t, matching.handler.legacyForward(tbapi.Update{Message: matchingMsg}))
 	// A stored content match now requires the durable selection flow, even with a reliable forward author.
 	assertNoModerationActions(t, matching.actions())
 	assert.Equal(t, 1, matching.actions().feedback)
@@ -661,7 +663,7 @@ func TestAdminForwardOfflineReplayLocatorWrongUserSafety(t *testing.T) {
 
 func TestAdminForwardOfflineReplaySafetyInvariants(t *testing.T) {
 	r := newAdminForwardReplay(t, storage.MsgMeta{UserID: 501, UserName: "source", MsgID: 701}, true)
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 
 	// the only boundaries reachable by the replay are generated in-memory mocks.
 	// no HTTP client, filesystem path, SQL connection, or production credential is present.

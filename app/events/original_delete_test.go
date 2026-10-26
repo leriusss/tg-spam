@@ -41,8 +41,8 @@ func TestOriginalDeleteHiddenForwardChoiceWorkerRestart(t *testing.T) {
 			a, db, u := originalDeleteFixture(t, author)
 			ctx := context.Background()
 			j := a.recovery.journal
-			require.NoError(t, a.MsgHandler(u))
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
+			require.NoError(t, a.legacyForward(u))
 			rows, err := j.Snapshot(ctx)
 			require.NoError(t, err)
 			core := 0
@@ -103,7 +103,7 @@ func TestOriginalDeleteHiddenForwardChoiceWorkerRestart(t *testing.T) {
 			restarted, err := moderation.NewJournal(ctx, db, moderation.DefaultLimits())
 			require.NoError(t, err)
 			a.recovery.journal = restarted
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
 			require.NoError(t, a.recoveryCardCallback(q))
 			run(restarted)
 			require.Equal(t, map[int]int{801: 1}, calls)
@@ -118,7 +118,7 @@ func TestOriginalDeleteCallbackGatesAndNoBanEscalation(t *testing.T) {
 	for _, mode := range []string{"outsider", "username-only", "technical", "other-operator", "wrong-chat", "wrong-card", "dry", "training", "manual-trust", "superuser", "ban", "undo", "cleanup"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _, u := originalDeleteFixture(t, 501)
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
 			j := a.recovery.journal
 			c, err := j.CardView(context.Background(), "delete:123:801")
 			require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestOriginalDeleteAbsentRetryAndDeadline(t *testing.T) {
 	for _, mode := range []string{"absent", "retry", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
 			a, db, u := originalDeleteFixture(t, 0)
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
 			ctx := context.Background()
 			j := a.recovery.journal
 			c, err := j.CardView(ctx, "delete:123:801")
@@ -274,7 +274,7 @@ func TestOriginalDeleteCaptionMediaAndMissingCandidates(t *testing.T) {
 			case "protected":
 				a.isExplicitlyApproved = func(id int64) bool { return id == 501 }
 			}
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
 			rows, err := a.recovery.journal.Snapshot(ctx)
 			require.NoError(t, err)
 			count := 0
@@ -328,7 +328,7 @@ func TestOriginalDeleteUsesSavedSendDateNotObservation(t *testing.T) {
 				_, err := db.Exec(`UPDATE messages SET time=? WHERE gid=? AND chat_id=? AND msg_id=?`, observed, db.GID(), 123, 801)
 				require.NoError(t, err)
 			}
-			require.NoError(t, a.MsgHandler(u))
+			require.NoError(t, a.legacyForward(u))
 			j := a.recovery.journal
 			c, err := j.CardView(ctx, "delete:123:801")
 			require.NoError(t, err)
@@ -381,7 +381,7 @@ func TestOriginalDeleteExplicitNewRequestAndStaleDelivery(t *testing.T) {
 		require.True(t, ok, "renewal and confirmation must not call moderation API")
 		return apiOK(true), nil
 	})
-	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.legacyForward(u))
 	j := a.recovery.journal
 	old, err := j.CardView(ctx, "delete:123:801")
 	require.NoError(t, err)
@@ -408,7 +408,7 @@ func TestOriginalDeleteExplicitNewRequestAndStaleDelivery(t *testing.T) {
 	a.recovery.journal = j
 	a.locator, err = storage.NewLocator(ctx, time.Hour, 1000, reopened)
 	require.NoError(t, err)
-	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.legacyForward(u))
 	require.NoError(t, a.recoveryCardCallback(newRequest))
 	require.NoError(t, a.recoveryCardCallback(cardQuery(old, "MD", "old-confirmation")))
 	wrongOperator := cardQuery(current, "MD", "old-operator-new-ref")
@@ -443,7 +443,7 @@ func TestOriginalDeleteExplicitNewRequestAndStaleDelivery(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, deletes)
-	require.NoError(t, a.MsgHandler(u))
+	require.NoError(t, a.legacyForward(u))
 	require.NoError(t, a.recoveryCardCallback(newRequest))
 	require.NoError(t, a.recoveryCardCallback(confirmed))
 	for range 20 {

@@ -92,7 +92,7 @@ func TestAdminReportingIndependentActionsAndNotification(t *testing.T) {
 				assert.NotContains(t, text, "the user banned and message deleted")
 				return tbapi.Message{}, tc.sendErr
 			}
-			err := r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")})
+			err := r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")})
 			require.Error(t, err)
 			assert.NotContains(t, err.Error(), "spam notification failed")
 			if tc.sendErr != nil {
@@ -118,7 +118,7 @@ func TestAdminExpiredOriginalStillBansAndDryModeDoesNotClaimSuccess(t *testing.T
 		r := newAdminForwardReplay(t, storage.MsgMeta{ChatID: 123, UserID: 501, MsgID: 701}, true)
 		r.handler.locator = &datedTestLocator{LocatorMock: r.locator, date: time.Now().Add(-53 * time.Hour).Unix()}
 		r.handler.dry = dry
-		require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+		require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 		text := r.api.SendCalls()[0].C.(tbapi.MessageConfig).Text
 		if dry {
 			assert.Empty(t, r.api.RequestCalls())
@@ -160,7 +160,7 @@ func TestFallbackReportsAfterBanAndKeepsOwnChatPolicy(t *testing.T) {
 		assert.Contains(t, c.(tbapi.MessageConfig).Text, "original message needs manual deletion")
 		return tbapi.Message{}, nil
 	}
-	require.NoError(t, r.handler.MsgHandler(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
+	require.NoError(t, r.handler.legacyForward(tbapi.Update{Message: replayAdminMessage(userOrigin(501, "source"), "text")}))
 }
 
 func TestAutomaticReportingKeepsBanOnDeleteFailure(t *testing.T) {

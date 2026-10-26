@@ -47,7 +47,7 @@ func TestHanExistingReceiptIndependentListenerWorker(t *testing.T) {
 						case "delete request":
 							forward := tbapi.Update{Message: &tbapi.Message{MessageID: 901, Chat: tbapi.Chat{ID: 456}, From: &tbapi.User{ID: 11},
 								Text: u.Message.Text, ForwardOrigin: &tbapi.MessageOrigin{Type: "hidden_user", SenderUserName: "unknown"}}}
-							require.NoError(t, l.adminHandler.MsgHandler(forward))
+							require.NoError(t, l.adminHandler.legacyForward(forward))
 						case "historical Han":
 							p := senderProvenancePlan(now, "detector")
 							p.Actions, p.Reason = p.Actions[:1], "Историческое Han: только удаление"

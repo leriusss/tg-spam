@@ -26,6 +26,9 @@ func truncateRunes(s string, n int) string {
 }
 
 func cardKeyboard(c moderation.Card, allowed bool) tbapi.InlineKeyboardMarkup {
+	if c.Forward != nil {
+		return forwardKeyboard(c)
+	}
 	if c.DeleteOnly {
 		return deleteOnlyKeyboard(c, allowed)
 	}
@@ -112,6 +115,9 @@ func (r *recovery) notifyCard(ctx context.Context, a moderation.Action) moderati
 		req = m
 	} else {
 		m := tbapi.NewMessage(a.ChatID, compactCardText(c, r.chatName))
+		if c.Forward != nil && c.Forward.Delivery.ChatID == a.ChatID {
+			m.ReplyParameters = tbapi.ReplyParameters{MessageID: c.Forward.Delivery.MessageID}
+		}
 		m.ParseMode = tbapi.ModeHTML
 		m.LinkPreviewOptions = tbapi.LinkPreviewOptions{IsDisabled: true}
 		m.ReplyMarkup = buttons
@@ -149,7 +155,7 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	ctx := context.Background()
 	j := a.recovery.journal
 	read := j.CardView
-	if cardNavigation(parts[0]) || parts[0] == "MA" {
+	if cardNavigation(parts[0]) || parts[0] == "MA" || strings.HasPrefix(parts[0], "MFV") {
 		read = j.ReadCardView
 	}
 	c, err := read(ctx, parts[1])
@@ -166,6 +172,9 @@ func (a *admin) recoveryCardCallback(q *tbapi.CallbackQuery) error {
 	}
 	if !bound {
 		return fmt.Errorf("callback is not bound to this moderation card")
+	}
+	if c.Forward != nil {
+		return a.forwardCallback(ctx, q, c, parts[0])
 	}
 	if cardNavigation(parts[0]) {
 		return a.navigateCard(ctx, q, c, parts[0])

@@ -35,6 +35,11 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		db.SetMaxOpenConns(1)
 	}
 	ddl := []string{
+		`CREATE TABLE IF NOT EXISTS moderation_forward_deliveries (gid TEXT NOT NULL, update_id BIGINT NOT NULL, chat_id BIGINT NOT NULL, message_id INTEGER NOT NULL, operator_id BIGINT NOT NULL, receipt TEXT NOT NULL, previous_receipt TEXT NOT NULL, reason TEXT NOT NULL, PRIMARY KEY(gid,update_id), UNIQUE(gid,chat_id,message_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_forward_delivery_receipt ON moderation_forward_deliveries(gid,receipt)`,
+		`CREATE TABLE IF NOT EXISTS moderation_forward_links (gid TEXT NOT NULL, receipt TEXT NOT NULL, action_id TEXT NOT NULL, PRIMARY KEY(gid,receipt,action_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_forward_links_action ON moderation_forward_links(gid,action_id)`,
+		`CREATE TABLE IF NOT EXISTS moderation_forward_batches (gid TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, targets TEXT NOT NULL, selected TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
 		`CREATE TABLE IF NOT EXISTS moderation_han_policy (gid TEXT PRIMARY KEY, since_date BIGINT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS moderation_delete_request_history (gid TEXT NOT NULL, ref TEXT NOT NULL, receipt TEXT NOT NULL, requester BIGINT NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, state TEXT NOT NULL, notification_id INTEGER NOT NULL, replaced_by TEXT NOT NULL, action_snapshot TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS moderation_delete_requests (gid TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(gid,receipt))`,
@@ -570,14 +575,20 @@ func (j *Journal) Claim(ctx context.Context, now time.Time) (a Action, ok bool, 
  (SELECT count(*) FROM moderation_actions WHERE gid=? AND ((state='pending' AND next_at<=?) OR
 (state='running' AND lease_until<?))) +
  (SELECT count(*) FROM moderation_receipts WHERE gid=? AND state IN ('preparing','preparing_optional') AND
-lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli(), j.db.GID(),
-		now.Add(-15*time.Second).UnixMilli())
+lease_until<?) +
+(SELECT count(*) FROM moderation_forward_batches WHERE gid=? AND state='pending' AND expires_at<=?) +
+(SELECT count(*) FROM moderation_requests WHERE gid=? AND state='pending' AND expires_at<=?)`),
+		j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli(), j.db.GID(),
+		now.Add(-15*time.Second).UnixMilli(), j.db.GID(), now.UnixMilli(), j.db.GID(), now.UnixMilli())
 	if err != nil || due == 0 {
 		return a, false, journalError(err)
 	}
 	err = j.transaction(ctx, func(tx journalTx) error {
 		// A rolled-back attempt must not leak a prior owner through a successful SQL retry.
 		a, ok = Action{}, false
+		if e := j.expireForwardTX(ctx, tx, now); e != nil {
+			return e
+		}
 		// Preparation cannot safely resume non-idempotent classifier learning.
 		var stale []struct {
 			ID          string `db:"id"`
@@ -644,6 +655,24 @@ lease_until<?)`), j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMill
 				a.Code = "previously_confirmed_pair"
 			}
 		}
+		if strings.HasPrefix(a.Receipt, "forward:") && (a.Kind == "ban" || a.Kind == "restrict") {
+			var done int
+			lookupErr := tx.GetContext(ctx, &done, j.db.Adopt(`SELECT count(*) FROM moderation_actions prior
+WHERE prior.gid=? AND prior.chat_id=? AND prior.identity_id=? AND prior.identity_kind=?
+AND prior.kind=? AND prior.state='confirmed' AND prior.uncertain=FALSE
+AND (prior.until_date=0 OR prior.until_date>?)
+AND NOT EXISTS(SELECT 1 FROM moderation_actions undo WHERE undo.gid=prior.gid
+AND undo.chat_id=prior.chat_id AND undo.identity_id=prior.identity_id
+AND undo.kind IN ('unban','restore') AND undo.state!='canceled' AND undo.next_at>=prior.next_at)`),
+				j.db.GID(), a.ChatID, a.IdentityID, a.IdentityKind, a.Kind, now.Add(366*24*time.Hour).Unix())
+			if lookupErr != nil {
+				return journalError(lookupErr)
+			}
+			if done > 0 {
+				a.Code = "previously_confirmed_membership"
+			}
+		}
+
 		a.Owner = token()
 		a.State = Running
 		a.LeaseUntil = now.Add(90 * time.Second).UnixMilli()
@@ -734,6 +763,9 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 			return nil
 		}
 		if final(state) || a.Attempts == 1 || a.Code != o.Code {
+			if linkedErr := j.dirtyForwardLinks(ctx, tx, a.ID, now); linkedErr != nil {
+				return linkedErr
+			}
 			if cardErr := j.dirtyCard(ctx, tx, a.Receipt, now); cardErr != nil {
 				return cardErr
 			}
@@ -743,7 +775,7 @@ func (j *Journal) Finish(ctx context.Context, a Action, o Outcome, next, now tim
 		if e = tx.GetContext(ctx, &destination, j.db.Adopt(`SELECT destination FROM moderation_receipts WHERE gid=? AND id=?`), j.db.GID(), a.Receipt); e != nil {
 			return journalError(e)
 		}
-		if final(state) || a.Attempts == 1 {
+		if (final(state) || a.Attempts == 1) && !strings.HasPrefix(a.Receipt, "forward:") {
 			if e = j.notice(ctx, tx, destination, now, final(state)); e != nil {
 				return journalError(e)
 			}
@@ -825,13 +857,13 @@ func (j *Journal) Pause(ctx context.Context, until time.Time) error {
 // Prune only acknowledged terminal receipts; pending work and undelivered signals survive retention.
 func (j *Journal) Prune(ctx context.Context, now time.Time) error {
 	return j.transaction(ctx, func(tx journalTx) error {
-		q := `SELECT id FROM moderation_receipts WHERE gid=? AND state='finished' AND created_at<? AND NOT EXISTS (SELECT 1 FROM moderation_actions card WHERE card.gid=moderation_receipts.gid AND card.receipt=moderation_receipts.id AND card.kind='card' AND (card.state!='confirmed' OR card.generation>card.delivered)) AND NOT EXISTS (SELECT 1 FROM moderation_actions unresolved WHERE unresolved.gid=moderation_receipts.gid AND unresolved.receipt=moderation_receipts.id AND (unresolved.state IN ('manual_review','failed','expired','blocked') OR unresolved.uncertain=TRUE) AND NOT EXISTS (SELECT 1 FROM moderation_resolutions resolution WHERE resolution.gid=unresolved.gid AND resolution.action_id=unresolved.id)) AND NOT EXISTS (SELECT 1 FROM moderation_decisions decision WHERE decision.gid=moderation_receipts.gid AND decision.receipt=moderation_receipts.id AND decision.state='started') AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND kind='notice' AND (state!='confirmed' OR generation>delivered))`
+		q := `SELECT id FROM moderation_receipts WHERE gid=? AND state='finished' AND created_at<? AND NOT EXISTS (SELECT 1 FROM moderation_forward_links pendinglink JOIN moderation_actions linked ON linked.gid=pendinglink.gid AND linked.id=pendinglink.action_id WHERE pendinglink.gid=moderation_receipts.gid AND pendinglink.receipt=moderation_receipts.id AND (linked.state!='confirmed' OR linked.uncertain=TRUE)) AND NOT EXISTS (SELECT 1 FROM moderation_forward_links link JOIN moderation_actions source ON source.gid=link.gid AND source.id=link.action_id WHERE source.gid=moderation_receipts.gid AND source.receipt=moderation_receipts.id AND link.receipt!=source.receipt) AND NOT EXISTS (SELECT 1 FROM moderation_actions card WHERE card.gid=moderation_receipts.gid AND card.receipt=moderation_receipts.id AND card.kind='card' AND (card.state!='confirmed' OR card.generation>card.delivered)) AND NOT EXISTS (SELECT 1 FROM moderation_actions unresolved WHERE unresolved.gid=moderation_receipts.gid AND unresolved.receipt=moderation_receipts.id AND (unresolved.state IN ('manual_review','failed','expired','blocked') OR unresolved.uncertain=TRUE) AND NOT EXISTS (SELECT 1 FROM moderation_resolutions resolution WHERE resolution.gid=unresolved.gid AND resolution.action_id=unresolved.id)) AND NOT EXISTS (SELECT 1 FROM moderation_decisions decision WHERE decision.gid=moderation_receipts.gid AND decision.receipt=moderation_receipts.id AND decision.state='started') AND NOT EXISTS (SELECT 1 FROM moderation_actions WHERE gid=? AND kind='notice' AND (state!='confirmed' OR generation>delivered))`
 		var ids []string
 		if e := tx.SelectContext(ctx, &ids, j.db.Adopt(q), j.db.GID(), now.Add(-30*24*time.Hour).UnixMilli(), j.db.GID()); e != nil {
 			return journalError(e)
 		}
 		for _, id := range ids {
-			for _, table := range []string{
+			for _, table := range []string{"moderation_forward_deliveries", "moderation_forward_links", "moderation_forward_batches",
 				"moderation_deliveries", "moderation_demands", "moderation_decisions", "moderation_cards",
 				"moderation_reasons",
 				"moderation_withdrawals",

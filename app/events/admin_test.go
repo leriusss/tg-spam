@@ -1188,7 +1188,7 @@ func TestAdmin_MsgHandlerWithEmptyText(t *testing.T) {
 			botMock.ResetCalls()
 
 			update := tbapi.Update{Message: tt.msg}
-			err := adminHandler.MsgHandler(update)
+			err := adminHandler.legacyForward(update)
 			require.NoError(t, err)
 
 			// unsupported media and supported media without a stable FileUniqueID fail
@@ -1232,7 +1232,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 		require.NoError(t, err)
 
 		// verify no actions were taken
@@ -1299,7 +1299,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "forwarded message is about super-user")
 
@@ -1371,7 +1371,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 		require.NoError(t, err)
 
 		// verify correct sequence of operations
@@ -1430,7 +1430,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			},
 		}
 
-		err := adm.MsgHandler(tbapi.Update{Message: msg})
+		err := adm.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// verify BanChatSenderChatConfig was used with the channel ID
@@ -1494,7 +1494,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 			},
 		}
 
-		err := adm.MsgHandler(tbapi.Update{Message: msg})
+		err := adm.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// an origin without stable numeric identity is not allowed to trust a
@@ -1544,7 +1544,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 		require.NoError(t, err)
 		assert.Empty(t, locatorMock.MessageCalls())
 	})
@@ -1608,7 +1608,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 		require.NoError(t, err)
 
 		// in dry mode, we should only notify admin but not delete or ban
@@ -1681,7 +1681,7 @@ func TestAdmin_MsgHandler(t *testing.T) {
 		}
 
 		update := tbapi.Update{Message: msg}
-		err := adminHandler.MsgHandler(update)
+		err := adminHandler.legacyForward(update)
 
 		require.NoError(t, err)
 
@@ -1738,7 +1738,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// verify ban, spam update, remove approved all called
@@ -1785,7 +1785,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// verify no actions were taken
@@ -1819,7 +1819,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 		assert.Empty(t, locatorMock.MessageCalls())
 	})
@@ -1864,7 +1864,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// in dry mode: no ban, no spam update
@@ -1918,7 +1918,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.NoError(t, err)
 
 		// training mode: UpdateSpam called, ban is a no-op (logged only, no tbAPI.Request)
@@ -1951,7 +1951,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "super-user")
 		assert.Contains(t, err.Error(), "ignored")
@@ -1984,7 +1984,7 @@ func TestAdmin_MsgHandlerFallback(t *testing.T) {
 			},
 		}
 
-		err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+		err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "super-user")
 		assert.Contains(t, err.Error(), "ignored")
@@ -2546,7 +2546,7 @@ func TestAdmin_MsgHandlerForwardWithAggressiveCleanup(t *testing.T) {
 		},
 	}
 
-	err := adminHandler.MsgHandler(tbapi.Update{Message: msg})
+	err := adminHandler.legacyForward(tbapi.Update{Message: msg})
 	require.NoError(t, err)
 
 	// wait for async aggressive cleanup goroutine

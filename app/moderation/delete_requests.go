@@ -31,7 +31,11 @@ func validDeleteRequest(p Plan) bool {
 // DeleteAuthority verifies a message-scoped operation without inventing an author.
 func (j *Journal) DeleteAuthority(ctx context.Context, a Action) (bool, error) {
 	if a.Kind == "original_delete" && a.IdentityKind == "message" && a.IdentityID == 0 {
-		ok, err := j.hanDeleteAuthority(ctx, a)
+		ok, err := j.forwardDeleteAuthority(ctx, a)
+		if err != nil || ok {
+			return ok, err
+		}
+		ok, err = j.hanDeleteAuthority(ctx, a)
 		if err != nil || ok {
 			return ok, err
 		}
@@ -66,6 +70,9 @@ func (j *Journal) DecideDelete(ctx context.Context,
 		}
 		if operator <= 0 || operator != c.Requester {
 			return errors.New("delete operator does not match saved requester")
+		}
+		if c.State == "expired" && remove {
+			return errors.New("delete request expired")
 		}
 		if c.State != "pending" {
 			return nil
