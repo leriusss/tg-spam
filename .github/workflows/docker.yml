@@ -221,20 +221,6 @@ jobs:
             .annotations["org.opencontainers.image.revision"] == $sha and
             ([.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"])
           ' /tmp/manifest.json
-      - name: Move master only if this is still the current source tip
-        if: needs.gate.outputs.automatic == 'true'
-        uses: actions/github-script@v7
-        env:
-          DIGEST: ${{ steps.manifest.outputs.digest }}
-        with:
-          script: |
-            const {data: ref} = await github.rest.git.getRef({...context.repo, ref: 'heads/master'});
-            if (ref.object.sha !== process.env.SHA) {
-              core.notice('Stale build: immutable SHA image retained, master tag unchanged');
-              return;
-            }
-            await exec.exec('docker', ['buildx', 'imagetools', 'create',
-              '-t', `${process.env.IMAGE}:master`, `${process.env.IMAGE}@${process.env.DIGEST}`]);
 
   pull-check:
     needs: [gate, merge]
@@ -268,3 +254,34 @@ jobs:
           grep -q "Usage:" /tmp/help.txt
           cat /tmp/help.txt
           echo "Pulled and safely executed $IMAGE@$DIGEST; revision $SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    needs: [gate, merge, pull-check]
+    if: success() && needs.gate.outputs.automatic == 'true' && needs['pull-check'].result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.gate.outputs.image }}
+      SHA: ${{ needs.gate.outputs.sha }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Move master only if this is still the current source tip
+        uses: actions/github-script@v7
+        env:
+          DIGEST: ${{ needs.merge.outputs.digest }}
+        with:
+          script: |
+            const {data: ref} = await github.rest.git.getRef({...context.repo, ref: 'heads/master'});
+            if (ref.object.sha !== process.env.SHA) {
+              core.notice('Stale build: immutable SHA image retained, master tag unchanged');
+              return;
+            }
+            await exec.exec('docker', ['buildx', 'imagetools', 'create',
+              '-t', `${process.env.IMAGE}:master`, `${process.env.IMAGE}@${process.env.DIGEST}`]);
