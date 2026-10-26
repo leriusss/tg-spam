@@ -31,25 +31,29 @@ func (a *forwardTestAPI) RequestWithContext(ctx context.Context, c tbapi.Chattab
 }
 
 type forwardFixture struct {
-	db            *engine.SQL
-	loc           *storage.Locator
-	j             *moderation.Journal
-	listener      *TelegramListener
-	bot           *mocks.BotMock
-	api           *forwardTestAPI
-	mu            sync.Mutex
-	banned        map[int64]bool
-	banCalls      map[int64]int
-	deleteCalls   map[int]int
-	cards         map[int]string
-	nextCard      int
-	failBan       bool
-	failDelete    bool
-	unknownBan    bool
-	unknownDelete bool
-	currentAdmin  bool
-	lastForward   tbapi.Update
-	now           time.Time
+	db             *engine.SQL
+	loc            *storage.Locator
+	j              *moderation.Journal
+	listener       *TelegramListener
+	bot            *mocks.BotMock
+	api            *forwardTestAPI
+	mu             sync.Mutex
+	banned         map[int64]bool
+	banCalls       map[int64]int
+	deleteCalls    map[int]int
+	cards          map[int]string
+	nextCard       int
+	failBan        bool
+	failDelete     bool
+	unknownBan     bool
+	unknownDelete  bool
+	currentAdmin   bool
+	operatorRole   string
+	operatorRoles  map[int64]string
+	operatorError  error
+	operatorChecks int
+	lastForward    tbapi.Update
+	now            time.Time
 }
 
 func newForwardFixture(t *testing.T) *forwardFixture { return newForwardFixtureDB(t, nil) }
@@ -67,7 +71,7 @@ func newForwardFixtureDB(t *testing.T, db *engine.SQL) *forwardFixture {
 	require.NoError(t, err)
 	j, err := moderation.NewJournal(ctx, db, moderation.DefaultLimits())
 	require.NoError(t, err)
-	f := &forwardFixture{db: db, loc: loc, j: j, banned: map[int64]bool{}, banCalls: map[int64]int{}, deleteCalls: map[int]int{}, cards: map[int]string{}, nextCard: 1000, now: time.Now()}
+	f := &forwardFixture{operatorRole: "administrator", db: db, loc: loc, j: j, banned: map[int64]bool{}, banCalls: map[int64]int{}, deleteCalls: map[int]int{}, cards: map[int]string{}, nextCard: 1000, now: time.Now()}
 	f.bot = &mocks.BotMock{OnMessageFunc: func(bot.Message, bool) bot.Response { return bot.Response{} }, IsApprovedUserFunc: func(int64) bool { return false }}
 	f.api = &forwardTestAPI{TbAPIMock: &mocks.TbAPIMock{GetChatFunc: func(c tbapi.ChatInfoConfig) (tbapi.ChatFullInfo, error) {
 		return tbapi.ChatFullInfo{Chat: tbapi.Chat{ID: c.ChatID, Title: "Fixture"}}, nil
@@ -81,6 +85,20 @@ func (f *forwardFixture) request(_ context.Context, c tbapi.Chattable) (*tbapi.A
 	defer f.mu.Unlock()
 	switch v := c.(type) {
 	case tbapi.GetChatMemberConfig:
+		if v.ChatID == 456 {
+			f.operatorChecks++
+			if f.operatorError != nil {
+				return nil, f.operatorError
+			}
+			status := "member"
+			if v.UserID == 11 {
+				status = f.operatorRole
+			}
+			if role, ok := f.operatorRoles[v.UserID]; ok {
+				status = role
+			}
+			return apiOK(tbapi.ChatMember{User: &tbapi.User{ID: v.UserID}, Status: status}), nil
+		}
 		status := "member"
 		if f.banned[v.UserID] {
 			status = "kicked"
@@ -340,8 +358,7 @@ func TestAdminForwardGatesAndSpoofing(t *testing.T) {
 			}
 			f.listen(t, orig, u)
 			if gate == "operator-revoked" {
-				f.listener.SuperUsers = SuperUsers{}
-				f.listener.adminHandler.superUsers = SuperUsers{}
+				f.operatorRole = "member"
 			}
 			f.settle(t)
 			require.Empty(t, f.banCalls)
@@ -553,6 +570,7 @@ func TestAdminForwardReplayDeadlineAndOneCard(t *testing.T) {
 	u.Message.MessageID++
 	u.UpdateID++
 	f.listener.SuperUsers = SuperUsers{"11", "12"}
+	f.operatorRoles = map[int64]string{12: "administrator"}
 	f.listen(t, u)
 	f.settle(t)
 	require.Equal(t, 1, f.banCalls[-501])

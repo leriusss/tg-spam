@@ -22,12 +22,13 @@ type contextualTelegram interface {
 }
 
 type recovery struct {
-	gateReason func(moderation.Action) string
-	chatName   string
-	journal    *moderation.Journal
-	api        contextualTelegram
-	gate       func(moderation.Action) bool
-	superName  func(string, int64) bool
+	adminChatID int64
+	gateReason  func(moderation.Action) string
+	chatName    string
+	journal     *moderation.Journal
+	api         contextualTelegram
+	gate        func(moderation.Action) bool
+	superName   func(string, int64) bool
 }
 
 // telegramOutcome classifies typed errors, not strings that might contain credentials.
@@ -83,14 +84,8 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 	if !r.gate(a) {
 		return moderation.Outcome{State: moderation.Blocked, Code: r.blockReason(a), Uncertain: a.Uncertain}
 	}
-	if r.journal != nil {
-		requester, e := r.journal.ForwardRequester(ctx, a.Receipt)
-		if e != nil {
-			return moderation.Outcome{Retry: true, Code: "forward_authority_unavailable", Uncertain: a.Uncertain}
-		}
-		if requester != 0 && (r.superName == nil || !r.superName("", requester)) {
-			return moderation.Outcome{State: moderation.Blocked, Code: "forward_operator_revoked", Uncertain: a.Uncertain}
-		}
+	if out := r.forwardOperatorGate(ctx, a); out != nil {
+		return *out
 	}
 	messageOnly := a.IdentityKind == "message" && a.IdentityID == 0 && a.Kind == "original_delete"
 	if messageOnly {
@@ -244,6 +239,11 @@ func (r *recovery) Execute(ctx context.Context, a moderation.Action) moderation.
 		return *out
 	}
 
+	// Recheck immediately before dispatch, after target lookups. Once sent, its
+	// actual outcome is retained even if the operator loses their role meanwhile.
+	if out := r.forwardOperatorGate(ctx, a); out != nil {
+		return *out
+	}
 	resp, err := r.api.RequestWithContext(ctx, request)
 	out := telegramOutcome(resp, err)
 	if out.State != moderation.Confirmed {

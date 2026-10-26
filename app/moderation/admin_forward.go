@@ -458,21 +458,25 @@ func (j *Journal) expireForwardTX(ctx context.Context, tx journalTx, now time.Ti
 	return nil
 }
 
-// ForwardRequester returns numeric authorization provenance only for a new forward batch.
-func (j *Journal) ForwardRequester(ctx context.Context, receipt string) (int64, error) {
-	var ids []int64
-	err := j.db.SelectContext(
+// ForwardAuthority returns the saved numeric operator and admin destination only
+// for an accepted manual-forward decision. Other moderation paths are unaffected.
+func (j *Journal) ForwardAuthority(ctx context.Context, receipt string) (requester, destination int64, err error) {
+	var rows []struct {
+		Requester   int64 `db:"requester"`
+		Destination int64 `db:"destination"`
+	}
+	err = j.db.SelectContext(
 		ctx,
-		&ids,
-		j.db.Adopt(`SELECT requester FROM moderation_forward_batches WHERE gid=? AND receipt=? AND state='accepted'`),
+		&rows,
+		j.db.Adopt(`SELECT b.requester,r.destination FROM moderation_forward_batches b JOIN moderation_receipts r ON r.gid=b.gid AND r.id=b.receipt WHERE b.gid=? AND b.receipt=? AND b.state='accepted'`),
 		j.db.GID(),
 		receipt,
 	)
 	if err != nil {
-		return 0, journalError(err)
+		return 0, 0, journalError(err)
 	}
-	if len(ids) == 0 {
-		return 0, nil
+	if len(rows) == 0 {
+		return 0, 0, nil
 	}
-	return ids[0], nil
+	return rows[0].Requester, rows[0].Destination, nil
 }

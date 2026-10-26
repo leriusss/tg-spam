@@ -46,8 +46,9 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		}
 		return nil
 	}
-	if m.From.ID <= 0 || sharedTelegramUser(m.From.ID) || !a.superUsers.IsSuper("", m.From.ID) {
-		return reply("Отказ: пересылка требует уполномоченного личного пользователя с проверенным числовым ID.")
+	if code := a.forwardOperator(context.Background(), m.From); code != "" {
+		log.Printf("[INFO] admin forward operator: outcome=%s", code)
+		return reply(forwardOperatorFeedback(code))
 	}
 
 	delivery := moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: m.Chat.ID, MessageID: m.MessageID}
@@ -274,6 +275,9 @@ func forwardActionLabel(a moderation.Action) string {
 	case moderation.Absent:
 		return "сообщение уже отсутствует (не подтверждение удаления этим ботом)"
 	case moderation.Pending, moderation.Running:
+		if a.Code == "forward_operator_role_unavailable" {
+			return "ожидается: временно не удалось проверить права оператора в админ-чате; действий без проверки нет"
+		}
 		if a.Uncertain {
 			return "результат API неизвестен; проверка/повтор ожидается"
 		}
@@ -368,8 +372,8 @@ func containsForwardIndex(indices []int, n int) bool {
 }
 
 func (a *admin) forwardCallback(ctx context.Context, q *tbapi.CallbackQuery, c moderation.Card, verb string) error {
-	if q.From.IsBot || q.From.ID <= 0 || sharedTelegramUser(q.From.ID) || !a.superUsers.IsSuper("", q.From.ID) {
-		return a.answerRecoveryCallback(ctx, q, "Отказ: требуется уполномоченный личный пользователь с числовым ID")
+	if code := a.forwardOperator(ctx, q.From); code != "" {
+		return a.answerRecoveryCallback(ctx, q, forwardOperatorFeedback(code))
 	}
 	if a.dry || a.trainingMode {
 		return a.answerRecoveryCallback(ctx, q, "Отказ: dry/training запрещает модерацию")
@@ -449,20 +453,25 @@ func forwardChoiceLabel(t moderation.ForwardTarget) string {
 
 func forwardReason(code string) string {
 	reasons := map[string]string{
-		"source_author_conflict":                        "сохранённые исходные update противоречат друг другу; цель не подтверждена",
-		"telegram_403":                                  "Telegram отказал в операции (telegram_403)",
-		"telegram_400":                                  "Telegram отклонил операцию (telegram_400)",
-		"current_superuser_gate":                        "цель защищена полномочиями superuser/администратора",
-		"explicit_trust_gate":                           "цель имеет явное ручное доверие",
-		"anonymous_admin_gate":                          "публикация от имени самого защищаемого чата",
-		"forward_identity_mismatch":                     "числовой автор пересылки не совпадает с исходным update",
-		"forward_operator_revoked":                      "числовой оператор больше не уполномочен",
-		"current_safety_gate":                           "текущие правила безопасности запрещают действие",
-		"forwarding_disabled":                           "модерация пересылкой отключена настройкой бота",
-		"dry_mode":                                      "включён dry-режим",
-		"training_mode":                                 "включён training-режим",
-		"current_chat_gate":                             "исходный чат больше не разрешён",
-		"deadline_manual_action_required":               "срок выполнения истёк; автоматических действий больше не будет",
+		"source_author_conflict":    "сохранённые исходные update противоречат друг другу; цель не подтверждена",
+		"telegram_403":              "Telegram отказал в операции (telegram_403)",
+		"telegram_400":              "Telegram отклонил операцию (telegram_400)",
+		"current_superuser_gate":    "цель защищена полномочиями superuser/администратора",
+		"explicit_trust_gate":       "цель имеет явное ручное доверие",
+		"anonymous_admin_gate":      "публикация от имени самого защищаемого чата",
+		"forward_identity_mismatch": "числовой автор пересылки не совпадает с исходным update",
+		"forward_operator_revoked": "оператор больше не владелец/администратор админ-чата; " +
+			"новое действие не отправлено",
+		"forward_operator_destination_changed": "настроенный админ-чат изменён; " +
+			"сохранённое решение не даёт полномочий в другом чате",
+		"forward_operator_revoked_outcome_unknown": "права оператора отозваны; " +
+			"ранее отправленный запрос имеет неизвестный результат и требует сверки",
+		"current_safety_gate":             "текущие правила безопасности запрещают действие",
+		"forwarding_disabled":             "модерация пересылкой отключена настройкой бота",
+		"dry_mode":                        "включён dry-режим",
+		"training_mode":                   "включён training-режим",
+		"current_chat_gate":               "исходный чат больше не разрешён",
+		"deadline_manual_action_required": "срок выполнения истёк; автоматических действий больше не будет",
 		"delete_refused_age_not_proven_manual_required": "Telegram отказал в удалении; возраст сообщения не доказан",
 	}
 	if reason, ok := reasons[code]; ok {

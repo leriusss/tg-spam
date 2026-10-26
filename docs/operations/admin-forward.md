@@ -3,11 +3,44 @@
 ## Runtime path and authorization
 
 `TelegramListener.Do` routes admin chat messages to `admin.MsgHandler`. Only a
-forward sent by a non-bot personal user with an explicitly authorized numeric ID
-can create work. SenderChat/technical-user identities, plain text, service messages
-and bot cards are not moderation instructions. Username-only authorization is not
-sufficient. Disabled forwarding, missing journal, dry/training and admission errors
+forward sent by a non-bot personal user can create work only when Telegram confirms
+that numeric user's current role is `creator` or `administrator` in the configured
+admin chat. `SUPER_USER` is neither required nor sufficient. Being an administrator
+of the source discussion or another chat does not grant this authority.
+SenderChat/technical-user identities, plain text, service messages and bot cards
+are not moderation instructions. Names and usernames are never role evidence.
+Disabled forwarding, missing journal, dry/training and admission errors
 produce explicit refusals, not synchronous Telegram mutations.
+
+### Operator role checks and revocation
+
+`forwardOperatorRole` is a separate, forward-only authorization check using
+`getChatMember(admin_chat_id, numeric_operator_id)`. It validates the returned
+numeric user identity and role; bot identities, missing/mismatched users and unknown
+roles cannot grant authority. No global superuser list or manual trust is changed.
+Other commands, reports, HTTP API and protected-chat permissions retain their
+existing rules. Target manual/superuser/admin safety gates are independent.
+
+There is no cache. Telegram is queried at admission, on a choice callback, at
+worker execution and again immediately before a new mutation, after target
+lookups. Each lookup has a five-second context bound (also limited by the worker's
+existing action deadline). The saved decision's admin destination must still match
+the configured admin chat. Callback/card/requester bindings and expiry are retained;
+another administrator can forward again to make their own explicit decision.
+
+An explicit non-admin role stops unsent work with a visible refusal. Replaying
+that update or callback does not restart blocked actions after rights return.
+Temporary API failures, including inability to fetch a trustworthy role, do not
+become permanent moderation failures: admission/choice shows a retryable reason
+without granting authority; a pending choice stays pending. Worker work remains
+durable and retries under its existing attempt/deletion deadlines after a fresh
+role check. A restart does not lose this state or extend those deadlines.
+
+A role check is not atomic with Telegram processing the next request. An already
+dispatched mutation retains its actual acknowledgement or uncertain outcome; it
+is never relabelled canceled because rights changed while it was in flight. On
+revocation an uncertain earlier request is held for manual reconciliation, and
+further mutations are not sent. Notifications can still show the saved result.
 
 Each bot calls `DeleteCandidates` only for its configured primary chat. No first
 match is selected from a duplicate set. Search matches are not identity evidence.
@@ -117,6 +150,13 @@ validation, conflicts and reopening. Existing old-forward fixtures use a test-on
 historical handler to continue validating pre-existing delete-only/identity history;
 that handler is not compiled into production. New runtime routing is tested through
 TelegramListener, not that oracle. No test assertion or workflow is disabled.
+
+The role scenarios (`TestForwardOperatorSQLite`, `TestForwardOperatorPostgres`)
+use the real listener/journal/worker with Telegram mocks: owner and administrator
+without superuser, ordinary member, another chat's administrator, bot/SenderChat,
+revocation before choice/execution and during target lookups, acknowledged and
+uncertain in-flight requests, temporary role-check failures, replay and database
+reopen, no global trust changes and preserved target gates.
 
 The delivery lifecycle scenarios run against SQLite and PostgreSQL in full CI:
 `TestAdminForwardDeliverySQLite` and `TestAdminForwardDeliveryPostgres`. They use
