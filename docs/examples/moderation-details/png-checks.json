@@ -60,6 +60,34 @@
       "png": "12-old-incomplete.png"
     },
     {
+      "id": "15-emoji",
+      "png": "15-emoji.png"
+    },
+    {
+      "id": "16-classifier",
+      "png": "16-classifier.png"
+    },
+    {
+      "id": "17-similarity",
+      "png": "17-similarity.png"
+    },
+    {
+      "id": "18-cas",
+      "png": "18-cas.png"
+    },
+    {
+      "id": "19-multiple-reasons",
+      "png": "19-multiple-reasons.png"
+    },
+    {
+      "id": "20-unrecognized-reason",
+      "png": "20-unrecognized-reason.png"
+    },
+    {
+      "id": "21-cas-error",
+      "png": "21-cas-error.png"
+    },
+    {
       "id": "13-long-last",
       "png": "13-long-last.png"
     },

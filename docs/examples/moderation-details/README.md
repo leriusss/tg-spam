@@ -19,5 +19,12 @@ HTML/PNG — предпросмотр, не Telegram-клиент; шрифты/
 11. [Длинная история, cleanup и Unicode](11-long-history.png), [последняя страница](13-long-last.png)
 12. [Старая неполная карточка](12-old-incomplete.png)
 13. [Технические данные](14-technical.png)
+14. [Emoji: количество и лимит](15-emoji.png)
+15. [Classifier: вероятность без выдуманного порога](16-classifier.png)
+16. [Similarity: значение и порог](17-similarity.png)
+17. [CAS: положительный вердикт](18-cas.png)
+18. [Несколько независимых причин](19-multiple-reasons.png)
+19. [Старая нераспознанная причина](20-unrecognized-reason.png)
+20. [Ошибка CAS не является spam-основанием](21-cas-error.png)
 
 [Контракт, навигация и воспроизведение](../../MODERATION_DETAILS.md).

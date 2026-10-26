@@ -233,7 +233,6 @@ func detailResult(c moderation.Card, now time.Time) string {
 
 func detailReasons(c moderation.Card) string {
 	lines, seen := []string{}, map[string]bool{}
-	unknown := 0
 	if c.RequestState != "" {
 		lines = append(lines, "Операторский запрос: "+requestLabel(c))
 	} else if c.DeleteOnly {
@@ -257,26 +256,8 @@ func detailReasons(c moderation.Card) string {
 			line = fmt.Sprintf("Сработало правило Han: %s из %s букв — %s%%.\n"+
 				"Порог: от %s%% и минимум %s букв Han.\nHan — письменность, а не установленный язык автора.",
 				match[1], match[2], strings.TrimSuffix(match[3], ".0"), strings.TrimSuffix(match[4], ".0"), match[5])
-		} else if strings.HasPrefix(line, "Независимое основание") {
-			_, line, _ = strings.Cut(line, ": ")
-			name, _, _ := strings.Cut(line, " — ")
-			name, _, _ = strings.Cut(name, ":")
-			switch name {
-			case "стоп-слово", "внешняя кнопка со ссылкой":
-				line = "Отдельное автоматическое правило: " + name + "."
-			case "burst", "повторяющиеся сообщения (burst)":
-				line = "Отдельное автоматическое правило: серия повторяющихся сообщений."
-			default:
-				unknown++
-				line = fmt.Sprintf("Отдельное автоматическое основание №%d; сохранённый разбор — в технических данных.", unknown)
-			}
 		} else if !strings.HasPrefix(line, "Блокировка по Han ") {
-			if strings.Contains(line, "Han") {
-				line = "Сохранено правило Han; численные сведения не сохранены."
-			} else {
-				unknown++
-				line = fmt.Sprintf("Сохранено автоматическое основание №%d; разбор — в технических данных.", unknown)
-			}
+			line = savedDetailReason(line, c)
 		}
 		if !slices.Contains(lines, line) {
 			lines = append(lines, line)

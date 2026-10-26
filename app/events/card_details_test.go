@@ -91,6 +91,19 @@ func detailExamples(now time.Time) []detailExample {
 		c.Reason, c.RecordedAt, c.Actions = "", 0, c.Actions[:1]
 		c.Actions[0].MessageDate = 0
 	})
+	for _, example := range []struct{ name, title, reason, want string }{
+		{"15-emoji", "Эмодзи: количество и лимит", "emoji: spam, 8/6", "обнаружено 8, лимит — 6"},
+		{"16-classifier", "Классификатор: сохранена вероятность, порога нет", "classifier: spam, probability of spam: 97.25%", "Вероятность спама: 97.25%"},
+		{"17-similarity", "Сходство с примерами спама", "similarity: spam, 0.92/0.80", "Значение: 0.92; порог: 0.80"},
+		{"18-cas", "CAS: сохранён положительный результат", "cas: spam, spam detected", "числовая цель найдена в антиспам-базе"},
+		{"19-multiple-reasons", "Несколько независимых причин", "emoji: spam, 8/6\nclassifier: spam, probability of spam: 97.25%\nsimilarity: spam, 0.92/0.80\nduplicate: spam, message repeated 4 times in 1m0s", "Период повторов: 60 с"},
+		{"20-unrecognized-reason", "Старая запись: формат причины неизвестен", "legacy-v0 score=123 category=?", "Сохранённую причину не удалось достоверно распознать"},
+		{"21-cas-error", "Ошибка CAS не является причиной спама", "cas: ham, failed to send request https://cas.invalid/check: timeout\nstopword: spam, запрещённая фраза", "это не основание спама"},
+	} {
+		add(example.name, example.title, example.want, func(c *moderation.Card) {
+			c.Reason, c.Text = example.reason, "Синтетический текст для проверки сохранённой причины."
+		})
+	}
 	return examples
 }
 
@@ -362,7 +375,7 @@ func TestDetailsIndependentReasonsAndNoInventedConfirmation(t *testing.T) {
 	now := time.Now()
 	c := detailExamples(now)[0].Card
 	han := c.Reason
-	stop := "Независимое основание модерации: стоп-слово — internal stopword details"
+	stop := "Независимое основание модерации: стоп-слово — запрещённая фраза"
 	burst := "Независимое основание модерации: повторяющиеся сообщения (burst) — internal burst details"
 	c.Reason = strings.Join([]string{han, han, stop, stop, burst}, "\n")
 	c.RequestState = "pending"
