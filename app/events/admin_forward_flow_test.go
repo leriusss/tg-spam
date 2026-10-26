@@ -645,3 +645,87 @@ func TestAdminForwardDeleteRetryIndependentOfFailedBan(t *testing.T) {
 		}
 	}
 }
+func TestAdminForwardOpenOriginAndExplicitDifferentAuthors(t *testing.T) {
+	t.Run("open origin supplies independent numeric proof for legacy row", func(t *testing.T) {
+		f := newForwardFixture(t)
+		require.NoError(t, f.loc.AddMessage(context.Background(), "same fixture original", 123, 501, "not authority", 801))
+		u := manualForwardUpdate()
+		u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 501}}
+		f.listen(t, u)
+		f.settle(t)
+		require.Equal(t, 1, f.banCalls[501])
+		require.Equal(t, 1, f.deleteCalls[801])
+		require.Equal(t, "telegram_forward_origin", f.card(t).Forward.Targets[0].Evidence)
+		evidence, err := f.loc.MessageAuthor(context.Background(), 123, 801)
+		require.NoError(t, err)
+		require.Empty(t, evidence.Source)
+		f.noLearning(t)
+	})
+	t.Run("explicit set chooses independent saved authors", func(t *testing.T) {
+		f := newForwardFixture(t)
+		u := manualForwardUpdate()
+		u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 501}}
+		f.listen(t, originalForwardUpdate(801, 501), originalForwardUpdate(802, 502), u)
+		f.settle(t)
+		require.Empty(t, f.banCalls)
+		f.choose(t, "MFA", nil)
+		f.settle(t)
+		require.Equal(t, map[int64]int{501: 1, 502: 1}, f.banCalls)
+		require.Equal(t, map[int]int{801: 1, 802: 1}, f.deleteCalls)
+		f.noLearning(t)
+	})
+	t.Run("unique original with contradictory numeric evidence is refused", func(t *testing.T) {
+		f := newForwardFixture(t)
+		u := manualForwardUpdate()
+		u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 502}}
+		f.listen(t, originalForwardUpdate(801, 501), u)
+		f.settle(t)
+		require.Empty(t, f.banCalls)
+		require.Empty(t, f.deleteCalls)
+		require.Contains(t, forwardCardText(f.card(t), "Fixture"), "не совпадает")
+	})
+}
+
+func TestAdminForwardConcurrentWorkers(t *testing.T) {
+	f := newForwardFixture(t)
+	f.listen(t, originalForwardUpdate(801, -501), manualForwardUpdate())
+	f.now = time.Now().Add(time.Second)
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	for range 8 {
+		wg.Go(func() {
+			w := moderation.Worker{Journal: f.j, Executor: f.listener.adminHandler.recovery, Now: func() time.Time { return f.now }}
+			for range 20 {
+				worked, err := w.Step(context.Background())
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !worked {
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	f.settle(t)
+	require.Equal(t, map[int64]int{-501: 1}, f.banCalls)
+	require.Equal(t, map[int]int{801: 1}, f.deleteCalls)
+	f.noLearning(t)
+}
+func TestAdminForwardConflictingSourceCannotBeRepairedByNameOrForward(t *testing.T) {
+	f := newForwardFixture(t)
+	f.listen(t, originalForwardUpdate(801, 501))
+	require.NoError(t, f.loc.RecordMessageAuthor(context.Background(), 123, 801, storage.MessageAuthor{Kind: "user", ID: 502, Source: "telegram_update", UpdateID: 30000}))
+	u := manualForwardUpdate()
+	u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 501}}
+	f.listen(t, u)
+	f.settle(t)
+	require.Empty(t, f.banCalls)
+	require.Empty(t, f.deleteCalls)
+	require.Equal(t, "source_author_conflict", f.card(t).Forward.Targets[0].Blocked)
+}

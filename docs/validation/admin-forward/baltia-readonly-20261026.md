@@ -7,6 +7,8 @@ bounded metadata and allowlisted non-secret config were reported.
 
 ## Confirmed evidence
 
+- Both originals share the same locator content hash. A read-only hash lookup in
+  Baltia finds exactly two distinct originals.
 - Both originals exist as one locator row each, with the same positive numeric
   user_id (not published in this report). No names or text were used as identity.
 - Original Telegram dates are separately present: 1792959968 and 1792959970.
@@ -39,15 +41,16 @@ bounded metadata and allowlisted non-secret config were reported.
 
 ## What the new flow would do (hypothetical only)
 
-The content lookup is scoped to Baltia. If these are the same-content pair returned
-by a future forward, it displays both original numbers/dates and requires selection
-of one or the explicitly enumerated pair. This audit did not replay their content,
-so it does not assert that an actual future forward matches both.
+The content lookup is scoped to Baltia. A forward matching the verified shared
+hash produces exactly these two candidates. The new card explicitly offers one
+or both message numbers, dates and excerpts; it never selects the first row.
 
 For these historical rows, the new migration supplies NO author provenance. A
 selected original therefore permits only its exact deletion (subject to current
 safety/date/deadline checks), with an explicit no-reliable-target ban refusal. A
-hidden-forward name cannot repair that. A new original update observed after the
+hidden-forward name cannot repair that. An open forward with a reliable numeric
+Telegram origin matching the stored row can independently provide its ban target;
+this does not make the legacy locator ID itself trusted. A new original update observed after the
 change can carry durable numeric author provenance and permit independent ban and
 delete after selection, even when the admin forward itself hides the author.
 

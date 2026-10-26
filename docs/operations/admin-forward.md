@@ -20,6 +20,12 @@ permanently invalidate provenance. Legacy messages are NOT backfilled from their
 user_id, display names, forwarded names, or matching text. The table contains
 extracted original-update evidence, not a raw Telegram payload. Message dates are
 kept separately and never invented from processing timestamps.
+An open forward can independently supply a reliable numeric Telegram origin when
+it matches the located row's numeric ID/kind. Its journal evidence is recorded as
+telegram_forward_origin, not as a backfill of message_authors. Hidden-forward
+names cannot use this path. After an explicit multi-original choice, each selected
+original's own saved source-update evidence is authoritative, even when the
+forwarded example has a different known author.
 
 ## One decision and one persistent card
 

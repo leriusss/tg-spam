@@ -113,14 +113,32 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 			if e != nil {
 				return reply("Отказ: не удалось проверить происхождение ID автора. Действия не приняты.")
 			}
+			if author.Source == "conflict" {
+				target.Blocked = "source_author_conflict"
+			}
 			valid := author.Source == "telegram_update" && author.UpdateID > 0 && author.ID == row.UserID &&
 				(author.Kind == "user" && author.ID > 0 && !sharedTelegramUser(author.ID) || author.Kind == "sender_chat" && author.ID < 0)
 			if valid {
 				target.IdentityKind = author.Kind
 				target.IdentityID = author.ID
 				target.Evidence = author.Source
+				target.EvidenceUpdateID = author.UpdateID
+				target.EvidenceMessageID = row.MsgID
 			}
 		}
+		origin := adminForwardOriginIdentity(source.ForwardOrigin)
+		// An open Telegram forward can independently supply the numeric author.
+		// The legacy locator ID is only a consistency check, never positive evidence.
+		if target.IdentityID == 0 && u.UpdateID > 0 && origin.Reliable && origin.ID == row.UserID &&
+			(origin.Kind == adminReportIdentityUser && origin.ID > 0 && !sharedTelegramUser(origin.ID) ||
+				origin.Kind == adminReportIdentitySenderChat && origin.ID < 0) {
+			target.IdentityID = origin.ID
+			target.IdentityKind = string(origin.Kind)
+			target.Evidence = "telegram_forward_origin"
+			target.EvidenceUpdateID = u.UpdateID
+			target.EvidenceMessageID = source.MessageID
+		}
+
 		if target.IdentityID != 0 {
 			target.BanKind = "ban"
 			if a.softBan && target.IdentityKind == "user" {
@@ -145,8 +163,7 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		if row.UserID == a.primChatID {
 			target.Blocked = "anonymous_admin_gate"
 		}
-		origin := adminForwardOriginIdentity(source.ForwardOrigin)
-		if origin.Reliable && target.IdentityID != 0 &&
+		if len(rows) == 1 && origin.Reliable && target.IdentityID != 0 &&
 			(origin.ID != target.IdentityID || string(origin.Kind) != target.IdentityKind) {
 			target.Blocked = "forward_identity_mismatch"
 		}
@@ -387,6 +404,7 @@ func forwardChoiceLabel(t moderation.ForwardTarget) string {
 
 func forwardReason(code string) string {
 	reasons := map[string]string{
+		"source_author_conflict":                        "сохранённые исходные update противоречат друг другу; цель не подтверждена",
 		"telegram_403":                                  "Telegram отказал в операции (telegram_403)",
 		"telegram_400":                                  "Telegram отклонил операцию (telegram_400)",
 		"current_superuser_gate":                        "цель защищена полномочиями superuser/администратора",

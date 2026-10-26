@@ -14,15 +14,17 @@ import (
 // ForwardTarget is an immutable exact-original snapshot. Identity is independent
 // of locator matching: an empty identity authorizes only the exact deletion.
 type ForwardTarget struct {
-	MessageID    int
-	MessageDate  int64
-	IdentityID   int64
-	IdentityKind string
-	Evidence     string
-	BanKind      string
-	Text         string
-	Blocked      string
-	Deadline     int64
+	EvidenceUpdateID  int
+	EvidenceMessageID int
+	MessageID         int
+	MessageDate       int64
+	IdentityID        int64
+	IdentityKind      string
+	Evidence          string
+	BanKind           string
+	Text              string
+	Blocked           string
+	Deadline          int64
 }
 
 // ForwardBatch stores an immutable candidate set and its one explicit decision.
@@ -75,7 +77,7 @@ func (j *Journal) AcceptForward(
 			t.IdentityKind == "message" &&
 				t.IdentityID != 0 || t.IdentityKind == "user" && t.IdentityID <= 0 || t.IdentityKind == "sender_chat" && t.IdentityID >= 0 ||
 			(t.BanKind != "" && t.BanKind != "ban" && t.BanKind != "restrict") ||
-			t.IdentityID != 0 && t.Evidence != "telegram_update" {
+			t.IdentityID != 0 && (t.EvidenceUpdateID <= 0 || t.Evidence != "telegram_update" && t.Evidence != "telegram_forward_origin") {
 			return "", false, errors.New("invalid forward target evidence")
 		}
 		ids = append(ids, t.MessageID)
