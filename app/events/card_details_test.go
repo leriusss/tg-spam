@@ -395,3 +395,17 @@ func TestDetailsCanceledActionIsNotAwaited(t *testing.T) {
 	require.Contains(t, detailActions(c, now), "Блокировка автора — отменено до выполнения")
 	require.NotContains(t, safeDetail("пример.рф/path"), "пример.рф")
 }
+
+func TestDetailsArchivedSnapshotHasNoOwnerToken(t *testing.T) {
+	c := detailExamples(time.Now())[0].Card
+	op := c.Actions[0]
+	op.Owner = "private-fencing-owner"
+	snapshot, err := json.Marshal([]moderation.Action{op})
+	require.NoError(t, err)
+	c.Audit = []moderation.CardAudit{{Type: "past_request", Snapshot: string(snapshot)}}
+	text := strings.Join(technicalDetailPages(c), "\n")
+	require.Contains(t, text, "Архив действия")
+	require.Contains(t, text, "action ID: "+op.ID)
+	require.NotContains(t, text, op.Owner)
+	require.NotContains(t, text, "{&quot;")
+}

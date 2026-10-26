@@ -607,8 +607,8 @@ func technicalDetailPages(c moderation.Card) []string {
 	}
 	for _, event := range c.Audit {
 		sections = append(sections, detailSection{"Историческая запись",
-			fmt.Sprintf("type: %s\nID: %s\nkind: %s\nstate: %s\noperator ID: %d\nsaved timestamp: %d\nsaved action snapshot: %s",
-				event.Type, event.ID, event.Kind, event.State, event.OperatorID, event.Time, event.Snapshot)})
+			fmt.Sprintf("type: %s\nID: %s\nkind: %s\nstate: %s\noperator ID: %d\nsaved timestamp: %d",
+				event.Type, event.ID, event.Kind, event.State, event.OperatorID, event.Time)})
 	}
 	for _, event := range c.Audit {
 		if event.Snapshot == "" {
@@ -628,9 +628,9 @@ func technicalDetailPages(c moderation.Card) []string {
 }
 
 func detailActionDiagnostics(a moderation.Action) string {
-	return fmt.Sprintf("action ID: %s\nkind: %s\nstate: %s\ncode: %s\nattempts: %d\nuncertain: %t\n"+
+	return fmt.Sprintf("action ID: %s\nchat ID: %d\n%s ID: %d\nkind: %s\nstate: %s\ncode: %s\nattempts: %d\nuncertain: %t\n"+
 		"message ID: %d\nMessage.Date: %d\ndeadline (Unix ms): %d\n"+
 		"next_at (планирование, не подтверждение): %d\nlease_until (Unix ms): %d\nuntil_date (Unix s): %d",
-		a.ID, a.Kind, a.State, a.Code, a.Attempts, a.Uncertain, a.MessageID, a.MessageDate,
+		a.ID, a.ChatID, a.IdentityKind, a.IdentityID, a.Kind, a.State, a.Code, a.Attempts, a.Uncertain, a.MessageID, a.MessageDate,
 		a.Deadline, a.NextAt, a.LeaseUntil, a.UntilDate)
 }
