@@ -279,6 +279,75 @@ func TestTelegramRoutesPollingNotMaskedByGetMe(t *testing.T) {
 	assert.Equal(t, "reserve", f.r.snapshot().Selected)
 }
 
+func TestTelegramRoutesMutationFailureNotMaskedByTargetLookups(t *testing.T) {
+	f := newRouteFixture(t, nil)
+	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot777:fixture/deleteMessage", http.NoBody)
+	require.NoError(t, err)
+	for range 3 {
+		f.r.observe(0, req, false, io.ErrUnexpectedEOF, "response")
+		require.NoError(t, f.request("getChatMember"))
+		require.NoError(t, f.request("getMe"))
+	}
+	assert.Equal(t, 3, f.r.snapshot().WorkerFailures[0])
+	f.r.checkRoutes()
+	assert.Equal(t, "reserve", f.r.snapshot().Selected)
+}
+
+func TestTelegramRoutesCooldownWithoutJournal(t *testing.T) {
+	f := newRouteFixture(t, nil)
+	f.status.Store(429)
+	f.c.recoveryHTTP = false
+	limiter := &telegramRouteCooldown{}
+	f.c.cooldown, f.c.pause = limiter.load, limiter.store
+	err := f.request("getMe")
+	require.Error(t, err)
+	until, err := limiter.load(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, time.Until(until), 599*time.Second)
+	f.r.cooldown, f.r.pause = limiter.load, limiter.store
+	ctx, cancel := context.WithCancel(f.r.ctx)
+	cancel()
+	f.r.ctx = ctx
+	assert.False(t, f.r.probe(1))
+	assert.Zero(t, f.connects.Load())
+}
+
+func TestTelegramRoutesProbe429CannotBeBypassed(t *testing.T) {
+	f := newRouteFixture(t, nil)
+	f.status.Store(429)
+	limiter := &telegramRouteCooldown{}
+	f.r.cooldown, f.r.pause = limiter.load, limiter.store
+	assert.False(t, f.r.probe(1))
+	assert.Equal(t, "http_429", f.r.snapshot().Probes[1])
+	calls := f.calls.Load()
+	assert.False(t, f.r.probe(0))
+	assert.Equal(t, "cooldown", f.r.snapshot().Probes[0])
+	assert.Equal(t, calls, f.calls.Load(), "the other route must not bypass the full probe Retry-After")
+	until, err := limiter.load(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, time.Until(until), 599*time.Second)
+}
+
+func TestTelegramRoutesEnabledConfigurationOwnsPoolsAndLifecycle(t *testing.T) {
+	t.Setenv("HTTPS_PROXY", "http://untrusted.invalid:1234")
+	file := filepath.Join(t.TempDir(), "proxy-url")
+	require.NoError(t, os.WriteFile(file, []byte("https://user:password@127.0.0.1:9"), 0o600))
+	client := newTelegramHTTPClient()
+	closeRoutes, err := configureTelegramRoutes(context.Background(), client, "777:fixture", file)
+	require.NoError(t, err)
+	routes := client.client.(*telegramRoutes)
+	assert.Nil(t, routes.transports[0].Proxy)
+	assert.NotSame(t, routes.transports[0], routes.transports[1])
+	assert.NotNil(t, client.cooldown)
+	assert.NotNil(t, client.pause)
+	closeRoutes()
+	select {
+	case <-routes.done:
+	default:
+		t.Fatal("controller not joined")
+	}
+}
+
 func TestTelegramRoutesCertificatesAuthAndSecrets(t *testing.T) {
 	f := newRouteFixture(t, nil)
 	f.r.transports[0].TLSClientConfig.RootCAs = x509.NewCertPool()
@@ -640,6 +709,10 @@ func TestTelegramRoutesRealListenerJournalWorkerRestart(t *testing.T) {
 			w.WriteHeader(400)
 		}
 	})
+	f.r.interval = 10 * time.Millisecond
+	f.r.logf = func(string, ...any) {}
+	go f.r.run()
+	defer f.r.close()
 	path := filepath.Join(t.TempDir(), "runtime.db")
 	openJournal := func() (*moderation.Journal, *engine.SQL) {
 		db, err := engine.NewSqlite(path, "fixture")
@@ -702,8 +775,7 @@ func TestTelegramRoutesRealListenerJournalWorkerRestart(t *testing.T) {
 	for range 3 {
 		require.Error(t, f.request("getMe"))
 	}
-	f.r.checkRoutes()
-	require.Eventually(t, func() bool { return snapshot()["original_delete"].State == moderation.Confirmed }, 12*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool { return snapshot()["original_delete"].State == moderation.Confirmed }, 20*time.Second, 20*time.Millisecond)
 	assert.Equal(t, int64(1), bans.Load())
 	assert.Equal(t, int64(2), deletes.Load(), "only the journal schedules the second delete")
 	assert.Equal(t, initialDeadline, snapshot()["original_delete"].Deadline)

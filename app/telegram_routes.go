@@ -19,6 +19,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	tbapi "github.com/OvyFlash/telegram-bot-api"
 )
 
 const (
@@ -67,6 +69,12 @@ func configureTelegramRoutes(ctx context.Context, client *telegramHTTPClient, to
 		transports[idx] = transport
 	}
 	routes := newTelegramRoutes(ctx, token, transports)
+	if client.cooldown == nil && client.pause == nil {
+		// Without a journal, still share the complete rate limit across both routes
+		// and probes. The production journal remains the durable owner when enabled.
+		limiter := &telegramRouteCooldown{}
+		client.cooldown, client.pause = limiter.load, limiter.store
+	}
 	routes.cooldown, routes.pause = client.cooldown, client.pause
 	client.client = routes
 	// Bounded active requests are required even when durable moderation is disabled.
@@ -78,6 +86,25 @@ func configureTelegramRoutes(ctx context.Context, client *telegramHTTPClient, to
 type telegramProxyAuthError struct{}
 
 type telegramRouteRootKey struct{}
+
+type telegramRouteCooldown struct {
+	mu    sync.Mutex
+	until time.Time
+}
+
+func (c *telegramRouteCooldown) load(context.Context) (time.Time, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.until, nil
+}
+func (c *telegramRouteCooldown) store(_ context.Context, until time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if until.After(c.until) {
+		c.until = until
+	}
+	return nil
+}
 
 func (telegramProxyAuthError) Error() string { return "telegram fallback proxy authentication failed" }
 
@@ -252,7 +279,8 @@ func (r *telegramRoutes) observe(idx int, req *http.Request, success bool, err e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	polling := strings.HasSuffix(req.URL.Path, "/getUpdates")
-	worker := !polling && !strings.HasSuffix(req.URL.Path, "/getMe")
+	method := req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:]
+	worker := !polling && !strings.HasPrefix(method, "get")
 	if err == nil {
 		r.status.Failures[idx] = 0
 		if polling {
@@ -269,7 +297,7 @@ func (r *telegramRoutes) observe(idx int, req *http.Request, success bool, err e
 		r.status.LastExchange = r.now()
 		if strings.HasSuffix(req.URL.Path, "/getUpdates") {
 			r.status.LastPolling = r.now()
-		} else if !strings.HasSuffix(req.URL.Path, "/getMe") {
+		} else if worker {
 			r.status.LastWorkerExchange = r.now()
 		}
 		r.status.Failures[idx] = 0
@@ -367,6 +395,17 @@ func (t *telegramRouteTrace) trace() *httptrace.ClientTrace {
 func (r *telegramRoutes) probe(idx int) bool {
 	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Second)
 	defer cancel()
+	if r.cooldown != nil {
+		until, loadErr := r.cooldown(ctx)
+		if loadErr != nil {
+			r.probeResult(idx, "cooldown_unavailable")
+			return false
+		}
+		if r.now().Before(until) {
+			r.probeResult(idx, "cooldown")
+			return false
+		}
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		"https://api.telegram.org/bot"+r.token+"/getMe", http.NoBody)
 	if err != nil {
@@ -375,6 +414,10 @@ func (r *telegramRoutes) probe(idx int) bool {
 	client := &telegramHTTPClient{client: r.clients[idx], recoveryHTTP: true, cooldown: r.cooldown, pause: r.pause}
 	resp, err := client.Do(request)
 	state := telegramNetworkClass(err)
+	var apiErr *tbapi.Error
+	if errors.As(err, &apiErr) {
+		state = fmt.Sprintf("http_%d", apiErr.Code)
+	}
 	ok := false
 	if err == nil {
 		var envelope struct {
@@ -398,10 +441,14 @@ func (r *telegramRoutes) probe(idx int) bool {
 			state = "ok"
 		}
 	}
-	r.mu.Lock()
-	r.status.Probes[idx], r.status.ProbeAt[idx] = state, r.now()
-	r.mu.Unlock()
+	r.probeResult(idx, state)
 	return ok
+}
+
+func (r *telegramRoutes) probeResult(idx int, state string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status.Probes[idx], r.status.ProbeAt[idx] = state, r.now()
 }
 
 func (r *telegramRoutes) run() {
@@ -483,7 +530,9 @@ func (r *telegramRoutes) checkRoutes() bool {
 	} else {
 		r.status.State = "primary"
 	}
-	if !reserveOK && !primaryOK {
+	limited := r.status.Probes[0] == "cooldown" || r.status.Probes[1] == "cooldown" ||
+		r.status.Probes[0] == "http_429" || r.status.Probes[1] == "http_429"
+	if !reserveOK && !primaryOK && !limited {
 		r.status.State = "unavailable"
 	}
 	if r.status.State == "unavailable" {

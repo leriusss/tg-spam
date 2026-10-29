@@ -74,9 +74,9 @@ recovery/claims, auto-trust, Han, emoji-исключения и Docker policy с
 при длительной недоступности Telegram. Production и GHCR workflow этим PR не
 меняются. Откат к прежнему бинарнику возвращает немедленное завершение при
 первом startup timeout; конфиги и актуальные runtime-БД сохраняются.
-# Optional route failover
+
+## Optional route failover
 
 See [Telegram routes](telegram-routes.md) for opt-in authenticated HTTPS CONNECT
 fallback, diagnostics and the separate production transition runbook. It uses
 the same startup attempt/total budgets and does not add retries within a request.
-

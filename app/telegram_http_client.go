@@ -75,7 +75,7 @@ func (c *telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	} else {
 		cancel()
 	}
-	if err == nil && resp != nil && c.recoveryHTTP &&
+	if err == nil && resp != nil && (c.recoveryHTTP || c.routeHTTP) &&
 		(resp.StatusCode == 429 || resp.StatusCode == 500 || resp.StatusCode == 502 ||
 			resp.StatusCode == 503 || resp.StatusCode == 504) {
 		// Gateways may send HTML instead of Bot API JSON; preserve the typed HTTP classification.

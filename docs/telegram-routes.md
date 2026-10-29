@@ -50,7 +50,7 @@ resources were ordered. Independent internet failover remains **unverified**.
   read failure. Certificate failures and proxy authentication errors are separate
   fail-closed diagnostics. HTTP 401/403/409/429 and other HTTP refusals do not count
   as network failures. A complete HTTP exchange breaks that lane's failure streak.
-- `getUpdates`, worker methods and all traffic have separate failure streaks.
+- `getUpdates`, worker mutations (non-`get*` methods) and all traffic have separate failure streaks.
   A working `getMe` cannot erase a broken polling/worker lane. A complete empty
   `ok=true,result=[]` response updates the polling-success timestamp. Silence in
   the chats is not a failure signal. Probes do not update traffic timestamps.
@@ -78,6 +78,10 @@ resources were ordered. Independent internet failover remains **unverified**.
   bypass Telegram's rate limit. No moderation operation is replayed by route
   selection. Typed underlying causes survive safe errors for existing recovery
   handling; an accepted operation with an ambiguous response remains uncertain.
+
+If durable recovery is disabled, the opt-in transport still shares an in-memory
+cooldown across both pools/probes and keeps the full Retry-After. Only the
+existing journal makes cooldown persistent across process restart.
 
 The SDK still owns the single sequential polling loop and its in-memory offset.
 Journal receipts, actions, claims, decisions, retry authority and immutable
