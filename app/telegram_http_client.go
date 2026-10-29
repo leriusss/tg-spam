@@ -27,6 +27,7 @@ type httpDoer interface {
 type telegramHTTPClient struct {
 	client       httpDoer
 	recoveryHTTP bool
+	routeHTTP    bool
 	cooldown     func(context.Context) (time.Time, error)
 	pause        func(context.Context, time.Time) error
 }
@@ -54,7 +55,10 @@ func (c *telegramHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	cancel := func() {}
-	if c.recoveryHTTP {
+	if c.routeHTTP && req.Context().Value(telegramRouteRootKey{}) == nil {
+		req = req.Clone(context.WithValue(req.Context(), telegramRouteRootKey{}, req.Context()))
+	}
+	if c.recoveryHTTP || c.routeHTTP {
 		timeout := 15 * time.Second
 		if strings.HasSuffix(req.URL.Path, "/getUpdates") {
 			timeout = 90 * time.Second
@@ -136,6 +140,10 @@ func (b *cancelBody) Close() error {
 func sanitizeTelegramHTTPError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var routeErr telegramRouteError
+	if errors.As(err, &routeErr) {
+		return routeErr // Its safe text retains typed causes without rendering their URLs/credentials.
 	}
 
 	var urlErr *url.Error

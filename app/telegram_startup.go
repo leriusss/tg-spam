@@ -86,6 +86,7 @@ func (s telegramStartup) initialize(ctx context.Context, token, endpoint string,
 			return nil, s.failure(attempt-1, "budget", "budget_exhausted")
 		}
 		attemptCtx, cancel := context.WithTimeout(bounded, telegramStartupRequest)
+		attemptCtx = context.WithValue(attemptCtx, telegramRouteRootKey{}, bounded)
 		// Preserve the durable cooldown gate. Capture raw HTTP statuses before
 		// the regular client or the dependency can discard them during decoding.
 		startupClient := *client
