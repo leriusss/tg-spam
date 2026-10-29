@@ -515,6 +515,22 @@ func TestTelegramRoutesStartupUsesSameController(t *testing.T) {
 	assert.Equal(t, int64(3), f.directDials.Load(), "no hidden retries within startup attempts")
 }
 
+func TestTelegramRoutesStartupLocalNXDOMAINCanUseIndependentProxy(t *testing.T) {
+	f := newRouteFixture(t, nil)
+	f.r.transports[0].DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "api.telegram.org", IsNotFound: true}
+	}
+	startup := telegramStartup{now: time.Now, logf: t.Logf, wait: func(context.Context, time.Duration) error {
+		f.r.checkRoutes()
+		return nil
+	}}
+	api, err := startup.initialize(context.Background(), "777:fixture", tbapi.APIEndpoint, f.c)
+	require.NoError(t, err)
+	assert.Same(t, f.c, api.Client)
+	assert.Equal(t, "reserve", f.r.snapshot().Selected)
+	assert.Equal(t, int64(2), f.calls.Load())
+}
+
 func TestTelegramRoutesActiveRequestDoesNotPinNewRequests(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

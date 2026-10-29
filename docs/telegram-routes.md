@@ -70,6 +70,10 @@ resources were ordered. Independent internet failover remains **unverified**.
   15 seconds per attempt and 90 seconds total. No fallback replay is inserted
   into these budgets. DNS/TCP and TLS setup have five-second limits. Closing idle
   connections alone is not used as cancellation of active requests.
+- With fallback enabled, startup also treats local DNS NXDOMAIN as retryable
+  within the same finite attempts/budget: an independent proxy can resolve the
+  hostname from its own network. Without fallback, startup classification is
+  unchanged. Certificate and authentication refusals still fail closed.
 - Explicit caller cancellation/deadline and application shutdown do not penalize
   a path. Internally generated request timeouts do. The controller is canceled
   and joined on application exit, including startup failure.

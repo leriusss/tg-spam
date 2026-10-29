@@ -106,6 +106,13 @@ func (s telegramStartup) initialize(ctx context.Context, token, endpoint string,
 			return api, nil
 		}
 		category, retryAfter, retry := classifyTelegramStartup(err)
+		// An enabled independent proxy resolves Telegram from its own network.
+		// Local NXDOMAIN must get the same bounded failure threshold as other DNS
+		// errors, rather than terminating before the controller can test reserve.
+		var dns *net.DNSError
+		if client.routeHTTP && errors.As(err, &dns) {
+			retry = true
+		}
 		if errors.Is(err, context.Canceled) {
 			return nil, s.contextFailure(attempt, context.Canceled)
 		}
