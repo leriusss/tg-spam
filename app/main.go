@@ -44,10 +44,11 @@ type options struct {
 	DataBaseURL        string `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
 
 	Telegram struct {
-		Token        string        `long:"token" env:"TOKEN" description:"telegram bot token"`
-		Group        string        `long:"group" env:"GROUP" description:"group name/id"`
-		Timeout      time.Duration `long:"timeout" env:"TIMEOUT" default:"30s" description:"http client timeout for telegram" `
-		IdleDuration time.Duration `long:"idle" env:"IDLE" default:"30s" description:"idle duration"`
+		Token             string        `long:"token" env:"TOKEN" description:"telegram bot token"`
+		Group             string        `long:"group" env:"GROUP" description:"group name/id"`
+		Timeout           time.Duration `long:"timeout" env:"TIMEOUT" default:"30s" description:"http client timeout for telegram" `
+		IdleDuration      time.Duration `long:"idle" env:"IDLE" default:"30s" description:"idle duration"`
+		FallbackProxyFile string        `long:"fallback-proxy-file" env:"FALLBACK_PROXY_FILE" description:"private file with authenticated HTTPS CONNECT proxy URL; empty disables fallback"`
 	} `group:"telegram" namespace:"telegram" env-namespace:"TELEGRAM"`
 
 	AdminGroup              string `long:"admin.group" env:"ADMIN_GROUP" description:"admin group name, or channel id"`
@@ -393,6 +394,11 @@ func executeWithTelegram(ctx context.Context, opts options,
 		telegramClient.cooldown = recoveryJournal.Cooldown
 		telegramClient.pause = recoveryJournal.Pause
 	}
+	closeRoutes, err := configureTelegramRoutes(ctx, telegramClient, opts.Telegram.Token, opts.Telegram.FallbackProxyFile)
+	if err != nil {
+		return err
+	}
+	defer closeRoutes()
 	tbAPI, err := initialize(ctx, opts.Telegram.Token, tbapi.APIEndpoint, telegramClient)
 	if err != nil {
 		return fmt.Errorf("can't make telegram bot, %w", err)

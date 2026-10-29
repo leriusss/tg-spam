@@ -86,6 +86,7 @@ func (s telegramStartup) initialize(ctx context.Context, token, endpoint string,
 			return nil, s.failure(attempt-1, "budget", "budget_exhausted")
 		}
 		attemptCtx, cancel := context.WithTimeout(bounded, telegramStartupRequest)
+		attemptCtx = context.WithValue(attemptCtx, telegramRouteRootKey{}, bounded)
 		// Preserve the durable cooldown gate. Capture raw HTTP statuses before
 		// the regular client or the dependency can discard them during decoding.
 		startupClient := *client
@@ -105,6 +106,13 @@ func (s telegramStartup) initialize(ctx context.Context, token, endpoint string,
 			return api, nil
 		}
 		category, retryAfter, retry := classifyTelegramStartup(err)
+		// An enabled independent proxy resolves Telegram from its own network.
+		// Local NXDOMAIN must get the same bounded failure threshold as other DNS
+		// errors, rather than terminating before the controller can test reserve.
+		var dns *net.DNSError
+		if client.routeHTTP && errors.As(err, &dns) {
+			retry = true
+		}
 		if errors.Is(err, context.Canceled) {
 			return nil, s.contextFailure(attempt, context.Canceled)
 		}
