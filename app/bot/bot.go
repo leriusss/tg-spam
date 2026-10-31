@@ -42,17 +42,18 @@ type SenderChat struct {
 
 // Message is primary record to pass data from/to bots
 type Message struct {
-	HanText    *string `json:"-"` // own text/caption excluding Telegram quoted entities
-	ID         int
-	From       User
-	SenderChat SenderChat `json:"sender_chat,omitzero"`
-	ChatID     int64
-	Sent       time.Time
-	HTML       string    `json:",omitempty"`
-	Text       string    `json:",omitempty"`
-	Entities   *[]Entity `json:",omitempty"`
-	Image      *Image    `json:",omitempty"`
-	ReplyTo    struct {
+	HanText          *string `json:"-"` // own text/caption excluding Telegram quoted entities
+	SkipBotStartSpam bool    `json:"-"` // administrator exemption for the bot-start guard
+	ID               int
+	From             User
+	SenderChat       SenderChat `json:"sender_chat,omitzero"`
+	ChatID           int64
+	Sent             time.Time
+	HTML             string    `json:",omitempty"`
+	Text             string    `json:",omitempty"`
+	Entities         *[]Entity `json:",omitempty"`
+	Image            *Image    `json:",omitempty"`
+	ReplyTo          struct {
 		From       User
 		Text       string `json:",omitempty"`
 		Sent       time.Time

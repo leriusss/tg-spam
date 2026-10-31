@@ -133,6 +133,10 @@ type options struct {
 		Window    time.Duration `long:"window" env:"WINDOW" default:"1h" description:"time window for duplicate detection"`
 	} `group:"duplicates" namespace:"duplicates" env-namespace:"DUPLICATES"`
 
+	BotStartSpam struct {
+		Enabled bool `long:"enabled" env:"ENABLED" description:"detect own-text start commands advertising three or more bots"`
+	} `group:"bot-start-spam" namespace:"bot-start-spam" env-namespace:"BOT_START_SPAM"`
+
 	Han struct {
 		Enabled  bool    `long:"enabled" env:"ENABLED" description:"delete new Han-dominated messages and ban their authors"`
 		Ratio    float64 `long:"ratio" env:"RATIO" default:"0.7" description:"minimum Han fraction among letters (greater than 0.5, at most 1)"`
@@ -420,6 +424,7 @@ func executeWithTelegram(ctx context.Context, opts options,
 
 	// make telegram listener
 	tgListener := events.TelegramListener{
+		BotStartSpamEnabled: opts.BotStartSpam.Enabled,
 		RecoveryJournal:     recoveryJournal,
 		TbAPI:               tbAPI,
 		BotUsername:         tbAPI.Self.UserName,
@@ -835,13 +840,14 @@ func makeSpamBot(ctx context.Context, opts options, dataDB *engine.SQL, detector
 	}
 
 	spamBotParams := bot.SpamConfig{
-		EditorialEmoji: editorialEmoji,
-		GroupID:        opts.InstanceID,
-		SamplesStore:   samplesStore,
-		DictStore:      dictionaryStore,
-		SpamMsg:        opts.Message.Spam,
-		SpamDryMsg:     opts.Message.Dry,
-		Dry:            opts.Dry,
+		BotStartSpamEnabled: opts.BotStartSpam.Enabled,
+		EditorialEmoji:      editorialEmoji,
+		GroupID:             opts.InstanceID,
+		SamplesStore:        samplesStore,
+		DictStore:           dictionaryStore,
+		SpamMsg:             opts.Message.Spam,
+		SpamDryMsg:          opts.Message.Dry,
+		Dry:                 opts.Dry,
 		ContentExtraction: bot.ContentExtractionConfig{
 			Enabled:               opts.ContentExtraction.Enabled,
 			LogDebug:              opts.ContentExtraction.LogDebug,

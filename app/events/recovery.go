@@ -379,6 +379,13 @@ func (l *TelegramListener) enqueueAutomatic(update tbapi.Update, msg *bot.Messag
 		Destination:  l.adminChatID,
 	}
 	p.Reason = hanModerationReason(resp.CheckResults, resp.BanInterval > 0)
+	if p.Reason == "" {
+		for _, check := range resp.CheckResults {
+			if check.Name == "bot-start spam" && check.Spam {
+				p.Reason = check.String()
+			}
+		}
+	}
 	base := moderation.Action{ChatID: p.ChatID, IdentityKind: kind, IdentityID: id}
 	if resp.HanDeleteOnly {
 		checker, ok := l.Bot.(interface{ IsExplicitTrustedUser(int64) bool })
