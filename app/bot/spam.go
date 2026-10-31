@@ -38,13 +38,14 @@ type SpamConfig struct {
 	SamplesStore   SamplesStore // storage for spam samples
 	DictStore      DictStore    // storage for stop words and excluded tokens
 
-	SpamMsg           string
-	SpamDryMsg        string
-	GroupID           string
-	Dry               bool
-	ContentExtraction ContentExtractionConfig
-	Han               HanConfig
-	Burst             BurstConfig
+	SpamMsg             string
+	SpamDryMsg          string
+	GroupID             string
+	Dry                 bool
+	ContentExtraction   ContentExtractionConfig
+	Han                 HanConfig
+	Burst               BurstConfig
+	BotStartSpamEnabled bool
 }
 
 // Detector is a spam detector interface
@@ -118,12 +119,13 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	}
 
 	hanResponse, hanMatched := s.hanResponse(msg, strconv.FormatInt(checkUserID, 10))
+	botStartMatched := s.botStartSpam(msg, strconv.FormatInt(checkUserID, 10))
 
 	spamReq := spamcheck.Request{Msg: msgText, CheckOnly: checkOnly,
 		UserID: strconv.FormatInt(checkUserID, 10), UserName: checkUserName,
 		FirstName: firstName, LastName: lastName, IsPremium: isPremium}
 	spamReq.AuthoredText = &msg.Text
-	spamReq.SuppressHamRecording = hanMatched
+	spamReq.SuppressHamRecording = hanMatched || botStartMatched
 	spamReq.SkipEmojiCheck = s.params.EditorialEmoji.Allows(msg.ChatID, msg.SenderChat.ID)
 	if msg.Image != nil {
 		spamReq.Meta.Images = 1
@@ -181,6 +183,12 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 	}
 
 	detectorSpam, checkResults := s.Check(spamReq)
+	if botStartMatched {
+		checkResults = append(checkResults, spamcheck.Response{
+			Name: "bot-start spam", Spam: true,
+			Details: "start command, integer payload and at least three distinct bot mentions",
+		})
+	}
 	if burstDecision.Spam {
 		checkResults = append(checkResults, spamcheck.Response{
 			Name: "burst",
@@ -199,7 +207,7 @@ func (s *SpamFilter) OnMessage(msg Message, checkOnly bool) (response Response) 
 		crs = append(crs, fmt.Sprintf("{name: %s, spam: %v, details: %s}", cr.Name, cr.Spam, cr.Details))
 	}
 	checkResultStr := strings.Join(crs, ", ")
-	isSpam := detectorSpam || burstDecision.Spam
+	isSpam := detectorSpam || burstDecision.Spam || botStartMatched
 	if isSpam {
 		if detectorSpam {
 			log.Printf("[INFO] user %s detected as spammer: %s, %q", displayUsername, checkResultStr, msgText)

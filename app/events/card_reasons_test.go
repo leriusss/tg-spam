@@ -47,6 +47,7 @@ func TestSavedDetailReasons(t *testing.T) {
 		{"word-spacing", "abnormal (ratio: 0.45, short: 80%)", "Доля пробелов: 0.45; коротких слов: 80%"},
 		{"username-symbols", "username contains prohibited symbol '$'", "запрещённый настройкой символ"},
 		{"confirmed exact text", "спам-фраза", "точное совпадение со спам-фразой: «спам-фраза»"},
+		{"bot-start spam", "start command, integer payload and at least three distinct bot mentions", "минимум трёх разных"},
 		{"openai", "реклама, confidence: 98%", "Модель OpenAI определила сообщение как спам"},
 	} {
 		t.Run(tt.name+"/"+tt.details, func(t *testing.T) {

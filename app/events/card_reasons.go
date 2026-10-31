@@ -71,6 +71,7 @@ func detailCheckLabel(name string) string {
 		"keyboard": "кнопки в сообщении", "giveaway": "розыгрыш", "username-symbols": "символы в имени пользователя",
 		"multi-lingual": "смешение письменностей внутри слов", "word-spacing": "необычные пробелы",
 		"confirmed exact text": "точное совпадение со спам-фразой", "openai": "проверка моделью OpenAI",
+		"bot-start spam": "реклама ботов через /start",
 	}[name]
 }
 
@@ -95,6 +96,8 @@ func detailNumber(s string, maxValue float64) bool {
 
 func positiveDetailReason(name, details, label string, c moderation.Card) string {
 	switch name {
+	case "bot-start spam":
+		return "Собственный текст сообщения целиком состоит из /start, числа и минимум трёх разных @…bot."
 	case "emoji", "multi-lingual", "links", "mentions":
 		pair := details
 		if name == "links" || name == "mentions" {

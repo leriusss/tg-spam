@@ -52,6 +52,7 @@ type TelegramListener struct {
 	Dry                     bool                // dry run, do not ban or send messages
 	AggressiveCleanup       bool                // delete all messages from user when banned via /spam command
 	AggressiveCleanupLimit  int                 // max messages to delete in aggressive cleanup mode
+	BotStartSpamEnabled     bool                // own-text bot-start advertising guard
 
 	senderFeedbackAt time.Time
 	adminHandler     *admin
@@ -467,7 +468,11 @@ func (l *TelegramListener) procEvents(update tbapi.Update) error {
 		msg.WithExternalLinkButton = false
 	}
 
+	if l.BotStartSpamEnabled {
+		msg.SkipBotStartSpam = l.SuperUsers.IsSuper(msg.From.Username, msg.From.ID)
+	}
 	resp := l.Bot.OnMessage(*msg, false)
+	l.botStartCleanup(ctx, *msg, resp.CheckResults)
 
 	if resp.HanMatched || resp.HanDeleteOnly {
 		if l.Dry || l.TrainingMode {

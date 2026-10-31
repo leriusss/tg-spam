@@ -41,6 +41,21 @@ An optional empty-by-default list skips only the emoji check for exact numeric
 `discussion_id:sender_chat_id` pairs. Other checks and the global emoji limit stay
 unchanged; it does not grant manual trust. See [configuration and scope](docs/editorial-channel-emoji.md).
 
+### Optional bot-start advertising guard
+
+`--bot-start-spam.enabled` / `BOT_START_SPAM_ENABLED` is off by default. When enabled,
+the guard matches an entire own-text message consisting of `/start`, an ASCII integer,
+and at least three distinct valid-shaped `@...bot` mentions. It is independent of
+automatic approval and does not record matched messages as ham or trust progress.
+It uses the existing moderation journal, ban, original deletion, scoped cleanup and
+administrator card path. It does not scan or replay old messages when enabled.
+
+Telegram administrators, manually approved users, channel posts, forwards, quotes,
+textual replies, media, keyboards and code/blockquote entities are exempt from this
+guard. Other detectors retain their existing behavior. Ordinary discussion, a single
+bot mention, normal `/start` commands and repeated mentions of fewer than three
+distinct bots do not match. No external classifier or account lookup is required.
+
 ### Optional Han script restriction
 
 `--han.enabled` / `HAN_ENABLED` is off by default. For new events it deletes the particular
@@ -569,6 +584,9 @@ space:
 duplicates:
       --duplicates.threshold=           duplicate messages to trigger spam (0=disabled) (default: 0) [$DUPLICATES_THRESHOLD]
       --duplicates.window=              time window for duplicate detection (default: 1h) [$DUPLICATES_WINDOW]
+
+bot-start-spam:
+      --bot-start-spam.enabled          detect own-text start commands advertising three or more bots [$BOT_START_SPAM_ENABLED]
 
 han:
       --han.enabled                     delete new Han-dominated messages and ban their authors [$HAN_ENABLED]
