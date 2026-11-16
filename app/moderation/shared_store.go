@@ -79,6 +79,7 @@ func NewSharedStore(ctx context.Context, db *engine.SQL, owner int64, peers []in
 	}
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS shared_config (gid TEXT PRIMARY KEY, payload TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS shared_cards (gid TEXT NOT NULL, ref TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS shared_views (gid TEXT NOT NULL, destination BIGINT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,destination))`,
 		`CREATE TABLE IF NOT EXISTS shared_cases (gid TEXT NOT NULL, ref TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS shared_searches (gid TEXT NOT NULL, peer BIGINT NOT NULL, destination BIGINT NOT NULL, message_id INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,peer,destination,message_id))`,
@@ -160,6 +161,10 @@ func sameOriginals(a, b SharedReport) bool {
 	return true
 }
 
+func uncertainInitialCard(c SharedCase) bool {
+	return c.NotificationID == 0 && (c.SendState == "unknown" || c.SendState == "armed")
+}
+
 func sharedTerminal(c SharedCase) bool {
 	if !c.Decided {
 		return c.NeedsReview && len(c.PriorIntents) > 20
@@ -202,6 +207,9 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		all, err := s.cases(ctx, tx)
 		if err != nil {
 			return err
+		}
+		if e := s.decorateCases(ctx, tx, all); e != nil {
+			return e
 		}
 		rawReport, marshalErr := json.Marshal(r)
 		if marshalErr != nil {
@@ -260,8 +268,8 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		// Coalesce a new unsent provisional case with an existing active inquiry.
 		if len(deliveries) == 0 && (index < 0 || all[index].NotificationID == 0 && all[index].SendState == "" && !all[index].Decided) {
 			for i, c := range all {
-				if i == index || c.Canonical != "" || c.Decided || c.AdminID != r.Delivery.ChatID ||
-					c.Expires <= now.UnixMilli() || sharedTerminal(c) {
+				if i == index || c.Canonical != "" || (c.Decided && !uncertainInitialCard(c)) || c.AdminID != r.Delivery.ChatID ||
+					!uncertainInitialCard(c) && (c.Expires <= now.UnixMilli() || sharedTerminal(c)) {
 					continue
 				}
 				matches := false
@@ -475,7 +483,7 @@ func (s *SharedStore) Case(ctx context.Context, ref string) (out SharedCase, err
 		if err != nil {
 			return err
 		}
-		a, e := s.readAnchor(ctx, tx, out.AdminID)
+		a, e := s.readAnchor(ctx, tx, out.Ref)
 		if e != nil {
 			return e
 		}
@@ -584,7 +592,7 @@ func sameInquiry(a, b SharedCase) bool {
 }
 
 // Reconcile coalesces inquiry records after every peer proves the same exact
-// original set. Presentation remains one anchor; accepted decisions stay separate.
+// original set. Only the canonical card retains action buttons; decisions stay separate.
 func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) error {
 	if peer != s.owner {
 		return errors.New("only card owner reconciles inquiries")
@@ -593,6 +601,9 @@ func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) 
 	return j.transaction(ctx, func(tx journalTx) error {
 		cases, err := s.cases(ctx, tx)
 		if err != nil {
+			return err
+		}
+		if err := s.decorateCases(ctx, tx, cases); err != nil {
 			return err
 		}
 		for i := range cases {

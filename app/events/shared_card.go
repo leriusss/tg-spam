@@ -18,33 +18,7 @@ func sharedViewCard(view moderation.SharedView, peers []int64, now time.Time) (s
 	if len(c.Reports) > 0 && c.Reports[0].Delivery.MessageID > 0 {
 		text = fmt.Sprintf("Пересылка №%d.\n", c.Reports[0].Delivery.MessageID) + text
 	}
-	if len(view.Menu) <= 1 {
-		return text, keyboard
-	}
-	text += "\nНезависимые обращения сохраняют отдельные цели и решения. Просмотр меняется в этой карточке."
-	for i := view.Page * 5; i < min((view.Page+1)*5, len(view.Menu)); i++ {
-		item := view.Menu[i]
-		if item.Ref == c.Ref {
-			continue
-		}
-		label := fmt.Sprintf("Пересылка №%d", item.MessageID)
-		if item.Decided {
-			label += " — решение сохранено"
-		}
-		data := fmt.Sprintf("S:c%d:%s:%d", i, c.Ref, c.Revision)
-		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard,
-			tbapi.NewInlineKeyboardRow(tbapi.NewInlineKeyboardButtonData(label, data)))
-	}
-	nav := []tbapi.InlineKeyboardButton{}
-	if view.Page > 0 {
-		nav = append(nav, tbapi.NewInlineKeyboardButtonData("← Обращения", fmt.Sprintf("S:p%d:%s:%d", view.Page-1, c.Ref, c.Revision)))
-	}
-	if (view.Page+1)*5 < len(view.Menu) {
-		nav = append(nav, tbapi.NewInlineKeyboardButtonData("Обращения →", fmt.Sprintf("S:p%d:%s:%d", view.Page+1, c.Ref, c.Revision)))
-	}
-	if len(nav) > 0 {
-		keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, nav)
-	}
+
 	return text, keyboard
 }
 

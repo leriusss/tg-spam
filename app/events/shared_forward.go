@@ -61,7 +61,7 @@ func (s *sharedForward) rejectForeignCallback(ctx context.Context, q *tbapi.Call
 	if store != nil {
 		known, e := store.ForeignNamespaceBlocked(ctx, q.Message.Chat.ID, q.Message.MessageID)
 		if e == nil {
-			blocked = known
+			blocked = known || !legacyMarkup
 		} else if !legacyMarkup {
 			blocked = true
 		}
@@ -214,13 +214,18 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		}
 	}
 	if s.config.Peer == s.config.Owner {
-		view, found, e := store.View(ctx, s.config.Peer, s.admin.adminChatID, now)
-		if e != nil {
-			return fmt.Errorf("load shared presentation: %w", e)
-		}
-		if found {
-			if e := s.render(ctx, store, view, now); e != nil {
-				return e
+		for _, c := range cases {
+			if c.AdminID != s.admin.adminChatID {
+				continue
+			}
+			view, found, e := store.View(ctx, s.config.Peer, c.Ref, now)
+			if e != nil {
+				return fmt.Errorf("load shared presentation: %w", e)
+			}
+			if found {
+				if e := s.render(ctx, store, view, now); e != nil {
+					return e
+				}
 			}
 		}
 	}
@@ -242,7 +247,7 @@ func (s *sharedForward) render(ctx context.Context, store *moderation.SharedStor
 	if c.LastRender == fingerprint {
 		return nil
 	}
-	claimed, ok, err := store.ClaimCard(ctx, s.config.Peer, c.Ref, fingerprint, now)
+	claimed, ok, err := store.ClaimCard(ctx, s.config.Peer, c.Ref, c.Revision, fingerprint, now)
 	if err != nil {
 		return fmt.Errorf("claim shared card: %w", err)
 	}
@@ -326,17 +331,7 @@ func (s *sharedForward) callback(ctx context.Context, q *tbapi.CallbackQuery) er
 	}
 	verb := parts[1]
 	if strings.HasPrefix(verb, "c") || strings.HasPrefix(verb, "p") {
-		n, e := strconv.Atoi(verb[1:])
-		if e != nil || n < 0 {
-			return errors.New("invalid shared view navigation")
-		}
-		index, page := -1, -1
-		if verb[0] == 'c' {
-			index = n
-		} else {
-			page = n
-		}
-		err = store.SwitchView(ctx, s.config.Peer, parts[2], revision, q.Message.Chat.ID, q.Message.MessageID, index, page)
+		return s.admin.answerRecoveryCallback(ctx, q, "У каждого обращения своя карточка. Эти старые кнопки не дают полномочий.")
 	} else if page, ok := strings.CutPrefix(verb, "v"); ok {
 		n, e := strconv.Atoi(page)
 		if e != nil {

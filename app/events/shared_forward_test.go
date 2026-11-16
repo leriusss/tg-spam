@@ -24,6 +24,8 @@ type sharedFleet struct {
 	fixtures    []*forwardFixture
 	bridges     []*sharedForward
 	store       *moderation.SharedStore
+	storeDB     *engine.SQL
+	openLocal   func(int) *engine.SQL
 	now         time.Time
 	reopenStore func() *moderation.SharedStore
 }
@@ -46,7 +48,7 @@ func newSharedFleet(t *testing.T, counts []int, open func(string) *engine.SQL) *
 	}
 	store, err := moderation.NewSharedStore(context.Background(), db, 100, peers)
 	require.NoError(t, err)
-	fleet := &sharedFleet{store: store, now: time.Now().Add(3 * time.Second)}
+	fleet := &sharedFleet{store: store, storeDB: db, openLocal: func(i int) *engine.SQL { return open(fmt.Sprintf("local-%d", i)) }, now: time.Now().Add(3 * time.Second)}
 	fleet.reopenStore = func() *moderation.SharedStore {
 		freshDB := open("shared")
 		t.Cleanup(func() { require.NoError(t, freshDB.Close()) })
@@ -476,10 +478,7 @@ func TestSharedCaptionAndCallbackBounds(t *testing.T) {
 	c.ReviewReason = intent.Reason
 	c.PriorIntents = []moderation.SharedIntent{intent}
 	c.Page = 21
-	view := moderation.SharedView{Case: c, Page: 99}
-	for i := range 500 {
-		view.Menu = append(view.Menu, moderation.SharedMenuItem{Ref: fmt.Sprint(i), MessageID: i + 1})
-	}
+	view := moderation.SharedView{Case: c}
 	text, keyboard := sharedViewCard(view, peers, time.Now())
 	require.Less(t, len([]rune(text)), 4096)
 	for _, row := range keyboard.InlineKeyboard {
@@ -489,33 +488,26 @@ func TestSharedCaptionAndCallbackBounds(t *testing.T) {
 	}
 }
 
-func TestSharedLeaseFencesDifferentInquiryViews(t *testing.T) {
+func TestSharedLeaseIsScopedToInquiry(t *testing.T) {
 	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
-	f.forward(t, 1324, 0)
-	f.forward(t, 1325, 1)
+	f.forward(t, 1324)
 	f.tick(t)
-	view, found, err := f.store.View(context.Background(), 100, 456, f.now)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Len(t, view.Menu, 2)
-	claim, ok, err := f.store.ClaimCard(context.Background(), 100, view.Case.Ref, "first process", f.now)
+	first := f.one(t)
+	next := f.independent(t, 1325)
+	claim, ok, err := f.store.ClaimCard(context.Background(), 100, first.Ref, first.Revision, "first process", f.now)
 	require.NoError(t, err)
 	require.True(t, ok)
-	next := 0
-	if view.Menu[0].Ref == view.Case.Ref {
-		next = 1
-	}
-	require.NoError(t, f.store.SwitchView(context.Background(), 100, view.Case.Ref, view.Case.Revision, 456, view.Case.NotificationID, next, -1))
-	_, ok, err = f.store.ClaimCard(context.Background(), 100, view.Menu[next].Ref, "second process", f.now)
+	_, ok, err = f.store.ClaimCard(context.Background(), 100, first.Ref, first.Revision, "same inquiry", f.now)
 	require.NoError(t, err)
 	require.False(t, ok)
-	require.NoError(t, f.store.FinishCard(context.Background(), claim, view.Case.NotificationID, "first process", "ok", f.now))
-	second, ok, err := f.store.ClaimCard(context.Background(), 100, view.Menu[next].Ref, "second process", f.now)
+	second, ok, err := f.store.ClaimCard(context.Background(), 100, next.Ref, next.Revision, "independent process", f.now)
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, view.Case.NotificationID, second.NotificationID)
-	require.Len(t, f.fixtures[0].cards, 1)
+	require.NotEqual(t, claim.NotificationID, second.NotificationID)
+	require.NoError(t, f.store.FinishCard(context.Background(), claim, claim.NotificationID, "first process", "ok", f.now))
+	require.NoError(t, f.store.FinishCard(context.Background(), second, second.NotificationID, "independent process", "ok", f.now))
+	require.Len(t, f.fixtures[0].cards, 2)
 }
 
 func TestSharedForwardIncidentPostgres(t *testing.T) {
@@ -534,6 +526,13 @@ func TestSharedForwardIncidentPostgres(t *testing.T) {
 	t.Run("incident", func(t *testing.T) { runSharedScenarios(t, openScope("incident")) })
 	t.Run("independent", func(t *testing.T) { runSharedIndependentInquiries(t, openScope("independent")) })
 	t.Run("crossed", func(t *testing.T) { runSharedCrossedDeliveries(t, openScope("crossed")) })
+	t.Run("history-expiry", func(t *testing.T) { runSharedHistoryExpiry(t, openScope("history-expiry")) })
+	t.Run("unknown-send", func(t *testing.T) { runSharedUnknownIsolation(t, openScope("unknown-send")) })
+	t.Run("unknown-confirmed", func(t *testing.T) { runSharedUnknownConfirmed(t, openScope("unknown-confirmed")) })
+	t.Run("crossed-after-bound", func(t *testing.T) { runSharedCrossedAfterBound(t, openScope("crossed-after-bound")) })
+	t.Run("legacy-panel", func(t *testing.T) { runSharedLegacyPanel(t, openScope("legacy-panel")) })
+	t.Run("concurrent-deliveries", func(t *testing.T) { runSharedConcurrentSubmit(t, openScope("concurrent-deliveries")) })
+	t.Run("concurrent-claims", func(t *testing.T) { runSharedConcurrentClaims(t, openScope("concurrent-claims")) })
 	t.Run("late-refusal", func(t *testing.T) { runSharedDelayedIntent(t, openScope("late-refusal")) })
 }
 
@@ -576,23 +575,18 @@ func TestSharedLateTargetsCanReceiveANewDecisionWhileEarlierWorkIsUnknown(t *tes
 	f.tick(t)
 	f.forward(t, 1325)
 	f.tick(t)
-	view, found, err := f.store.View(context.Background(), 100, 456, f.now)
+	cases, err := f.store.Cases(context.Background())
 	require.NoError(t, err)
-	require.True(t, found)
-	require.Len(t, view.Menu, 2)
-	index := -1
-	for i, item := range view.Menu {
-		if item.Ref != first.Ref {
-			index = i
+	require.Len(t, cases, 2)
+	var next moderation.SharedCase
+	for _, c := range cases {
+		if c.Ref != first.Ref {
+			next = c
 		}
 	}
-	require.NotEqual(t, -1, index)
-	f.choose(t, view.Case, fmt.Sprintf("c%d", index), nil)
-	f.tick(t)
-	view, found, err = f.store.View(context.Background(), 100, 456, f.now)
-	require.NoError(t, err)
-	require.True(t, found)
-	f.choose(t, view.Case, "101", nil)
+	require.Positive(t, next.NotificationID)
+	require.NotEqual(t, first.NotificationID, next.NotificationID)
+	f.choose(t, next, "101", nil)
 	f.tick(t)
 	f.fixtures[1].settle(t)
 	f.tick(t)
@@ -601,7 +595,7 @@ func TestSharedLateTargetsCanReceiveANewDecisionWhileEarlierWorkIsUnknown(t *tes
 	for _, n := range f.fixtures[0].deleteCalls {
 		require.Equal(t, 1, n)
 	}
-	require.Len(t, f.fixtures[0].cards, 1)
+	require.Len(t, f.fixtures[0].cards, 2)
 	old, err := f.store.Case(context.Background(), first.Ref)
 	require.NoError(t, err)
 	require.Len(t, old.Choices, 1)
@@ -654,17 +648,14 @@ func runSharedCrossedDeliveries(t *testing.T, open func(string) *engine.SQL) {
 	}
 }
 
-func TestSharedIndependentInquiriesSwitchOneAnchorWithoutSharingAuthority(t *testing.T) {
+func TestSharedIndependentInquiriesHaveOwnCards(t *testing.T) {
 	t.Parallel()
 	runSharedIndependentInquiries(t, nil)
 }
 
-func runSharedIndependentInquiries(t *testing.T, open func(string) *engine.SQL) {
+// independent records another exact author/original set through the real listener.
+func (f *sharedFleet) independent(t *testing.T, delivery int) moderation.SharedCase {
 	t.Helper()
-	f := newSharedFleet(t, []int{2, 2}, open)
-	f.forward(t, 1324)
-	f.tick(t)
-	first := f.one(t)
 	for _, mid := range []int{951, 952} {
 		u := originalForwardUpdate(mid, 701)
 		u.Message.Chat.ID = -1000
@@ -673,52 +664,55 @@ func runSharedIndependentInquiries(t *testing.T, open func(string) *engine.SQL) 
 	}
 	for i, b := range f.bridges {
 		u := manualForwardUpdate()
-		u.Message.MessageID = 1325
-		u.UpdateID = 300000 + i
+		u.Message.MessageID = delivery
+		u.UpdateID = 300000 + i + delivery
 		u.Message.Text = "independent original"
 		require.NoError(t, b.admin.MsgHandler(u))
 	}
 	f.tick(t)
 	cases, err := f.store.Cases(context.Background())
 	require.NoError(t, err)
-	require.Len(t, cases, 2)
-	require.Len(t, f.fixtures[0].cards, 1)
-	view, found, err := f.store.View(context.Background(), 100, 456, f.now)
-	require.NoError(t, err)
-	require.True(t, found)
-	if dir := os.Getenv("SHARED_CARD_EXAMPLES"); dir != "" {
-		text, keyboard := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
-		raw, e := json.MarshalIndent(struct {
-			Caption  string
-			Keyboard tbapi.InlineKeyboardMarkup
-		}{text, keyboard}, "", "  ")
-		require.NoError(t, e)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "independent-inquiries.json"), raw, 0o600))
-	}
-	index := -1
-	var next moderation.SharedCase
-	for i, item := range view.Menu {
-		if item.Ref != first.Ref {
-			index = i
-			for _, c := range cases {
-				if c.Ref == item.Ref {
-					next = c
-				}
+	for _, c := range cases {
+		for _, r := range c.Reports {
+			if r.Delivery.MessageID == delivery {
+				return c
 			}
 		}
 	}
-	require.NotEqual(t, -1, index)
-	f.choose(t, view.Case, fmt.Sprintf("c%d", index), nil)
+	t.Fatal("independent inquiry absent")
+	return moderation.SharedCase{}
+}
+
+func runSharedIndependentInquiries(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
+	f.forward(t, 1324)
 	f.tick(t)
-	f.choose(t, first, "all", nil)
-	cases, err = f.store.Cases(context.Background())
+	first := f.one(t)
+	next := f.independent(t, 1325)
+	require.Positive(t, next.NotificationID)
+	require.NotEqual(t, first.NotificationID, next.NotificationID)
+	require.Len(t, f.fixtures[0].cards, 2)
+	view, found, err := f.store.View(context.Background(), 100, next.Ref, f.now)
 	require.NoError(t, err)
-	for _, c := range cases {
-		require.False(t, c.Decided)
-		if c.Ref == next.Ref {
-			next = c
+	require.True(t, found)
+	text, keyboard := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
+	require.Contains(t, text, "1325")
+	for _, row := range keyboard.InlineKeyboard {
+		for _, button := range row {
+			require.NotNil(t, button.CallbackData)
+			require.Contains(t, *button.CallbackData, next.Ref)
+			require.NotContains(t, *button.CallbackData, first.Ref)
 		}
 	}
+	f.examples(t, "independent-inquiries.json", first.Ref, next.Ref)
+
+	// Neither old navigation nor an A callback attached to B acquires B authority.
+	f.choose(t, first, "c1", nil)
+	f.choose(t, first, "all", func(q *tbapi.CallbackQuery) { q.Message.MessageID = next.NotificationID })
+	fresh, err := f.store.Case(context.Background(), next.Ref)
+	require.NoError(t, err)
+	require.False(t, fresh.Decided)
 	f.choose(t, next, "100", nil)
 	f.tick(t)
 	for _, fixture := range f.fixtures {
@@ -729,7 +723,7 @@ func runSharedIndependentInquiries(t *testing.T, open func(string) *engine.SQL) 
 	require.Zero(t, f.fixtures[0].banCalls[501])
 	require.Empty(t, f.fixtures[1].banCalls)
 	require.Equal(t, map[int]int{951: 1, 952: 1}, f.fixtures[0].deleteCalls)
-	require.Len(t, f.fixtures[0].cards, 1)
+	require.Len(t, f.fixtures[0].cards, 2)
 }
 
 func TestSharedSingleOriginalAndTerminalRetry(t *testing.T) {
@@ -887,7 +881,12 @@ func TestSharedForgedLegacyNamespacesCannotAdoptTheAnchor(t *testing.T) {
 
 func TestSharedConcurrentSubmitAndPersistentOwnerClaim(t *testing.T) {
 	t.Parallel()
-	f := newSharedFleet(t, []int{2, 2}, nil)
+	runSharedConcurrentSubmit(t, nil)
+}
+
+func runSharedConcurrentSubmit(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
 	f.forward(t, 1324)
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -909,15 +908,407 @@ func TestSharedConcurrentSubmitAndPersistentOwnerClaim(t *testing.T) {
 	}
 	c := f.one(t)
 	f.now = f.now.Add(3 * time.Second)
-	claim, ok, err := f.store.ClaimCard(context.Background(), 100, c.Ref, "render", f.now)
+	claim, ok, err := f.store.ClaimCard(context.Background(), 100, c.Ref, c.Revision, "render", f.now)
 	require.NoError(t, err)
 	require.True(t, ok)
-	_, ok, err = f.store.ClaimCard(context.Background(), 100, c.Ref, "render", f.now.Add(time.Second))
+	_, ok, err = f.store.ClaimCard(context.Background(), 100, c.Ref, c.Revision, "render", f.now.Add(time.Second))
 	require.NoError(t, err)
 	require.False(t, ok)
-	_, ok, err = f.store.ClaimCard(context.Background(), 100, c.Ref, "render", f.now.Add(time.Minute))
+	_, ok, err = f.store.ClaimCard(context.Background(), 100, c.Ref, c.Revision, "render", f.now.Add(time.Minute))
 	require.NoError(t, err)
 	require.False(t, ok)
 	require.Equal(t, "unknown", f.one(t).SendState)
 	require.ErrorIs(t, f.store.FinishCard(context.Background(), claim, 123, "render", "ok", f.now), moderation.ErrLease)
+}
+
+func (f *sharedFleet) restart(t *testing.T) {
+	t.Helper()
+	f.store = f.reopenStore()
+	for i, b := range f.bridges {
+		f.fixtures[i].reopen(t, func() *engine.SQL { return f.openLocal(i) })
+		b.admin.recovery.journal = f.fixtures[i].j
+		b.admin.locator = f.fixtures[i].loc
+		b.store = f.store
+		b.cache = map[string]string{}
+	}
+}
+
+func TestSharedHistoricalDetailsCannotHideIndependentInquiry(t *testing.T) {
+	t.Parallel()
+	runSharedHistoryExpiry(t, nil)
+}
+
+func runSharedHistoryExpiry(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
+	f.forward(t, 1324)
+	f.tick(t)
+	a := f.one(t)
+	deadline := a.Reports[0].Targets[0].Deadline
+	f.choose(t, a, "v1", nil)
+	f.tick(t)
+	a, err := f.store.Case(context.Background(), a.Ref)
+	require.NoError(t, err)
+	require.Equal(t, 1, a.Page)
+	require.Contains(t, f.fixtures[0].cards[a.NotificationID], "Подробнее")
+	// Shorten only the test inquiry's selection window, then advance the clock.
+	// Original message/delete deadlines and all local journals stay unchanged.
+	a.Expires = f.now.Add(time.Second).UnixMilli()
+	raw, err := json.Marshal(a)
+	require.NoError(t, err)
+	_, err = f.storeDB.Exec(f.storeDB.Adopt(`UPDATE shared_cases SET payload=? WHERE gid=? AND ref=?`), string(raw), f.storeDB.GID(), a.Ref)
+	require.NoError(t, err)
+	f.now = f.now.Add(2 * time.Second)
+	f.tick(t)
+	next := f.independent(t, 1325)
+	require.Positive(t, next.NotificationID)
+	require.NotEqual(t, a.NotificationID, next.NotificationID)
+	require.Len(t, f.fixtures[0].cards, 2)
+	view, found, err := f.store.View(context.Background(), 100, next.Ref, f.now)
+	require.NoError(t, err)
+	require.True(t, found)
+	text, keyboard := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
+	require.Contains(t, text, "1325")
+	for _, row := range keyboard.InlineKeyboard {
+		for _, button := range row {
+			require.Contains(t, *button.CallbackData, next.Ref)
+		}
+	}
+	f.examples(t, "history-expiry.json", a.Ref, next.Ref)
+	// Open A again after expiry and try obsolete navigation and mixed bindings.
+	f.choose(t, a, "v0", nil)
+	f.choose(t, a, "c1", nil)
+	f.choose(t, a, "all", nil)
+	f.choose(t, a, "all", func(q *tbapi.CallbackQuery) { q.Message.MessageID = next.NotificationID })
+	f.choose(t, next, "all", func(q *tbapi.CallbackQuery) { q.Message.MessageID = a.NotificationID })
+	f.tick(t)
+	fresh, err := f.store.Case(context.Background(), next.Ref)
+	require.NoError(t, err)
+	require.False(t, fresh.Decided)
+	old, err := f.store.Case(context.Background(), a.Ref)
+	require.NoError(t, err)
+	require.False(t, old.Decided)
+	require.Equal(t, deadline, old.Reports[0].Targets[0].Deadline)
+	require.Contains(t, f.fixtures[0].cards[old.NotificationID], "Срок выбора истёк")
+	f.choose(t, fresh, "100", nil)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	f.restart(t)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	require.Equal(t, map[int]int{951: 1, 952: 1}, f.fixtures[0].deleteCalls)
+	require.Equal(t, map[int64]int{701: 1}, f.fixtures[0].banCalls)
+}
+
+func TestSharedUnknownAndAbandonedSendDoNotBlockIndependentInquiry(t *testing.T) {
+	t.Parallel()
+	runSharedUnknownIsolation(t, nil)
+}
+
+func runSharedUnknownIsolation(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	for _, abandoned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("abandoned=%t", abandoned), func(t *testing.T) {
+			actualOpen := open
+			if open != nil {
+				actualOpen = func(gid string) *engine.SQL { return open(fmt.Sprint(abandoned) + "-" + gid) }
+			}
+			f := newSharedFleet(t, []int{2, 2}, actualOpen)
+			base := f.fixtures[0].api.call
+			sendsA := 0
+			f.fixtures[0].api.call = func(ctx context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
+				if msg, ok := c.(tbapi.MessageConfig); ok && msg.ReplyParameters.MessageID == 1324 {
+					sendsA++
+					return nil, io.EOF
+				}
+				return base(ctx, c)
+			}
+			f.forward(t, 1324)
+			var abandonedClaim moderation.SharedCase
+			if abandoned {
+				for _, b := range f.bridges {
+					reports, err := b.admin.recovery.journal.SharedOutbox(context.Background())
+					require.NoError(t, err)
+					for _, r := range reports {
+						require.NoError(t, f.store.Submit(context.Background(), r, f.now))
+					}
+				}
+				cases, err := f.store.Cases(context.Background())
+				require.NoError(t, err)
+				require.Len(t, cases, 1)
+				f.now = f.now.Add(3 * time.Second)
+				var ok bool
+				abandonedClaim, ok, err = f.store.ClaimCard(context.Background(), 100, cases[0].Ref, cases[0].Revision, "abandoned", f.now)
+				require.NoError(t, err)
+				require.True(t, ok)
+			} else {
+				f.tick(t)
+			}
+			a := f.one(t)
+			deadline := a.Reports[0].Targets[0].Deadline
+			f.restart(t)
+			f.now = f.now.Add(time.Minute)
+			f.tick(t)
+			a, err := f.store.Case(context.Background(), a.Ref)
+			require.NoError(t, err)
+			require.Equal(t, "unknown", a.SendState)
+			f.forward(t, 1324)
+			f.forward(t, 1326) // new delivery, same proven originals
+			f.tick(t)
+			require.Equal(t, a.Ref, f.one(t).Ref)
+			require.Equal(t, map[bool]int{false: 1, true: 0}[abandoned], sendsA)
+			if abandoned {
+				require.ErrorIs(t, f.store.FinishCard(context.Background(), abandonedClaim, 2000, "abandoned", "ok", f.now), moderation.ErrLease)
+			}
+			next := f.independent(t, 1325)
+			require.Positive(t, next.NotificationID)
+			require.Equal(t, "known", next.SendState)
+			view, found, err := f.store.View(context.Background(), 100, next.Ref, f.now)
+			require.NoError(t, err)
+			require.True(t, found)
+			text, keyboard := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
+			require.Contains(t, text, "1325")
+			for _, row := range keyboard.InlineKeyboard {
+				for _, button := range row {
+					require.Contains(t, *button.CallbackData, next.Ref)
+				}
+			}
+			f.examples(t, fmt.Sprintf("unknown-abandoned-%t.json", abandoned), a.Ref, next.Ref)
+			f.choose(t, a, "all", nil)
+			f.choose(t, a, "all", func(q *tbapi.CallbackQuery) { q.Message.MessageID = next.NotificationID })
+			fresh, err := f.store.Case(context.Background(), next.Ref)
+			require.NoError(t, err)
+			require.False(t, fresh.Decided)
+			// An unrelated message cannot be bound as A's missing card.
+			require.Error(t, f.store.ResolveUnknown(context.Background(), 100, a.Ref, a.Revision, 456, next.NotificationID))
+			f.choose(t, fresh, "100", nil)
+			f.tick(t)
+			f.fixtures[0].settle(t)
+			f.restart(t)
+			f.tick(t)
+			f.fixtures[0].settle(t)
+			require.Equal(t, map[int]int{951: 1, 952: 1}, f.fixtures[0].deleteCalls)
+			require.Equal(t, map[int64]int{701: 1}, f.fixtures[0].banCalls)
+			old, err := f.store.Case(context.Background(), a.Ref)
+			require.NoError(t, err)
+			require.Equal(t, "unknown", old.SendState)
+			require.False(t, old.Decided)
+			require.Equal(t, deadline, old.Reports[0].Targets[0].Deadline)
+			require.Equal(t, map[bool]int{false: 1, true: 0}[abandoned], sendsA)
+			// Targeted operator reconciliation of an independently verified message.
+			require.NoError(t, f.store.ResolveUnknown(context.Background(), 100, old.Ref, old.Revision, 456, 2000))
+			f.tick(t)
+			resolved, err := f.store.Case(context.Background(), old.Ref)
+			require.NoError(t, err)
+			require.Equal(t, 2000, resolved.NotificationID)
+			require.Equal(t, deadline, resolved.Reports[0].Targets[0].Deadline)
+			f.choose(t, old, "all", func(q *tbapi.CallbackQuery) { q.Message.MessageID = 2000 })
+			resolved, err = f.store.Case(context.Background(), old.Ref)
+			require.NoError(t, err)
+			require.False(t, resolved.Decided)
+			require.Equal(t, map[bool]int{false: 1, true: 0}[abandoned], sendsA)
+		})
+	}
+}
+
+func TestSharedUnknownAutoDecisionDoesNotGainAnotherEpoch(t *testing.T) {
+	t.Parallel()
+	runSharedUnknownConfirmed(t, nil)
+}
+
+func runSharedUnknownConfirmed(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{1, 0}, open)
+	base := f.fixtures[0].api.call
+	sends := 0
+	f.fixtures[0].api.call = func(ctx context.Context, c tbapi.Chattable) (*tbapi.APIResponse, error) {
+		if _, ok := c.(tbapi.MessageConfig); ok {
+			sends++
+			return nil, io.EOF
+		}
+		return base(ctx, c)
+	}
+	f.forward(t, 1324)
+	f.tick(t)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	f.tick(t)
+	first := f.one(t)
+	require.True(t, first.Decided)
+	require.Equal(t, "unknown", first.SendState)
+	deadline := first.Reports[0].Targets[0].Deadline
+	f.restart(t)
+	f.forward(t, 1325)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	require.Equal(t, first.Ref, f.one(t).Ref)
+	require.Equal(t, first.DecisionOperator, f.one(t).DecisionOperator)
+	require.Equal(t, deadline, f.one(t).Reports[0].Targets[0].Deadline)
+	require.Equal(t, 1, sends)
+	require.Equal(t, map[int]int{800: 1}, f.fixtures[0].deleteCalls)
+	require.Equal(t, map[int64]int{501: 1}, f.fixtures[0].banCalls)
+}
+
+func TestSharedLateProofRetiresProvisionalCardWithoutNewAuthority(t *testing.T) {
+	t.Parallel()
+	runSharedCrossedAfterBound(t, nil)
+}
+
+func runSharedCrossedAfterBound(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
+	f.forward(t, 1324, 0)
+	f.forward(t, 1325, 1)
+	f.tick(t)
+	require.Len(t, f.fixtures[0].cards, 1)
+	// Bounded waiting does not silently combine unproven original sets.
+	f.now = f.now.Add(20 * time.Second)
+	f.tick(t)
+	require.Len(t, f.fixtures[0].cards, 2)
+	before, err := f.store.Cases(context.Background())
+	require.NoError(t, err)
+	f.forward(t, 1324, 1)
+	f.forward(t, 1325, 0)
+	f.tick(t)
+	cases, err := f.store.Cases(context.Background())
+	require.NoError(t, err)
+	active, aliases := 0, 0
+	var canonical moderation.SharedCase
+	for _, c := range cases {
+		if c.Canonical == "" {
+			active++
+			canonical = c
+			continue
+		}
+		aliases++
+		view, found, e := f.store.View(context.Background(), 100, c.Ref, f.now)
+		require.NoError(t, e)
+		require.True(t, found)
+		text, buttons := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
+		require.Contains(t, text, "Используйте общую карточку")
+		require.Empty(t, buttons.InlineKeyboard)
+		require.Contains(t, f.fixtures[0].cards[c.NotificationID], "Используйте общую карточку")
+	}
+	require.Equal(t, 1, active)
+	require.Equal(t, 1, aliases)
+	for _, old := range before {
+		if old.Ref != canonical.Ref {
+			f.choose(t, old, "all", nil)
+			// A renderer that captured pre-reconciliation text cannot re-arm old buttons.
+			_, claimed, e := f.store.ClaimCard(context.Background(), 100, old.Ref, old.Revision, "stale buttons", f.now)
+			require.NoError(t, e)
+			require.False(t, claimed)
+		}
+	}
+	current, err := f.store.Case(context.Background(), canonical.Ref)
+	require.NoError(t, err)
+	require.False(t, current.Decided)
+	f.choose(t, current, "100", nil)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	f.restart(t)
+	f.tick(t)
+	f.fixtures[0].settle(t)
+	require.Equal(t, map[int]int{800: 1, 801: 1}, f.fixtures[0].deleteCalls)
+	require.Equal(t, map[int64]int{501: 1}, f.fixtures[0].banCalls)
+	require.Empty(t, f.fixtures[1].banCalls)
+	require.Len(t, f.fixtures[0].cards, 2)
+}
+
+func TestSharedConcurrentCardClaimsAcrossRestartedStores(t *testing.T) {
+	t.Parallel()
+	runSharedConcurrentClaims(t, nil)
+}
+
+func runSharedConcurrentClaims(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
+	f.forward(t, 1324)
+	f.tick(t)
+	c := f.one(t)
+	other := f.reopenStore()
+	results := make(chan bool, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, store := range []*moderation.SharedStore{f.store, other} {
+		wg.Go(func() {
+			_, ok, err := store.ClaimCard(context.Background(), 100, c.Ref, c.Revision, "concurrent edit", f.now)
+			results <- ok
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	successes := 0
+	for ok := range results {
+		if ok {
+			successes++
+		}
+	}
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	require.Equal(t, 1, successes)
+}
+
+func (f *sharedFleet) examples(t *testing.T, name string, refs ...string) {
+	t.Helper()
+	dir := os.Getenv("SHARED_CARD_EXAMPLES")
+	if dir == "" {
+		return
+	}
+	type sample struct {
+		Ref            string
+		NotificationID int
+		SendState      string
+		Caption        string
+		Keyboard       tbapi.InlineKeyboardMarkup
+	}
+	examples := []sample{}
+	for _, ref := range refs {
+		view, found, err := f.store.View(context.Background(), 100, ref, f.now)
+		require.NoError(t, err)
+		require.True(t, found)
+		text, keyboard := sharedViewCard(view, f.bridges[0].config.Peers, f.now)
+		examples = append(examples, sample{ref, view.Case.NotificationID, view.Case.SendState, text, keyboard})
+	}
+	raw, err := json.MarshalIndent(examples, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), raw, 0o600))
+}
+
+func TestSharedLegacyPanelUncertaintyIsNotCopiedToIndependentInquiry(t *testing.T) {
+	t.Parallel()
+	runSharedLegacyPanel(t, nil)
+}
+
+func runSharedLegacyPanel(t *testing.T, open func(string) *engine.SQL) {
+	t.Helper()
+	f := newSharedFleet(t, []int{2, 2}, open)
+	f.forward(t, 1324)
+	for _, b := range f.bridges {
+		reports, err := b.admin.recovery.journal.SharedOutbox(context.Background())
+		require.NoError(t, err)
+		for _, r := range reports {
+			require.NoError(t, f.store.Submit(context.Background(), r, f.now))
+		}
+	}
+	a := f.one(t)
+	legacy := fmt.Sprintf(`{"AdminID":456,"Ref":%q,"Pinned":true,"SendState":"unknown","NotificationID":0}`, a.Ref)
+	_, err := f.storeDB.Exec(f.storeDB.Adopt(`INSERT INTO shared_views VALUES (?,?,?)`), f.storeDB.GID(), 456, legacy)
+	require.NoError(t, err)
+	f.restart(t)
+	f.tick(t)
+	next := f.independent(t, 1325)
+	require.Positive(t, next.NotificationID)
+	require.Equal(t, "known", next.SendState)
+	old, err := f.store.Case(context.Background(), a.Ref)
+	require.NoError(t, err)
+	require.Equal(t, "unknown", old.SendState)
+	require.Zero(t, old.NotificationID)
+	var retained string
+	require.NoError(t, f.storeDB.Get(&retained, f.storeDB.Adopt(`SELECT payload FROM shared_views WHERE gid=?`), f.storeDB.GID()))
+	require.JSONEq(t, legacy, retained, "legacy audit data must remain intact")
+	require.Len(t, f.fixtures[0].cards, 1)
 }

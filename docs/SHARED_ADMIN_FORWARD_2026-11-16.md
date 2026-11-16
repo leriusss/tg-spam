@@ -1,4 +1,4 @@
-# One admin-forward inquiry across bot instances
+# One card per admin-forward inquiry across bot instances
 
 Status: opt-in implementation for review. No deployment, configuration change,
 incident replay, merge, or real moderation is part of this change.
@@ -92,41 +92,50 @@ chat. A local immutable receipt and outbox entry commit together; zero matches
 and search refusals are persisted too. Local cards for these receipts are
 suppressed. Ordinary detector, reporting and other moderation paths are unchanged.
 
-Unselected inquiries coalesce only when they refer to the same
-exact local original IDs **and numeric provenance**, not text or display names.
-The full delivery ledger remains separate. Different originals retain separate
-target identities. A changed candidate set starts a new inquiry; it cannot
-expand an existing confirmed selection. A provisional inquiry can be merged
-only before it has been displayed or selected. A new forward after a saved
-decision starts a separate logical decision epoch behind the same Telegram
-message. This allows an explicit choice for late targets while earlier work
-is still pending or uncertain; it cannot expand that earlier decision.
+Each inquiry owns its own Telegram card, send state, lease and retry budget in
+`shared_cards`, keyed by `(gid, ref)`. There is no permanent admin-chat panel,
+global selected inquiry or `Pinned` flag. An independent B receives its own reply
+to B's incoming forward even while A is pending, expired, viewed in Details or
+has an unknown initial send. Details/history navigation changes only A's page;
+it cannot change B's presentation, targets or decision authority. Obsolete `c`/`p`
+buttons from the former panel are rejected. A reconciled alias links to the
+canonical card's own Telegram message rather than transplanting its action buttons.
 
-Every logical inquiry shares **one persistent Telegram message per admin chat**.
-Distinct inquiries retain their separate refs, targets, requesters, decisions and
-deadlines; the card provides paginated inquiry navigation and history. Navigation
-never authorizes moderation. Callbacks must match the inquiry currently displayed
-in that anchor, in addition to its saved revision and the current operator role.
-The shared anchor is protected before legacy callback dispatch: forged `?`, `+`,
-`M+`, `R+` and reporter callbacks cannot adopt its message, replace its keyboard,
-train the classifier or admit legacy actions. Callback data is bounded to 64
-bytes. Unclassified owner callbacks fail closed when anchor binding is unavailable;
-existing legacy cards are not rewritten.
+The shared incoming key still binds all bots' deliveries of the **same admin
+message** to one inquiry. Different forwards coalesce only on exact local
+original IDs and numeric provenance, never on text/display names. The delivery
+ledger remains separate. A new target set or explicit retry decision retains its
+own identity, immutable selection, operator and original deadlines. A new forward
+after a saved decision normally starts a new decision epoch with its own card;
+an unresolved initial card send is an exception: repeated proven originals stay
+bound to that uncertain inquiry, even after expiry, without new authority.
 
-Crossed late deliveries therefore cannot create additional provisional cards,
-even before the relationship between their original sets is known. Exact-set
-coalescing can later simplify the inquiry menu; it never merges distinct original
-identities or combines two accepted decisions. While correspondence is unproven,
-the inquiries remain separate behind the same message. The next pending inquiry
-is shown after the current one finishes; explicit navigation can pin a historical
-view without extending any expiry or delete deadline.
+For crossed deliveries without a common peer result, equivalence is initially
+unproven. The first inquiry can display partial results after two seconds. An
+additional incomplete inquiry that cannot yet be distinguished waits at most
+15 further seconds for evidence; a conflicting exact peer result or a complete
+roster releases it immediately. This is only a bounded presentation delay, not a
+shared decision or merged targets. If evidence arrives after that bound, each
+unproven inquiry may already have its own partial response. Once **all peers**
+prove identical original sets, unselected inquiries reconcile to one canonical
+active card; an already sent alias is edited to an action-free pointer. Its
+revision changes and canonical status is checked transactionally, invalidating
+its old callbacks. Two saved decisions are never merged. With permanently
+missing provenance the system cannot truthfully assert that different forwards
+are the same inquiry; it keeps their identities separate. Exactly one active
+card for a proven group is distinguished from exactly one physical message for
+arbitrarily late, previously unprovable equivalence.
 
-One fixed bot ID owns the Telegram card and callbacks. Other processes may
-resume that bot's work after restart, using SQL claims. A different bot cannot
-edit the original bot's Telegram card; owner migration requires an explicit
-procedure. Collection waits two seconds and then shows partial results, with
-the number of missing peers. Late reports update the same card and invalidate
-stale choice buttons without expanding a saved decision.
+One fixed numeric bot owns all these cards. Other processes using the same bot
+can resume claims after restart; another bot cannot edit its messages. Card
+callback admission checks the inquiry's own actual anchor, current revision and
+current operator role. Rendering claims also bind the saved revision, so a pre-reconciliation snapshot
+cannot obtain a new claim afterward. A request already in flight can still
+arrive late; its old buttons fail admission and the next poll edits the alias. Forged legacy
+callback namespaces cannot adopt a known shared card or train the classifier.
+Callback data is bounded to 64 bytes; legacy incident cards are not rewritten.
+Late results edit the corresponding inquiry's card and never expand a saved
+selection. Missing peers are shown honestly in the renderer.
 
 If all configured bots answered and exactly one original is admissible without
 retry review, the existing single-original workflow proceeds. Otherwise the
@@ -154,20 +163,58 @@ cached as an optimization, with SQL still authoritative after restart. Card
 creation/edit claims have 30-second leases and 15-second HTTP timeouts. Known
 rejected retryable sends/edits have at most five attempts with ten-second waits.
 An uncertain first send, lost acknowledgement, or abandoned initial-send lease
-is marked `unknown` for the shared admin-chat anchor: it is **never blindly resent**,
-even when another independent inquiry or an explicit new attempt arrives.
-Missing edit anchors are
-not replaced with new cards. Operator reconciliation of such cases is required;
-there is no exactly-once Telegram API guarantee.
+is marked `unknown` for **that inquiry only**. Restart, duplicate delivery and
+another forward of the same proven originals never blindly resend it. An
+independent B uses a separate row/lease and remains available. Missing edit
+anchors are not replaced with new cards. There is no exactly-once Telegram API
+guarantee. The old draft's `shared_views` row is retained for audit and is read
+only for its own saved `Ref`; its known/unknown binding is never copied to B.
 
 Choices expire after 15 minutes; local expiry can be earlier when handoff was
 delayed. A refused or finished already-imported decision, or an expired inquiry,
-requires a **new forward plus explicit choice** for another attempt. Confirmed actions are linked
-instead of repeated; earliest delete deadlines survive new receipts. Old case
-callbacks remain bound to their own ref/revision/anchor and the currently
-displayed inquiry and cannot authorize
-the next attempt. Unknown action outcomes follow the existing worker's recovery
-rules, never a second coordinator action executor.
+requires a **new forward plus explicit choice** for another attempt. Resolve an
+uncertain initial card binding first when it covers those proven originals.
+Confirmed actions are linked instead of repeated; earliest delete deadlines
+survive new receipts. Old callbacks remain bound to their original ref, revision
+and message, and cannot authorize the next attempt. Unknown moderation outcomes
+follow the existing worker's recovery rules, not a second coordinator executor.
+
+### Targeted unknown-send reconciliation
+
+Do not clear the coordination DB, delete history, reset a lease to resend, or
+restore an old runtime DB. First take fresh consistent backups/export of the
+shared store and local journals. Record the exact inquiry `ref`, `AdminID`,
+`Revision`, `SendState`, targets, decisions and expiry. An abandoned first-send
+lease becomes `unknown` after its 30-second lease ends; a late acknowledgement
+using the discarded lease is rejected.
+
+Using the owner's Telegram account/chat view, independently verify any candidate
+message: actual owner bot, admin chat, reply to the inquiry's incoming forward
+and listed originals. A matching text alone does not establish this binding.
+If no existing message can be verified, leave A unknown and record the unresolved
+inspection; B continues normally. This procedure never treats absence from a
+partial chat history as proof that Telegram did not accept A's send.
+
+Only after verification, a trusted operator can bind the **existing** message:
+
+```sh
+go run ./tools/shared-forward-card-resolve \
+  --sqlite /absolute/path/to/coordination.db --gid shared-forwards \
+  --owner <configured-owner-bot-id> --peers <exact-comma-separated-roster> \
+  --ref <exact-inquiry-ref> --revision <current-revision> \
+  --admin <verified-admin-chat-id> --message <verified-existing-card-id> --apply
+```
+
+For PostgreSQL set `SHARED_RESOLVE_POSTGRES_URL` privately and omit `--sqlite`;
+do not put a credential-bearing URL in shell history. The tool requires an
+existing shared roster and exact configuration. `ResolveUnknown` refuses a
+non-unknown inquiry, stale revision, wrong destination or a message already bound
+to another inquiry. It records the prior unknown state, original revision,
+verified message ID and resolution time, then increments the revision. It does
+not send a message, grant a selection, change actions, extend expiry/deadlines or
+alter B. On the next poll the actual renderer edits only this verified message.
+Old buttons remain stale. Preserve the backup, verification evidence and tool
+result as the private operator record. No such operation was run in production.
 
 Local admission also checks a causal snapshot of any known terminal refusals.
 The snapshot includes a hash of the local action identity, terminal state, code
@@ -202,11 +249,18 @@ outcomes. Deletion and blocking are reported separately. `Absent` never claims
 that this bot deleted a message. Candidate discovery is never reported as a
 completed operation. Examples in `docs/examples/shared-forward/` are generated
 from the multi-instance test fixture, with synthetic identities only.
+The independent-inquiry JSON includes two different message IDs and independently
+bound keyboards. History-expiry and unknown/abandoned-send examples include A
+and B side by side, with each saved send state. An unknown A has message ID zero:
+its caption/keyboard is a renderer preview, not a claim that Telegram displayed
+it. B's known message and buttons remain independently available.
 
 Regression tests use real separate SQL journals, the listener source recorder,
 actual forward handler, actual shared renderer and actual recovery worker with
 Telegram mocks. PostgreSQL exercises the incident, independent-inquiry navigation and crossed-late
-delivery scenarios, plus delayed-intent refusal guards, in full CI.
+delivery scenarios, plus delayed-intent refusal guards, expired historical views,
+unknown/abandoned first sends isolated from independent inquiries, targeted
+resolution and restart of both coordinator and local journals, in full CI.
 Existing build/test/race/lint, recovery, reporting, auto-trust and e2e workflows
 are retained without weakening checks. Final results and exact reviewed HEAD are
 reported in the PR and the local validation receipt.
@@ -228,7 +282,7 @@ fits the existing CI time limit; assertions and workflow timeouts are unchanged.
    can still produce legacy independent cards and is not a supported rollout.
    Fence only admin-forward intake during the transition; do not run a second
    poller or stop unrelated services. Confirm all five share the same DB/roster.
-5. Observe for **15 minutes**: owner identity, one anchor per admin chat, missing
+5. Observe for **15 minutes**: owner identity, one card per inquiry/proven repeat group, missing
    peers, outbox admission/import, role checks, worker outcomes, API rate limits,
    DB integrity, queue size, memory/CPU, disk and ordinary automatic moderation.
    Synthetic real moderation requires separate authorization.
@@ -269,4 +323,5 @@ full deployment rehearsal of the old binary. Confirm this boundary in the future
 staging rehearsal before deployment. No old DB restore or shared-state deletion
 is part of the procedure.
 
-No real production action, merge or deployment was performed for this PR.
+No production configuration or runtime changes, real Telegram actions, merge or
+deployment were performed for this PR revision.

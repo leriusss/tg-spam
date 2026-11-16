@@ -7,58 +7,80 @@ import (
 	"time"
 )
 
-// sharedAnchor is the sole persistent Telegram message for an admin destination.
-// Inquiry identity and immutable decisions remain in shared_cases, independently.
+type sharedResolution struct {
+	PreviousState            string
+	NotificationID, Revision int
+	At                       int64
+}
+
+// sharedAnchor owns delivery state for one inquiry, never for an admin chat.
+// Legacy shared_views rows are retained as audit data and read only for their ref.
 type sharedAnchor struct {
-	Pinned                       bool
 	AdminID                      int64
 	Ref                          string
 	NotificationID               int
 	SendState, Lease, LastRender string
 	LeaseUntil, NextAt           int64
-	Attempts, Page               int
-	Menu                         []string
+	Attempts                     int
+	Resolution                   *sharedResolution
 }
 
-// SharedMenuItem navigates between distinct inquiries without merging targets.
-type SharedMenuItem struct {
-	Ref       string
-	MessageID int
-	Decided   bool
-}
-
-// SharedView presents one inquiry and bounded navigation in one stable message.
+// SharedView presents one inquiry without any global selected or pinned view.
 type SharedView struct {
 	Case SharedCase
-	Menu []SharedMenuItem
-	Page int
 }
 
-// ForeignNamespaceBlocked prevents legacy handlers from adopting the shared anchor.
+// ForeignNamespaceBlocked prevents legacy handlers from adopting known shared cards.
 func (s *SharedStore) ForeignNamespaceBlocked(ctx context.Context, admin int64, notification int) (blocked bool, err error) {
 	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error {
-		a, e := s.readAnchor(ctx, tx, admin)
+		cases, e := s.cases(ctx, tx)
 		if e != nil {
 			return e
 		}
-		blocked = notification > 0 && notification == a.NotificationID || a.SendState == "unknown" ||
-			a.SendState == "armed" && a.NotificationID == 0
+		for _, c := range cases {
+			if c.AdminID != admin {
+				continue
+			}
+			a, e := s.readAnchor(ctx, tx, c.Ref)
+			if e != nil {
+				return e
+			}
+			if notification > 0 && notification == a.NotificationID {
+				blocked = true
+				break
+			}
+		}
 		return nil
 	})
 	return blocked, err
 }
 
-func (s *SharedStore) readAnchor(ctx context.Context, tx journalTx, admin int64) (sharedAnchor, error) {
+func (s *SharedStore) readAnchor(ctx context.Context, tx journalTx, ref string) (sharedAnchor, error) {
 	var rows []string
 	j := s.journal
-	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT payload FROM shared_views WHERE gid=? AND destination=?`), j.db.GID(), admin); err != nil {
+	if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT payload FROM shared_cards WHERE gid=? AND ref=?`), j.db.GID(), ref); err != nil {
 		return sharedAnchor{}, journalError(err)
 	}
-	a := sharedAnchor{AdminID: admin}
-	if len(rows) > 0 {
-		if err := json.Unmarshal([]byte(rows[0]), &a); err != nil {
+	a := sharedAnchor{Ref: ref}
+	if len(rows) == 0 {
+		// The draft's old layout had a single panel. Preserve its one actual binding,
+		// including uncertainty, without copying that state onto unrelated inquiries.
+		if err := tx.SelectContext(ctx, &rows, j.db.Adopt(`SELECT payload FROM shared_views WHERE gid=?`), j.db.GID()); err != nil {
 			return a, journalError(err)
 		}
+		for _, raw := range rows {
+			var legacy sharedAnchor
+			if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+				return a, journalError(err)
+			}
+			if legacy.Ref == ref {
+				return legacy, nil
+			}
+		}
+		return a, nil
+	}
+	if err := json.Unmarshal([]byte(rows[0]), &a); err != nil {
+		return a, journalError(err)
 	}
 	return a, nil
 }
@@ -68,7 +90,7 @@ func (s *SharedStore) saveAnchor(ctx context.Context, tx journalTx, a sharedAnch
 	if err != nil {
 		return journalError(err)
 	}
-	return s.journal.exec(ctx, tx, `INSERT INTO shared_views VALUES (?,?,?) ON CONFLICT(gid,destination) DO UPDATE SET payload=excluded.payload`, s.journal.db.GID(), a.AdminID, string(raw))
+	return s.journal.exec(ctx, tx, `INSERT INTO shared_cards VALUES (?,?,?) ON CONFLICT(gid,ref) DO UPDATE SET payload=excluded.payload`, s.journal.db.GID(), a.Ref, string(raw))
 }
 
 func applyAnchor(c *SharedCase, a sharedAnchor) {
@@ -82,83 +104,41 @@ func applyAnchor(c *SharedCase, a sharedAnchor) {
 }
 
 func (s *SharedStore) decorateCases(ctx context.Context, tx journalTx, cases []SharedCase) error {
-	anchors := map[int64]sharedAnchor{}
 	for i := range cases {
-		admin := cases[i].AdminID
-		a, ok := anchors[admin]
-		if !ok {
-			var err error
-			a, err = s.readAnchor(ctx, tx, admin)
-			if err != nil {
-				return err
-			}
-			anchors[admin] = a
+		a, err := s.readAnchor(ctx, tx, cases[i].Ref)
+		if err != nil {
+			return err
 		}
 		applyAnchor(&cases[i], a)
 	}
 	return nil
 }
 
-// View keeps unrelated, late or unresolved inquiries behind the same anchor.
-func (s *SharedStore) View(ctx context.Context, peer, admin int64, now time.Time) (out SharedView, found bool, err error) {
+// View presents this inquiry only. Reading history cannot change another card.
+func (s *SharedStore) View(ctx context.Context, peer int64, ref string, _ time.Time) (out SharedView, found bool, err error) {
 	if peer != s.owner {
 		return out, false, errors.New("only card owner presents inquiries")
 	}
-	err = s.journal.transaction(ctx, func(tx journalTx) error {
-		all, e := s.cases(ctx, tx)
+	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error {
+		c, e := s.readCase(ctx, tx, ref)
 		if e != nil {
 			return e
 		}
-		a, e := s.readAnchor(ctx, tx, admin)
+		a, e := s.readAnchor(ctx, tx, ref)
 		if e != nil {
 			return e
 		}
-		cases := []SharedCase{}
-		for _, c := range all {
-			if c.AdminID == admin && c.Canonical == "" {
-				cases = append(cases, c)
+		applyAnchor(&c, a)
+		if c.Canonical != "" {
+			canonical, e := s.readAnchor(ctx, tx, c.Canonical)
+			if e != nil {
+				return e
 			}
+			c.CanonicalAnchor = canonical.NotificationID
 		}
-		if len(cases) == 0 {
-			return nil
-		}
-		index := -1
-		for i, c := range cases {
-			if c.Ref == a.Ref {
-				index = i
-			}
-		}
-		if index < 0 {
-			index = 0
-			a.Ref = cases[0].Ref
-			a.Pinned = false
-		}
-		// Show the next pending inquiry automatically only after this one finishes.
-		if !a.Pinned && (cases[index].Expires <= now.UnixMilli() || sharedTerminal(cases[index])) {
-			for i, c := range cases {
-				if c.Expires > now.UnixMilli() && !c.Decided {
-					index = i
-					a.Ref = c.Ref
-					break
-				}
-			}
-		}
-		a.Menu = nil
-		out.Menu = nil
-		for _, c := range cases {
-			mid := 0
-			if len(c.Reports) > 0 {
-				mid = c.Reports[0].Delivery.MessageID
-			}
-			a.Menu = append(a.Menu, c.Ref)
-			out.Menu = append(out.Menu, SharedMenuItem{Ref: c.Ref, MessageID: mid, Decided: c.Decided})
-		}
-		a.Page = min(a.Page, (len(cases)-1)/5)
-		out.Case = cases[index]
-		applyAnchor(&out.Case, a)
-		out.Page = a.Page
+		out.Case = c
 		found = true
-		return s.saveAnchor(ctx, tx, a)
+		return nil
 	})
 	return out, found, err
 }
@@ -167,66 +147,97 @@ func (s *SharedStore) anchorBound(ctx context.Context, tx journalTx, c SharedCas
 	if peer != s.owner || admin != c.AdminID || anchor <= 0 {
 		return false
 	}
-	a, err := s.readAnchor(ctx, tx, admin)
-	return err == nil && a.NotificationID == anchor && a.Ref == c.Ref
+	a, err := s.readAnchor(ctx, tx, c.Ref)
+	return err == nil && a.NotificationID == anchor && a.SendState == "known"
 }
 
-// SwitchView changes presentation only; it never changes a decision or expiry.
-func (s *SharedStore) SwitchView(ctx context.Context, peer int64, ref string, revision int,
-	admin int64, anchor, index, page int) error {
+// ResolveUnknown binds an independently verified existing message; it never sends,
+// resets an inquiry, or changes moderation authority or original deadlines.
+func (s *SharedStore) ResolveUnknown(ctx context.Context, peer int64, ref string, revision int, admin int64, anchor int) error {
 	return s.journal.transaction(ctx, func(tx journalTx) error {
 		c, e := s.readCase(ctx, tx, ref)
 		if e != nil {
 			return e
 		}
-		if c.Revision != revision || !s.anchorBound(ctx, tx, c, peer, admin, anchor) {
-			return errors.New("stale shared view")
-		}
-		a, e := s.readAnchor(ctx, tx, admin)
+		a, e := s.readAnchor(ctx, tx, ref)
 		if e != nil {
 			return e
 		}
-		if index >= 0 {
-			if index >= len(a.Menu) {
-				return errors.New("shared inquiry outside displayed menu")
-			}
-			target, e := s.readCase(ctx, tx, a.Menu[index])
+		if peer != s.owner || c.AdminID != admin || c.Revision != revision ||
+			c.Canonical != "" || anchor <= 0 || a.SendState != "unknown" {
+			return errors.New("unbound unknown-send resolution")
+		}
+		all, e := s.cases(ctx, tx)
+		if e != nil {
+			return e
+		}
+		for _, other := range all {
+			known, e := s.readAnchor(ctx, tx, other.Ref)
 			if e != nil {
 				return e
 			}
-			if target.AdminID != admin || target.Canonical != "" {
-				return errors.New("shared inquiry superseded")
+			if other.AdminID == admin && other.Ref != ref && known.NotificationID == anchor {
+				return errors.New("message belongs to another inquiry")
 			}
-			a.Ref = target.Ref
-			a.Pinned = true
-		} else {
-			if page < 0 || page*5 >= len(a.Menu) {
-				return errors.New("shared menu page outside range")
-			}
-			a.Page = page
+		}
+		a.Resolution = &sharedResolution{PreviousState: a.SendState, NotificationID: anchor,
+			Revision: revision, At: time.Now().UnixMilli()}
+		a.AdminID = admin
+		a.NotificationID = anchor
+		a.SendState = "known"
+		a.LastRender = ""
+		a.Lease = ""
+		a.LeaseUntil = 0
+		c.Revision++ // old/unverified buttons never gain the resolution's authority
+		if e := s.save(ctx, tx, c); e != nil {
+			return e
 		}
 		return s.saveAnchor(ctx, tx, a)
 	})
 }
 
-// ClaimCard fences sends/edits across every inquiry, including disjoint late searches.
-func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref, rendered string,
+// ClaimCard fences sends/edits for this inquiry across processes and restarts.
+func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref string, revision int, rendered string,
 	now time.Time) (out SharedCase, claimed bool, err error) {
 	err = s.journal.transaction(ctx, func(tx journalTx) error {
 		c, e := s.readCase(ctx, tx, ref)
 		if e != nil {
 			return e
 		}
-		a, e := s.readAnchor(ctx, tx, c.AdminID)
+		a, e := s.readAnchor(ctx, tx, c.Ref)
 		if e != nil {
 			return e
 		}
-		if a.Ref == "" {
-			a.Ref = ref
-		}
-		if peer != s.owner || a.Ref != ref || c.CollectUntil > now.UnixMilli() || a.NextAt > now.UnixMilli() ||
+		a.AdminID = c.AdminID
+		if peer != s.owner || c.Revision != revision || c.Canonical != "" && a.NotificationID == 0 ||
+			c.CollectUntil > now.UnixMilli() || a.NextAt > now.UnixMilli() ||
 			a.LastRender == rendered || a.SendState == "unknown" || a.SendState == "failed" {
 			return nil
+		}
+		if a.NotificationID == 0 && !s.completeCase(c) && now.UnixMilli() < c.CollectUntil+15000 {
+			all, e := s.cases(ctx, tx)
+			if e != nil {
+				return e
+			}
+			for _, older := range all {
+				if older.Ref == c.Ref {
+					break
+				}
+				if older.AdminID != c.AdminID || older.Canonical != "" || older.Decided || older.Expires <= now.UnixMilli() {
+					continue
+				}
+				distinct := false
+				for _, x := range older.Reports {
+					for _, y := range c.Reports {
+						if x.Peer == y.Peer && (len(x.Targets) != 0 || len(y.Targets) != 0) && !sameOriginals(x, y) {
+							distinct = true
+						}
+					}
+				}
+				if !distinct {
+					return nil
+				} // bounded collection, never a shared decision
+			}
 		}
 		if a.Lease != "" {
 			if a.LeaseUntil > now.UnixMilli() {
@@ -260,10 +271,10 @@ func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref, rendered s
 	return out, claimed, err
 }
 
-// FinishCard acknowledges the same persistent anchor even after changing inquiries.
+// FinishCard acknowledges only the claimed inquiry and its lease.
 func (s *SharedStore) FinishCard(ctx context.Context, c SharedCase, anchor int, rendered, outcome string, now time.Time) error {
 	return s.journal.transaction(ctx, func(tx journalTx) error {
-		a, e := s.readAnchor(ctx, tx, c.AdminID)
+		a, e := s.readAnchor(ctx, tx, c.Ref)
 		if e != nil {
 			return e
 		}
