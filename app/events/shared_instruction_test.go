@@ -287,6 +287,37 @@ func TestInstructionBackloggedForwardKeepsTelegramExpiry(t *testing.T) {
 	require.Empty(t, f.fixtures[0].banCalls)
 }
 
+func TestInstructionExpiryDuringRoleLookupAndDelayedImport(t *testing.T) {
+	t.Parallel()
+	for _, afterRole := range []bool{true, false} {
+		t.Run(fmt.Sprint(afterRole), func(t *testing.T) {
+			f := instructionFleet(t, []int{2}, nil)
+			instructionForward(t, f, 1349)
+			if afterRole {
+				base := f.fixtures[0].api.call
+				f.fixtures[0].api.call = func(ctx context.Context, req tbapi.Chattable) (*tbapi.APIResponse, error) {
+					response, err := base(ctx, req)
+					if member, ok := req.(tbapi.GetChatMemberConfig); ok && member.ChatID == 456 {
+						f.now = f.now.Add(16 * time.Minute)
+					}
+					return response, err
+				}
+				f.tick(t)
+				require.False(t, f.one(t).Decided)
+			} else {
+				f.tick(t)
+				require.True(t, f.one(t).Decided)
+				started := f.now
+				f.now = f.now.Add(16 * time.Minute)
+				require.NoError(t, f.bridges[0].step(context.Background(), started))
+			}
+			settleInstructions(t, f)
+			require.Empty(t, f.fixtures[0].deleteCalls)
+			require.Empty(t, f.fixtures[0].banCalls)
+		})
+	}
+}
+
 func TestInstructionPermanentRefusalNeedsNewForward(t *testing.T) {
 	t.Parallel()
 	f := instructionFleet(t, []int{2}, nil)

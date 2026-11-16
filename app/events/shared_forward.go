@@ -40,6 +40,13 @@ func (s *sharedForward) clockNow() time.Time {
 	return time.Now()
 }
 
+func (s *sharedForward) decisionTime(start time.Time) time.Time {
+	if current := s.clockNow(); current.After(start) {
+		return current
+	}
+	return start
+}
+
 // Callback data is untrusted. Legacy dispatch must never reinterpret this message.
 func (s *sharedForward) rejectForeignCallback(ctx context.Context, q *tbapi.CallbackQuery) (bool, error) {
 	if q == nil || q.Message == nil || strings.HasPrefix(q.Data, "S:") || s.config.Peer != s.config.Owner ||
@@ -200,8 +207,18 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 				continue
 			}
 			// The frozen local receipt additionally binds requester, delivery and expiry.
-			e := s.admin.recovery.journal.DecideSharedForward(ctx, choice.Report, c.DecisionOperator,
-				choice.Selected, c.Automatic, now)
+			decisionNow := s.decisionTime(now)
+			decisionCtx, cancelDecision := context.WithCancel(ctx)
+			if choice.Report.Policy == moderation.ForwardAllPolicy {
+				cancelDecision()
+				if choice.Report.Expires <= decisionNow.UnixMilli() {
+					continue // expiry cannot admit new local actions, including after restart
+				}
+				decisionCtx, cancelDecision = context.WithDeadline(ctx, time.UnixMilli(choice.Report.Expires))
+			}
+			e := s.admin.recovery.journal.DecideSharedForward(decisionCtx, choice.Report, c.DecisionOperator,
+				choice.Selected, c.Automatic, decisionNow)
+			cancelDecision()
 			if errors.Is(e, moderation.ErrSharedReview) {
 				if reviewErr := store.RequireReview(ctx, c.Ref, s.config.Peer, e.Error()); reviewErr != nil {
 					return fmt.Errorf("record fresh review: %w", reviewErr)
@@ -217,12 +234,23 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		}
 		legacyChoice := c.Policy == "" && !c.Decided && len(c.Reports) == len(s.config.Peers)
 		if c.Canonical == "" && (c.HasPendingInstruction(now) || legacyChoice) {
+			decisionCtx, cancelDecision := context.WithCancel(ctx)
+			decisionNow := now
 			if c.Policy == moderation.ForwardAllPolicy {
 				if code := s.admin.forwardOperator(ctx, &tbapi.User{ID: c.Operator}); code != "" {
+					cancelDecision()
 					continue // workers independently recheck before every effect
 				}
+				decisionNow = s.decisionTime(now)
+				cancelDecision()
+				if !c.HasPendingInstruction(decisionNow) {
+					continue // the role lookup itself may have crossed the original expiry
+				}
+				decisionCtx, cancelDecision = context.WithDeadline(ctx, time.UnixMilli(c.Expires))
 			}
-			if e := store.AutoChoose(ctx, s.config.Peer, c.Ref, now); e != nil {
+			e := store.AutoChoose(decisionCtx, s.config.Peer, c.Ref, decisionNow)
+			cancelDecision()
+			if e != nil {
 				return fmt.Errorf("admit unique shared original: %w", e)
 			}
 		}
