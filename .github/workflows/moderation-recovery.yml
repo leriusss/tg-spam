@@ -20,6 +20,8 @@ jobs:
           go-version: '1.25'
       - name: Focused recovery, safety and SQLite race checks
         run: go test -race -short -timeout=180s ./app/moderation ./app/events ./app/storage ./app
+      - name: Repeat real SQLite claim contention regressions twenty times
+        run: go test -race -count=20 -timeout=180s ./app/moderation -run '^(TestSimultaneousActionClaimsAcrossSQLHandles|TestClaimReadBusyRecovers|TestClaimFailedCommitReturnsNoOwner)$'
       - name: Full project including PostgreSQL and capacity probe
         run: go test -race -timeout=300s ./...
       - name: Compile with race instrumentation

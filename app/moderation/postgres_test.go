@@ -68,6 +68,69 @@ func TestPostgresJournalClaimsAndGIDIsolation(t *testing.T) {
 	_, _, fresh, err := isolated.Accept(ctx, p, now)
 	require.NoError(t, err)
 	require.True(t, fresh)
+
+	t.Run("concurrent-claim-and-read-only-idle", func(t *testing.T) {
+		firstDB, err := engine.NewPostgres(ctx, pg.ConnectionString(), "claim-retry")
+		require.NoError(t, err)
+		defer firstDB.Close()
+		secondDB, err := engine.NewPostgres(ctx, pg.ConnectionString(), "claim-retry")
+		require.NoError(t, err)
+		defer secondDB.Close()
+		first, err := NewJournal(ctx, firstDB, DefaultLimits())
+		require.NoError(t, err)
+		second, err := NewJournal(ctx, secondDB, DefaultLimits())
+		require.NoError(t, err)
+		p := plan(2002, "ban")
+		p.Destination, p.Learn = 0, false
+		accept(t, first, p, now)
+		start := make(chan struct{})
+		results := make(chan claimReadResult, 8)
+		var wg sync.WaitGroup
+		for i := range 8 {
+			store := first
+			if i%2 == 0 {
+				store = second
+			}
+			wg.Go(func() {
+				<-start
+				a, ok, err := store.Claim(ctx, now)
+				results <- claimReadResult{a, ok, err}
+			})
+		}
+		close(start)
+		wg.Wait()
+		close(results)
+		winners := 0
+		owner := ""
+		for result := range results {
+			require.NoError(t, result.err)
+			if result.ok {
+				winners++
+				owner = result.a.Owner
+				require.NotEmpty(t, owner)
+				require.Equal(t, 1, result.a.Attempts)
+			}
+		}
+		require.Equal(t, 1, winners)
+		var stored Action
+		require.NoError(t, firstDB.Get(&stored,
+			firstDB.Adopt(`SELECT attempts,owner,state FROM moderation_actions WHERE gid=?`), firstDB.GID()))
+		require.Equal(t, 1, stored.Attempts)
+		require.Equal(t, owner, stored.Owner)
+		require.Equal(t, Running, stored.State)
+		var before, after int
+		require.NoError(t, firstDB.Get(&before,
+			firstDB.Adopt(`SELECT version FROM moderation_control WHERE gid=?`), firstDB.GID()))
+		for range 3 {
+			a, ok, err := second.Claim(ctx, now)
+			require.NoError(t, err)
+			require.False(t, ok)
+			require.Equal(t, Action{}, a)
+		}
+		require.NoError(t, firstDB.Get(&after,
+			firstDB.Adopt(`SELECT version FROM moderation_control WHERE gid=?`), firstDB.GID()))
+		require.Equal(t, before, after, "idle PostgreSQL polling does not lock/update the control row")
+	})
 }
 
 func TestAutomaticAcceptanceSurvivesCrashBeforeHandlerReturns(t *testing.T) {
