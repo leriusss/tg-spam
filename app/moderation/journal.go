@@ -571,17 +571,11 @@ func (j *Journal) notice(ctx context.Context, tx journalTx, destination int64, n
 
 // Claim uses fenced SQL ownership, including restart reconciliation after an expired lease.
 func (j *Journal) Claim(ctx context.Context, now time.Time) (a Action, ok bool, err error) {
+	// The availability read and atomic transaction share one operation budget.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	// Idle workers read only; do not fsync a control-row write every five seconds.
-	var due int
-	err = j.db.GetContext(ctx, &due, j.db.Adopt(`SELECT
- (SELECT count(*) FROM moderation_actions WHERE gid=? AND ((state='pending' AND next_at<=?) OR
-(state='running' AND lease_until<?))) +
- (SELECT count(*) FROM moderation_receipts WHERE gid=? AND state IN ('preparing','preparing_optional') AND
-lease_until<?) +
-(SELECT count(*) FROM moderation_forward_batches WHERE gid=? AND state='pending' AND expires_at<=?) +
-(SELECT count(*) FROM moderation_requests WHERE gid=? AND state='pending' AND expires_at<=?)`),
-		j.db.GID(), now.UnixMilli(), now.Add(-15*time.Second).UnixMilli(), j.db.GID(),
-		now.Add(-15*time.Second).UnixMilli(), j.db.GID(), now.UnixMilli(), j.db.GID(), now.UnixMilli())
+	due, err := j.claimDue(ctx, now)
 	if err != nil || due == 0 {
 		return a, false, journalError(err)
 	}
@@ -685,7 +679,10 @@ AND undo.kind IN ('unban','restore') AND undo.state!='canceled' AND undo.next_at
 		ok = true
 		return nil
 	})
-	return a, ok, journalError(err)
+	if err != nil {
+		return Action{}, false, journalError(err)
+	}
+	return a, ok, nil
 }
 
 // Owned verifies that the bounded API request still fits inside the current lease.
