@@ -285,6 +285,145 @@ func TestSharedExpiryRequiresNewExplicitChoiceWithoutDeadlineExtension(t *testin
 
 func TestSharedForwardIncidentSQLite(t *testing.T) { runSharedScenarios(t, nil) }
 
+func TestSharedDoesNotImportLegacyCards(t *testing.T) {
+	f := newSharedFleet(t, []int{2}, nil)
+	a := f.bridges[0].admin
+	a.shared = nil
+	u := manualForwardUpdate()
+	require.NoError(t, a.MsgHandler(u))
+	f.fixtures[0].settle(t)
+	require.Len(t, f.fixtures[0].cards, 1)
+	a.shared = f.bridges[0]
+	require.NoError(t, a.MsgHandler(u))
+	f.tick(t)
+	cases, err := f.store.Cases(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, cases)
+	require.Len(t, f.fixtures[0].cards, 1)
+}
+
+func TestSharedHistoricalSuccessAndPartialFailure(t *testing.T) {
+	f := newSharedFleet(t, []int{2, 2}, nil)
+	prior := moderation.Plan{Key: "source:-1000:800:user:501", ChatID: -1000, IdentityID: 501, IdentityKind: "user", MessageID: 800, Destination: 456, Origin: "detector",
+		Actions: []moderation.Action{{Kind: "ban", ChatID: -1000, IdentityID: 501, IdentityKind: "user"},
+			{Kind: "original_delete", ChatID: -1000, IdentityID: 501, IdentityKind: "user", MessageID: 800, MessageDate: time.Now().Unix()},
+			{Kind: "original_delete", ChatID: -1000, IdentityID: 501, IdentityKind: "user", MessageID: 801, MessageDate: time.Now().Unix()}}}
+	_, _, _, err := f.fixtures[0].j.Accept(context.Background(), prior, time.Now())
+	require.NoError(t, err)
+	f.fixtures[0].settle(t)
+	require.Equal(t, 1, f.fixtures[0].banCalls[501])
+	f.fixtures[1].failDelete = true
+	f.forward(t, 1324)
+	f.tick(t)
+	c := f.one(t)
+	text, _ := sharedCard(c, f.bridges[0].config.Peers, f.now)
+	require.Contains(t, text, "ранее обработано: 2")
+	if dir := os.Getenv("SHARED_CARD_EXAMPLES"); dir != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "previously-handled.txt"), []byte(text), 0o600))
+	}
+	f.choose(t, c, "all", nil)
+	f.tick(t)
+	for _, fixture := range f.fixtures {
+		fixture.settle(t)
+	}
+	f.tick(t)
+	require.Equal(t, 1, f.fixtures[0].banCalls[501])
+	for _, n := range f.fixtures[0].deleteCalls {
+		require.Equal(t, 1, n)
+	}
+	require.Equal(t, 1, f.fixtures[1].banCalls[502])
+	text, _ = sharedCard(f.one(t), f.bridges[0].config.Peers, f.now)
+	require.Contains(t, text, "удаление: отказ: 2; блокировка: подтверждено: 1")
+	if dir := os.Getenv("SHARED_CARD_EXAMPLES"); dir != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "partial-failure.txt"), []byte(text), 0o600))
+	}
+}
+
+func TestSharedSearchFailureCannotAutoSelectSingleOriginal(t *testing.T) {
+	f := newSharedFleet(t, []int{1, 0}, nil)
+	f.forward(t, 1324, 0)
+	u := manualForwardUpdate()
+	u.Message.MessageID = 1324
+	u.UpdateID = 200000 + 1000 + 1324
+	require.NoError(t, f.bridges[1].captureFailure(deliveryForShared(u), 11, "locator unavailable"))
+	f.tick(t)
+	require.False(t, f.one(t).Decided)
+	text, _ := sharedCard(f.one(t), f.bridges[0].config.Peers, f.now)
+	require.Contains(t, text, "поиск недоступен")
+	require.Empty(t, f.fixtures[0].banCalls)
+}
+
+func TestSharedOfflineOutboxDoesNotBlockOrdinaryWorker(t *testing.T) {
+	f := newSharedFleet(t, []int{2}, nil)
+	f.bridges[0].store = nil
+	f.forward(t, 1324)
+	reports, err := f.fixtures[0].j.SharedOutbox(context.Background())
+	require.NoError(t, err)
+	require.Len(t, reports, 1)
+	p := moderation.Plan{Key: "source:-1000:850:user:999", ChatID: -1000, MessageID: 850, IdentityKind: "user", IdentityID: 999, Origin: "detector",
+		Actions: []moderation.Action{{Kind: "ban", ChatID: -1000, IdentityKind: "user", IdentityID: 999}}}
+	_, _, _, err = f.fixtures[0].j.Accept(context.Background(), p, time.Now())
+	require.NoError(t, err)
+	f.fixtures[0].settle(t)
+	require.Equal(t, 1, f.fixtures[0].banCalls[999])
+	require.Empty(t, f.fixtures[0].deleteCalls)
+	f.bridges[0].store = f.reopenStore()
+	f.tick(t)
+	require.Positive(t, f.one(t).NotificationID)
+}
+
+func TestSharedCurrentSafetyGates(t *testing.T) {
+	for _, gate := range []string{"dry", "training", "superuser", "trust"} {
+		t.Run(gate, func(t *testing.T) {
+			f := newSharedFleet(t, []int{2}, nil)
+			a := f.bridges[0].admin
+			switch gate {
+			case "dry":
+				a.dry = true
+			case "training":
+				a.trainingMode = true
+			case "superuser":
+				a.superUsers = append(a.superUsers, "501")
+			case "trust":
+				a.isExplicitlyApproved = func(int64) bool { return true }
+			}
+			f.forward(t, 1324)
+			f.tick(t)
+			c := f.one(t)
+			f.choose(t, c, "all", nil)
+			f.tick(t)
+			f.fixtures[0].settle(t)
+			require.False(t, f.one(t).Decided)
+			require.Empty(t, f.fixtures[0].banCalls)
+			require.Empty(t, f.fixtures[0].deleteCalls)
+		})
+	}
+}
+
+func TestSharedCaptionAndCallbackBounds(t *testing.T) {
+	c := moderation.SharedCase{Ref: "0123456789abcdef0123456789abcdef", AdminID: 456, Expires: time.Now().Add(time.Hour).UnixMilli(), Revision: 100}
+	peers := []int64{100, 101, 102, 103, 104}
+	for _, peer := range peers {
+		r := moderation.SharedReport{Peer: peer, Name: "A long protected chat title & <tag> for renderer", State: "accepted", Reason: "retry_review"}
+		for i := range 20 {
+			r.Targets = append(r.Targets, moderation.ForwardTarget{MessageID: 800 + i, IdentityID: 500 + int64(i), IdentityKind: "user", Evidence: "telegram_update", Deadline: time.Now().UnixMilli()})
+			r.Actions = append(r.Actions, moderation.Action{MessageID: 800 + i, IdentityID: 500 + int64(i), Kind: "original_delete", State: moderation.Absent}, moderation.Action{IdentityID: 500 + int64(i), Kind: "ban", State: moderation.Blocked, Code: "forward_operator_revoked_outcome_unknown"})
+		}
+		c.Reports = append(c.Reports, r)
+		c.Choices = append(c.Choices, moderation.SharedChoice{Report: r})
+	}
+	for page := range 21 {
+		c.Page = page
+		text, keyboard := sharedCard(c, peers, time.Now())
+		require.Less(t, len([]rune(text)), 4096)
+		for _, row := range keyboard.InlineKeyboard {
+			for _, button := range row {
+				require.LessOrEqual(t, len(*button.CallbackData), 64)
+			}
+		}
+	}
+}
+
 func TestSharedForwardIncidentPostgres(t *testing.T) {
 	if testing.Short() {
 		t.Skip("PostgreSQL integration runs in full CI")

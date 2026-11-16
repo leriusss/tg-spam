@@ -166,7 +166,8 @@ func sharedTerminal(c SharedCase) bool {
 // frozen set of exact originals and numeric provenance, never text or names.
 func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time) error {
 	if !slices.Contains(s.peers, r.Peer) || r.Operator <= 0 || r.ChatID == 0 || r.Delivery.UpdateID <= 0 ||
-		r.Delivery.ChatID == 0 || r.Delivery.MessageID <= 0 || len(r.Targets) > 20 || len(r.Name) > 160 {
+		r.Delivery.ChatID == 0 || r.Delivery.MessageID <= 0 || len(r.Targets) > 20 || len(r.Actions) > 100 ||
+		len(r.Name) > 320 || len(r.SearchError) > 2000 {
 		return errors.New("invalid shared report")
 	}
 	j := s.journal
@@ -194,6 +195,15 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 			return journalError(err)
 		}
 		ref := ""
+		if len(deliveries) == 0 {
+			var total int
+			if e := tx.GetContext(ctx, &total, j.db.Adopt(`SELECT count(*) FROM shared_deliveries WHERE gid=?`), j.db.GID()); e != nil {
+				return journalError(e)
+			}
+			if total >= 2500 {
+				return ErrCapacity
+			}
+		}
 		if len(deliveries) > 0 {
 			d := deliveries[0]
 			if len(deliveries) != 1 || d.UpdateID != r.Delivery.UpdateID || d.Destination != r.Delivery.ChatID ||
@@ -322,6 +332,9 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		if !found {
 			c.Reports = append(c.Reports, r)
 			c.Revision++
+		}
+		if r.Expires > 0 {
+			c.Expires = min(c.Expires, r.Expires)
 		}
 		slices.SortFunc(c.Reports, func(a, b SharedReport) int {
 			if a.Peer < b.Peer {
@@ -489,6 +502,9 @@ func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, no
 		count := 0
 		var only SharedReport
 		for _, r := range c.Reports {
+			if r.SearchError != "" {
+				return nil
+			}
 			count += len(r.Targets)
 			if len(r.Targets) > 0 {
 				only = r

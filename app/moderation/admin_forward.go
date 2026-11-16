@@ -108,6 +108,14 @@ func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator
 		if found {
 			out = old
 			if shared != nil {
+				var silent int
+				if e := tx.GetContext(ctx, &silent, j.db.Adopt(`SELECT count(*) FROM moderation_silent_cards WHERE gid=? AND receipt=?`), j.db.GID(), old.Receipt); e != nil {
+					return journalError(e)
+				}
+				// Enabling the feature cannot import or rewrite a legacy incident card.
+				if silent == 0 {
+					return nil
+				}
 				shared.Receipt = old.Receipt
 				return j.saveSharedOutbox(ctx, tx, *shared)
 			}

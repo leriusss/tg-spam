@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -32,15 +34,35 @@ func sharedForwardOptions(opts options, peer int64) (*events.SharedForwardConfig
 		if !filepath.IsAbs(opts.SharedForwardDB) || !strings.HasSuffix(opts.SharedForwardDB, ".db") {
 			return nil, errors.New("shared DB must be a separate absolute .db path or postgres URL")
 		}
-		local, err := filepath.Abs(opts.DataBaseURL)
+		localURL := opts.DataBaseURL
+		for _, prefix := range []string{"file://", "file:", "sqlite://"} {
+			localURL = strings.TrimPrefix(localURL, prefix)
+		}
+		local, err := filepath.Abs(localURL)
 		if err != nil {
 			return nil, fmt.Errorf("resolve local database: %w", err)
 		}
-		if filepath.Clean(local) == filepath.Clean(opts.SharedForwardDB) {
+		shared := filepath.Clean(opts.SharedForwardDB)
+		if resolved, e := filepath.EvalSymlinks(local); e == nil {
+			local = resolved
+		}
+		if resolved, e := filepath.EvalSymlinks(shared); e == nil {
+			shared = resolved
+		}
+		if filepath.Clean(local) == shared || runtime.GOOS == "windows" && strings.EqualFold(filepath.Clean(local), shared) {
 			return nil, errors.New("coordination and runtime databases must differ")
 		}
-	} else if opts.DataBaseURL == opts.SharedForwardDB {
-		return nil, errors.New("coordination and runtime databases must differ")
+	} else {
+		shared, parseErr := url.Parse(opts.SharedForwardDB)
+		if parseErr != nil || shared.Hostname() == "" || shared.Path == "" || shared.Path == "/" {
+			return nil, errors.New("shared postgres URL must name a separate database")
+		}
+		local, parseErr := url.Parse(opts.DataBaseURL)
+		if parseErr == nil && local.Scheme == "postgres" &&
+			strings.EqualFold(local.Hostname(), shared.Hostname()) && local.Path == shared.Path &&
+			postgresPort(local) == postgresPort(shared) {
+			return nil, errors.New("coordination and runtime databases must differ")
+		}
 	}
 	config := &events.SharedForwardConfig{Peer: peer, Owner: opts.SharedForwardOwner, Peers: slices.Clone(opts.SharedForwardPeers)}
 	config.Open = func(ctx context.Context) (*moderation.SharedStore, func(), error) {
@@ -63,4 +85,11 @@ func sharedForwardOptions(opts options, peer int64) (*events.SharedForwardConfig
 		return store, func() { _ = db.Close() }, nil
 	}
 	return config, nil
+}
+
+func postgresPort(u *url.URL) string {
+	if u.Port() == "" {
+		return "5432"
+	}
+	return u.Port()
 }

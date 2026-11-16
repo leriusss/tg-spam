@@ -145,7 +145,7 @@ the next attempt. Unknown action outcomes follow the existing worker's recovery
 rules, never a second coordinator action executor.
 
 Hard limits: five peers, 20 originals per peer, 500 inquiries in the shared DB and
-500 delivered-or-pending outbox entries per bot. Each report omits source quotes;
+500 delivered-or-pending outbox entries per bot (2,500 delivery rows total). Each report omits source quotes;
 the local journal retains them. The finite outbox bounds delivery/search history
 as well. At capacity, new manual inquiries fail closed; automatic moderation
 keeps its existing queue and limits. Terminal history is not silently discarded.

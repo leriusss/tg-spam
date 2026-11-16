@@ -102,6 +102,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("read shared outbox: %w", err)
 	}
+	var submitFailure error
 	for _, r := range reports {
 		raw, e := json.Marshal(r)
 		if e != nil {
@@ -112,7 +113,8 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 			continue
 		}
 		if e := store.Submit(ctx, r, now); e != nil {
-			return fmt.Errorf("submit shared report: %w", e)
+			submitFailure = fmt.Errorf("submit shared report: %w", e)
+			break // existing decisions must still reach local journals if new intake is full
 		}
 		s.cache[key] = string(raw)
 	}
@@ -156,7 +158,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 			return e
 		}
 	}
-	return nil
+	return submitFailure
 }
 
 func (s *sharedForward) render(ctx context.Context, store *moderation.SharedStore, c moderation.SharedCase, now time.Time) error {

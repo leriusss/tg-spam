@@ -245,7 +245,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	masked := []string{opts.Telegram.Token, opts.OpenAI.Token}
+	masked := []string{opts.Telegram.Token, opts.OpenAI.Token, opts.SharedForwardDB}
 	if opts.Server.AuthPasswd != "auto" && opts.Server.AuthPasswd != "" {
 		// auto passwd should not be masked as we print it
 		masked = append(masked, opts.Server.AuthPasswd)

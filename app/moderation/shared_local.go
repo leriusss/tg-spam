@@ -11,6 +11,7 @@ import (
 // SharedReport contains one bot's search, never another bot's authority or token.
 type SharedReport struct {
 	Peer, ChatID, Operator                    int64
+	Expires                                   int64
 	Name, Receipt, State, Reason, SearchError string
 	Delivery                                  ForwardDelivery
 	Targets                                   []ForwardTarget
@@ -50,7 +51,7 @@ func (j *Journal) saveSharedOutbox(ctx context.Context, tx journalTx, r SharedRe
 // Receipt and outbox commit together, including deliveries with no matches.
 func (j *Journal) AcceptSharedForward(ctx context.Context, r SharedReport, now time.Time) error {
 	if r.Peer <= 0 || r.ChatID == 0 || r.Operator <= 0 || r.Delivery.ChatID == 0 ||
-		r.Delivery.UpdateID <= 0 || r.Delivery.MessageID <= 0 || len(r.Name) > 160 {
+		r.Delivery.UpdateID <= 0 || r.Delivery.MessageID <= 0 || len(r.Name) > 320 || len(r.SearchError) > 2000 {
 		return errors.New("invalid shared delivery")
 	}
 	if len(r.Targets) == 0 {
@@ -81,6 +82,7 @@ func (j *Journal) SharedOutbox(ctx context.Context) ([]SharedReport, error) {
 				return nil, errors.New("shared forward snapshot missing")
 			}
 			r.Targets, r.Actions, r.State, r.Reason = c.Forward.Targets, c.Actions, c.Forward.State, c.Forward.Reason
+			r.Expires = c.Forward.Expires
 			// Quotes and unrelated technical action fields are unnecessary in the shared DB.
 			for i := range r.Targets {
 				r.Targets[i].Text = ""
