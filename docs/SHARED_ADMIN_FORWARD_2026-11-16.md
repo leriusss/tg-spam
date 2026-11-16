@@ -210,6 +210,8 @@ delivery scenarios, plus delayed-intent refusal guards, in full CI.
 Existing build/test/race/lint, recovery, reporting, auto-trust and e2e workflows
 are retained without weakening checks. Final results and exact reviewed HEAD are
 reported in the PR and the local validation receipt.
+The independent SQLite regression fixtures run in parallel so the expanded suite
+fits the existing CI time limit; assertions and workflow timeouts are unchanged.
 
 ## Future activation, observation and rollback
 
@@ -226,7 +228,7 @@ reported in the PR and the local validation receipt.
    can still produce legacy independent cards and is not a supported rollout.
    Fence only admin-forward intake during the transition; do not run a second
    poller or stop unrelated services. Confirm all five share the same DB/roster.
-5. Observe for **15 minutes**: owner identity, one anchor per inquiry, missing
+5. Observe for **15 minutes**: owner identity, one anchor per admin chat, missing
    peers, outbox admission/import, role checks, worker outcomes, API rate limits,
    DB integrity, queue size, memory/CPU, disk and ordinary automatic moderation.
    Synthetic real moderation requires separate authorization.

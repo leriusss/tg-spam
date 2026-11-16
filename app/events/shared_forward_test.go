@@ -199,6 +199,7 @@ func runSharedScenarios(t *testing.T, open func(string) *engine.SQL) {
 }
 
 func TestSharedNewOriginalDoesNotExpandConfirmedSet(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324)
 	f.tick(t)
@@ -231,6 +232,7 @@ func TestSharedNewOriginalDoesNotExpandConfirmedSet(t *testing.T) {
 }
 
 func TestSharedRepeatedForwardByAnotherCurrentAdmin(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324)
 	f.tick(t)
@@ -255,6 +257,7 @@ func TestSharedRepeatedForwardByAnotherCurrentAdmin(t *testing.T) {
 }
 
 func TestSharedExpiryRequiresNewExplicitChoiceWithoutDeadlineExtension(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{1}, nil)
 	// Use two candidates to keep the initial decision pending.
 	u := originalForwardUpdate(801, 501)
@@ -286,9 +289,13 @@ func TestSharedExpiryRequiresNewExplicitChoiceWithoutDeadlineExtension(t *testin
 	require.Empty(t, f.fixtures[0].banCalls)
 }
 
-func TestSharedForwardIncidentSQLite(t *testing.T) { runSharedScenarios(t, nil) }
+func TestSharedForwardIncidentSQLite(t *testing.T) {
+	t.Parallel()
+	runSharedScenarios(t, nil)
+}
 
 func TestSharedDoesNotImportLegacyCards(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2}, nil)
 	a := f.bridges[0].admin
 	a.shared = nil
@@ -306,6 +313,7 @@ func TestSharedDoesNotImportLegacyCards(t *testing.T) {
 }
 
 func TestSharedOlderWorkerNotificationFencePreservesAuthority(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2}, nil)
 	f.forward(t, 1324)
 	f.tick(t)
@@ -332,6 +340,7 @@ func TestSharedOlderWorkerNotificationFencePreservesAuthority(t *testing.T) {
 }
 
 func TestSharedHistoricalSuccessAndPartialFailure(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	prior := moderation.Plan{Key: "source:-1000:800:user:501", ChatID: -1000, IdentityID: 501, IdentityKind: "user", MessageID: 800, Destination: 456, Origin: "detector",
 		Actions: []moderation.Action{{Kind: "ban", ChatID: -1000, IdentityID: 501, IdentityKind: "user"},
@@ -369,6 +378,7 @@ func TestSharedHistoricalSuccessAndPartialFailure(t *testing.T) {
 }
 
 func TestSharedSearchFailureCannotAutoSelectSingleOriginal(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{1, 0}, nil)
 	f.forward(t, 1324, 0)
 	u := manualForwardUpdate()
@@ -383,6 +393,7 @@ func TestSharedSearchFailureCannotAutoSelectSingleOriginal(t *testing.T) {
 }
 
 func TestSharedOfflineOutboxDoesNotBlockOrdinaryWorker(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2}, nil)
 	f.bridges[0].store = nil
 	f.forward(t, 1324)
@@ -402,6 +413,7 @@ func TestSharedOfflineOutboxDoesNotBlockOrdinaryWorker(t *testing.T) {
 }
 
 func TestSharedCurrentSafetyGates(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []string{"dry", "training", "superuser", "trust"} {
 		t.Run(gate, func(t *testing.T) {
 			f := newSharedFleet(t, []int{2}, nil)
@@ -430,6 +442,7 @@ func TestSharedCurrentSafetyGates(t *testing.T) {
 }
 
 func TestSharedCaptionAndCallbackBounds(t *testing.T) {
+	t.Parallel()
 	c := moderation.SharedCase{Ref: "0123456789abcdef0123456789abcdef", AdminID: 456, Expires: time.Now().Add(time.Hour).UnixMilli(), Revision: 100}
 	peers := []int64{100, 101, 102, 103, 104}
 	for _, peer := range peers {
@@ -477,6 +490,7 @@ func TestSharedCaptionAndCallbackBounds(t *testing.T) {
 }
 
 func TestSharedLeaseFencesDifferentInquiryViews(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324, 0)
 	f.forward(t, 1325, 1)
@@ -524,6 +538,7 @@ func TestSharedForwardIncidentPostgres(t *testing.T) {
 }
 
 func TestSharedLateResponseAndRoleRevocation(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324, 0)
 	f.tick(t)
@@ -547,6 +562,7 @@ func TestSharedLateResponseAndRoleRevocation(t *testing.T) {
 }
 
 func TestSharedLateTargetsCanReceiveANewDecisionWhileEarlierWorkIsUnknown(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324, 0)
 	f.tick(t)
@@ -593,6 +609,7 @@ func TestSharedLateTargetsCanReceiveANewDecisionWhileEarlierWorkIsUnknown(t *tes
 }
 
 func TestSharedCrossedLateDeliveriesLeaveOneActiveCard(t *testing.T) {
+	t.Parallel()
 	runSharedCrossedDeliveries(t, nil)
 }
 
@@ -638,6 +655,7 @@ func runSharedCrossedDeliveries(t *testing.T, open func(string) *engine.SQL) {
 }
 
 func TestSharedIndependentInquiriesSwitchOneAnchorWithoutSharingAuthority(t *testing.T) {
+	t.Parallel()
 	runSharedIndependentInquiries(t, nil)
 }
 
@@ -715,6 +733,7 @@ func runSharedIndependentInquiries(t *testing.T, open func(string) *engine.SQL) 
 }
 
 func TestSharedSingleOriginalAndTerminalRetry(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{1, 0}, nil)
 	f.fixtures[0].failDelete = true
 	f.forward(t, 1324)
@@ -752,6 +771,7 @@ func TestSharedSingleOriginalAndTerminalRetry(t *testing.T) {
 }
 
 func TestSharedDelayedIntentCannotRetryARefusalItDidNotObserve(t *testing.T) {
+	t.Parallel()
 	runSharedDelayedIntent(t, nil)
 }
 
@@ -814,6 +834,7 @@ func runSharedDelayedIntent(t *testing.T, open func(string) *engine.SQL) {
 }
 
 func TestSharedUnknownCardSendIsNeverReplayed(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 0}, nil)
 	base := f.fixtures[0].api.call
 	sends := 0
@@ -835,6 +856,7 @@ func TestSharedUnknownCardSendIsNeverReplayed(t *testing.T) {
 }
 
 func TestSharedForgedLegacyNamespacesCannotAdoptTheAnchor(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2}, nil)
 	f.forward(t, 1324)
 	f.tick(t)
@@ -864,6 +886,7 @@ func TestSharedForgedLegacyNamespacesCannotAdoptTheAnchor(t *testing.T) {
 }
 
 func TestSharedConcurrentSubmitAndPersistentOwnerClaim(t *testing.T) {
+	t.Parallel()
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324)
 	var wg sync.WaitGroup
