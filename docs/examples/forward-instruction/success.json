@@ -1,0 +1,10 @@
+{
+  "inline_keyboard": [
+    [
+      {
+        "text": "Подробнее",
+        "callback_data": "S:v1:ef7c0fb1e1f252a11cb543fb72505575:10"
+      }
+    ]
+  ]
+}

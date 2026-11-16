@@ -18,6 +18,7 @@ import (
 // SharedForwardConfig connects to coordination metadata only. Opening it runs
 // asynchronously: ordinary automatic moderation does not depend on this DB.
 type SharedForwardConfig struct {
+	Policy      string
 	Peer, Owner int64
 	Peers       []int64
 	Open        func(context.Context) (*moderation.SharedStore, func(), error)
@@ -76,9 +77,12 @@ func deliveryForShared(u tbapi.Update) moderation.ForwardDelivery {
 	return moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: u.Message.Chat.ID, MessageID: u.Message.MessageID}
 }
 
-func (s *sharedForward) captureFailure(delivery moderation.ForwardDelivery, operator int64, reason string) error {
-	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
+func (s *sharedForward) captureFailure(delivery moderation.ForwardDelivery, operator int64, reason string, sentAt ...int) error {
+	r := moderation.SharedReport{Policy: s.config.Policy, Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, SearchError: truncateRunes(reason, 500)}
+	if len(sentAt) == 1 {
+		r.RequestedAt = int64(sentAt[0]) * 1000
+	}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
 		if s.config.Peer != s.config.Owner {
 			log.Printf("[WARN] shared search refusal could not be journaled")
@@ -95,9 +99,13 @@ func (s *sharedForward) current() *moderation.SharedStore {
 	return s.store
 }
 
-func (s *sharedForward) capture(delivery moderation.ForwardDelivery, operator int64, targets []moderation.ForwardTarget) error {
-	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
+func (s *sharedForward) capture(delivery moderation.ForwardDelivery, operator int64,
+	targets []moderation.ForwardTarget, sentAt ...int) error {
+	r := moderation.SharedReport{Policy: s.config.Policy, Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, Targets: targets}
+	if len(sentAt) == 1 {
+		r.RequestedAt = int64(sentAt[0]) * 1000
+	}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
 		if s.config.Peer != s.config.Owner {
 			log.Printf("[WARN] shared forward could not be journaled")
@@ -184,7 +192,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 			continue
 		}
 		for _, choice := range c.Choices {
-			if choice.Report.Peer != s.config.Peer || choice.Report.ChatID != s.admin.primChatID {
+			if choice.Refusal != "" || choice.Report.Peer != s.config.Peer || choice.Report.ChatID != s.admin.primChatID {
 				continue
 			}
 			key := "decision:" + c.Ref + ":" + choice.Report.Receipt
@@ -207,13 +215,25 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		if s.config.Peer != s.config.Owner {
 			continue
 		}
-		if c.Canonical == "" && !c.Decided && len(c.Reports) == len(s.config.Peers) {
+		legacyChoice := c.Policy == "" && !c.Decided && len(c.Reports) == len(s.config.Peers)
+		if c.Canonical == "" && (c.HasPendingInstruction(now) || legacyChoice) {
+			if c.Policy == moderation.ForwardAllPolicy {
+				if code := s.admin.forwardOperator(ctx, &tbapi.User{ID: c.Operator}); code != "" {
+					continue // workers independently recheck before every effect
+				}
+			}
 			if e := store.AutoChoose(ctx, s.config.Peer, c.Ref, now); e != nil {
 				return fmt.Errorf("admit unique shared original: %w", e)
 			}
 		}
 	}
 	if s.config.Peer == s.config.Owner {
+		peerNames := map[int64]string{}
+		for _, previous := range cases {
+			for _, report := range previous.Reports {
+				peerNames[report.Peer] = report.Name
+			}
+		}
 		for _, c := range cases {
 			if c.AdminID != s.admin.adminChatID {
 				continue
@@ -223,6 +243,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 				return fmt.Errorf("load shared presentation: %w", e)
 			}
 			if found {
+				view.PeerNames = peerNames
 				if e := s.render(ctx, store, view, now); e != nil {
 					return e
 				}

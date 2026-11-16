@@ -41,7 +41,7 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 	authorized := false
 	reply := func(s string) error {
 		if a.shared != nil && !diagnostic && authorized {
-			return a.shared.captureFailure(deliveryForShared(u), m.From.ID, s)
+			return a.shared.captureFailure(deliveryForShared(u), m.From.ID, s, m.Date)
 		}
 		if a.shared != nil && !diagnostic && a.shared.config.Peer != a.shared.config.Owner {
 			return nil
@@ -100,7 +100,7 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 	}
 	if len(rows) == 0 {
 		if a.shared != nil && !diagnostic {
-			return a.shared.capture(delivery, m.From.ID, nil)
+			return a.shared.capture(delivery, m.From.ID, nil, m.Date)
 		}
 		log.Printf(
 			"[INFO] admin forward search: outcome=locator_miss primary_chat=%d delivery=%d diagnostic=%t",
@@ -223,7 +223,7 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 	}
 
 	if a.shared != nil {
-		return a.shared.capture(delivery, m.From.ID, targets)
+		return a.shared.capture(delivery, m.From.ID, targets, m.Date)
 	}
 	_, err = a.recovery.journal.AcceptForward(
 		context.Background(),

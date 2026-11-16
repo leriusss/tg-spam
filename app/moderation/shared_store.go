@@ -21,8 +21,10 @@ type SharedStore struct {
 
 // SharedChoice freezes one local receipt's selected indices.
 type SharedChoice struct {
-	Report   SharedReport
-	Selected []int
+	Report    SharedReport
+	Selected  []int
+	Refusal   string
+	DecidedAt int64
 }
 
 // SharedIntent preserves superseded dispatch authority without replaying it.
@@ -42,6 +44,7 @@ type SharedIntentChoice struct {
 
 // SharedCase retains incoming deliveries separately from exact original targets.
 type SharedCase struct {
+	Policy                                            string
 	Ref                                               string
 	Canonical                                         string
 	CanonicalAnchor                                   int
@@ -161,6 +164,24 @@ func sameOriginals(a, b SharedReport) bool {
 	return true
 }
 
+func sameInstructionEpoch(a, b SharedReport) bool {
+	if !sameOriginals(a, b) {
+		return false
+	}
+	if a.Policy != ForwardAllPolicy && b.Policy != ForwardAllPolicy {
+		return true
+	}
+	if a.Policy != b.Policy || a.Operator != b.Operator || !slices.Equal(a.Refusals, b.Refusals) {
+		return false
+	}
+	for i, target := range a.Targets {
+		if target.Blocked != b.Targets[i].Blocked || target.BanKind != b.Targets[i].BanKind {
+			return false
+		}
+	}
+	return true
+}
+
 func uncertainInitialCard(c SharedCase) bool {
 	return c.NotificationID == 0 && (c.SendState == "unknown" || c.SendState == "armed")
 }
@@ -192,6 +213,9 @@ func sharedTerminal(c SharedCase) bool {
 // Submit deduplicates bot-scoped updates and joins repeated searches only by a
 // frozen set of exact originals and numeric provenance, never text or names.
 func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time) error {
+	if r.Policy != "" && r.Policy != ForwardAllPolicy {
+		return errors.New("unsupported shared instruction policy")
+	}
 	if !slices.Contains(s.peers, r.Peer) || r.Operator <= 0 || r.ChatID == 0 || r.Delivery.UpdateID <= 0 ||
 		r.Delivery.ChatID == 0 || r.Delivery.MessageID <= 0 || len(r.Targets) > 20 || len(r.Actions) > 100 ||
 		len(r.Refusals) > 40 ||
@@ -268,13 +292,14 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		// Coalesce a new unsent provisional case with an existing active inquiry.
 		if len(deliveries) == 0 && (index < 0 || all[index].NotificationID == 0 && all[index].SendState == "" && !all[index].Decided) {
 			for i, c := range all {
-				if i == index || c.Canonical != "" || (c.Decided && !uncertainInitialCard(c)) || c.AdminID != r.Delivery.ChatID ||
+				if i == index || c.Canonical != "" || c.Policy != r.Policy ||
+					(c.Decided && !uncertainInitialCard(c) && c.Policy != ForwardAllPolicy) || c.AdminID != r.Delivery.ChatID ||
 					!uncertainInitialCard(c) && (c.Expires <= now.UnixMilli() || sharedTerminal(c)) {
 					continue
 				}
 				matches := false
 				for _, previous := range c.Reports {
-					matches = matches || sameOriginals(previous, r)
+					matches = matches || sameInstructionEpoch(previous, r)
 				}
 				if !matches {
 					continue
@@ -283,7 +308,7 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 				if index >= 0 {
 					for _, x := range all[index].Reports {
 						for _, y := range c.Reports {
-							if x.Peer == y.Peer && (len(x.Targets) != 0 || len(y.Targets) != 0) && !sameOriginals(x, y) {
+							if x.Peer == y.Peer && (len(x.Targets) != 0 || len(y.Targets) != 0) && !sameInstructionEpoch(x, y) {
 								compatible = false
 							}
 						}
@@ -321,7 +346,7 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 			if len(all) >= 500 {
 				return ErrCapacity
 			}
-			c = SharedCase{Ref: token(), AdminID: r.Delivery.ChatID, Operator: r.Operator, Created: now.UnixMilli(),
+			c = SharedCase{Policy: r.Policy, Ref: token(), AdminID: r.Delivery.ChatID, Operator: r.Operator, Created: now.UnixMilli(),
 				Expires: now.Add(15 * time.Minute).UnixMilli(), CollectUntil: now.Add(2 * time.Second).UnixMilli(), Revision: 1}
 		} else {
 			c = all[index]
@@ -340,7 +365,7 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 				if len(all) >= 500 {
 					return ErrCapacity
 				}
-				c = SharedCase{Ref: token(), AdminID: r.Delivery.ChatID, Operator: r.Operator, Created: now.UnixMilli(),
+				c = SharedCase{Policy: r.Policy, Ref: token(), AdminID: r.Delivery.ChatID, Operator: r.Operator, Created: now.UnixMilli(),
 					Expires: now.Add(15 * time.Minute).UnixMilli(), CollectUntil: now.Add(2 * time.Second).UnixMilli(), Revision: 1}
 				var searches []string
 				if e := tx.SelectContext(ctx, &searches, j.db.Adopt(`SELECT payload FROM shared_searches WHERE gid=? AND destination=? AND message_id=? ORDER BY peer`), j.db.GID(), r.Delivery.ChatID, r.Delivery.MessageID); e != nil {
@@ -409,6 +434,9 @@ func (s *SharedStore) Cases(ctx context.Context) (out []SharedCase, err error) {
 func (s *SharedStore) Decide(ctx context.Context, peer int64, ref string, revision int,
 	admin int64, anchor int, operator, targetPeer int64, targetIndex int, now time.Time) error {
 	return s.change(ctx, ref, func(tx journalTx, c *SharedCase) error {
+		if c.Policy == ForwardAllPolicy {
+			return errors.New("forward instruction cards do not authorize callback decisions")
+		}
 		if !s.anchorBound(ctx, tx, *c, peer, admin, anchor) || c.Canonical != "" || c.Revision != revision || c.AdminID != admin ||
 			c.NotificationID != anchor || anchor <= 0 ||
 			operator <= 0 || c.Expires <= now.UnixMilli() || c.Decided {
@@ -497,6 +525,9 @@ func (s *SharedStore) Case(ctx context.Context, ref string) (out SharedCase, err
 // responded and only if that original does not require an explicit new attempt.
 func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, now time.Time) error {
 	return s.change(ctx, ref, func(_ journalTx, c *SharedCase) error {
+		if c.Policy == ForwardAllPolicy {
+			return s.continueForward(c, peer, now)
+		}
 		if peer != s.owner || c.Canonical != "" || c.Decided || c.NeedsReview ||
 			c.Expires <= now.UnixMilli() || len(c.Reports) != len(s.peers) {
 			return nil
@@ -523,12 +554,73 @@ func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, no
 	})
 }
 
+// continueForward appends at most one frozen decision per participant. It never
+// mutates a saved choice, retries a refusal or extends the original instruction.
+func (s *SharedStore) continueForward(c *SharedCase, peer int64, now time.Time) error {
+	if peer != s.owner || !c.HasPendingInstruction(now) {
+		return nil
+	}
+	for _, r := range c.Reports {
+		if !c.pendingInstructionReport(r, now) {
+			continue
+		}
+		selected := []int{}
+		for i, target := range r.Targets {
+			if target.Blocked == "" {
+				selected = append(selected, i)
+			}
+		}
+		if len(selected) == 0 {
+			continue
+		}
+		r.Expires = min(r.Expires, c.Expires)
+		c.Choices = append(c.Choices, SharedChoice{Report: r, Selected: selected, DecidedAt: now.UnixMilli()})
+		c.DecisionOperator = c.Operator
+		if c.DecidedAt == 0 {
+			c.DecidedAt = now.UnixMilli()
+		}
+		c.Automatic, c.Decided = true, true
+		c.Revision++
+	}
+	return nil
+}
+
+// HasPendingInstruction is a read-only scheduling hint. AutoChoose repeats this
+// check inside the SQL transaction; it is not action authority. Completed history
+// must not cause periodic Telegram role lookups.
+func (c SharedCase) HasPendingInstruction(now time.Time) bool {
+	if c.Policy != ForwardAllPolicy || c.Canonical != "" || c.Expires <= now.UnixMilli() ||
+		c.CollectUntil > now.UnixMilli() {
+		return false
+	}
+	return slices.ContainsFunc(c.Reports, func(r SharedReport) bool { return c.pendingInstructionReport(r, now) })
+}
+
+func (c SharedCase) pendingInstructionReport(r SharedReport, now time.Time) bool {
+	return r.Policy == ForwardAllPolicy && r.Operator == c.Operator && r.Receipt != "" &&
+		r.SearchError == "" && r.State == "pending" && r.Expires > now.UnixMilli() &&
+		!slices.ContainsFunc(c.Choices, func(ch SharedChoice) bool { return ch.Report.Peer == r.Peer }) &&
+		slices.ContainsFunc(r.Targets, func(t ForwardTarget) bool { return t.Blocked == "" })
+}
+
 // RequireReview invalidates delayed dispatch authority if local facts changed.
 func (s *SharedStore) RequireReview(ctx context.Context, ref string, peer int64, reason string) error {
 	if len(reason) > 512 {
 		return errors.New("shared review reason exceeds bound")
 	}
 	return s.change(ctx, ref, func(_ journalTx, c *SharedCase) error {
+		if c.Policy == ForwardAllPolicy {
+			// Keep the failed choice as a fence. Only another explicit intake can
+			// authorize a new attempt; other late participants may still continue.
+			c.NeedsReview = true
+			c.ReviewReason = reason
+			for i := range c.Choices {
+				if c.Choices[i].Report.Peer == peer {
+					c.Choices[i].Refusal = reason
+				}
+			}
+			return nil
+		}
 		if !c.Decided {
 			return nil
 		}
@@ -571,7 +663,7 @@ func (s *SharedStore) completeCase(c SharedCase) bool {
 }
 
 func sameInquiry(a, b SharedCase) bool {
-	if a.AdminID != b.AdminID || len(a.Reports) != len(b.Reports) {
+	if a.AdminID != b.AdminID || a.Policy != b.Policy || len(a.Reports) != len(b.Reports) {
 		return false
 	}
 	found := false
@@ -580,10 +672,13 @@ func sameInquiry(a, b SharedCase) bool {
 		if r.Peer != u.Peer || r.ChatID != u.ChatID {
 			return false
 		}
+		if a.Policy == ForwardAllPolicy && !slices.Equal(r.Refusals, u.Refusals) {
+			return false // a new explicit intake observed a different refusal epoch
+		}
 		if len(r.Targets) == 0 && len(u.Targets) == 0 {
 			continue
 		}
-		if !sameOriginals(r, u) {
+		if !sameInstructionEpoch(r, u) {
 			return false
 		}
 		found = true
@@ -608,12 +703,14 @@ func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) 
 		}
 		for i := range cases {
 			a := &cases[i]
-			if a.Canonical != "" || a.Decided || a.Expires <= now.UnixMilli() || sharedTerminal(*a) || !s.completeCase(*a) {
+			if a.Canonical != "" || a.Decided && a.Policy != ForwardAllPolicy || a.Expires <= now.UnixMilli() ||
+				sharedTerminal(*a) && a.Policy != ForwardAllPolicy || !s.completeCase(*a) {
 				continue
 			}
 			for k := i + 1; k < len(cases); k++ {
 				b := &cases[k]
-				if b.Canonical != "" || b.Decided || b.Expires <= now.UnixMilli() || sharedTerminal(*b) ||
+				if b.Canonical != "" || b.Decided && b.Policy != ForwardAllPolicy || b.Expires <= now.UnixMilli() ||
+					sharedTerminal(*b) && b.Policy != ForwardAllPolicy ||
 					!s.completeCase(*b) || !sameInquiry(*a, *b) {
 					continue
 				}

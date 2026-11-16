@@ -64,7 +64,18 @@ func sharedForwardOptions(opts options, peer int64) (*events.SharedForwardConfig
 			return nil, errors.New("coordination and runtime databases must differ")
 		}
 	}
-	config := &events.SharedForwardConfig{Peer: peer, Owner: opts.SharedForwardOwner, Peers: slices.Clone(opts.SharedForwardPeers)}
+	policy := opts.SharedForwardPolicy
+	if policy == "" {
+		policy = moderation.ForwardAllPolicy
+	}
+	if policy != moderation.ForwardAllPolicy && policy != "legacy" {
+		return nil, errors.New("unsupported shared forward policy")
+	}
+	if policy == "legacy" {
+		policy = ""
+	}
+	config := &events.SharedForwardConfig{Policy: policy,
+		Peer: peer, Owner: opts.SharedForwardOwner, Peers: slices.Clone(opts.SharedForwardPeers)}
 	config.Open = func(ctx context.Context) (*moderation.SharedStore, func(), error) {
 		var db *engine.SQL
 		var err error

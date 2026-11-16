@@ -7,6 +7,7 @@ import (
 
 	"github.com/jessevdk/go-flags"
 	"github.com/stretchr/testify/require"
+	"github.com/umputun/tg-spam/app/moderation"
 )
 
 func TestSharedForwardConfigDisabledAndScoped(t *testing.T) {
@@ -18,10 +19,18 @@ func TestSharedForwardConfigDisabledAndScoped(t *testing.T) {
 	config, err = sharedForwardOptions(opts, 101)
 	require.NoError(t, err)
 	require.EqualValues(t, 100, config.Owner)
+	require.Equal(t, moderation.ForwardAllPolicy, config.Policy)
 	store, closeDB, err := config.Open(context.Background())
 	require.NoError(t, err)
 	defer closeDB()
 	require.NotNil(t, store)
+	opts.SharedForwardPolicy = "legacy"
+	legacy, err := sharedForwardOptions(opts, 101)
+	require.NoError(t, err)
+	require.Empty(t, legacy.Policy)
+	opts.SharedForwardPolicy = "unexpected"
+	_, err = sharedForwardOptions(opts, 101)
+	require.Error(t, err)
 	for _, bad := range []options{
 		{SharedForwardDB: path},
 		{SharedForwardDB: path, SharedForwardOwner: 100, SharedForwardPeers: []int64{100, 100}, ModerationRecovery: true, AdminGroup: "456"},
