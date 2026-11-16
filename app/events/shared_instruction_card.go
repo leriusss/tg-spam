@@ -13,6 +13,7 @@ import (
 
 type instructionResult struct {
 	deleted, absent, previous, banned, priorBans int
+	restricted, priorRestricted                  int
 	waiting, failed, unknown                     int
 }
 
@@ -38,6 +39,10 @@ func instructionOutcomes(r moderation.SharedReport) instructionResult {
 			result.unknown++
 		case a.State == moderation.Confirmed:
 			switch {
+			case a.Kind == "restrict" && (a.Receipt != r.Receipt || a.Code == "reconciled_membership"):
+				result.priorRestricted++
+			case a.Kind == "restrict":
+				result.restricted++
 			case ban && (a.Receipt != r.Receipt || a.Code == "reconciled_membership"):
 				result.priorBans++
 			case ban:
@@ -83,7 +88,8 @@ func instructionSummary(r instructionResult) string {
 	}{
 		{r.deleted, "удалено ботом"}, {r.absent, "уже отсутствовало или недоступно"},
 		{r.previous, "ранее обработано"}, {r.banned, "авторов заблокировано"},
-		{r.priorBans, "авторов ранее заблокировано"}, {r.waiting, "ожидает выполнения или повтора"},
+		{r.priorBans, "авторов ранее заблокировано"}, {r.restricted, "авторов с ограниченной отправкой"},
+		{r.priorRestricted, "авторов с прежним ограничением отправки"}, {r.waiting, "ожидает выполнения или повтора"},
 		{r.failed, "не удалось"}, {r.unknown, "результат неизвестен"},
 	} {
 		if entry.n > 0 {

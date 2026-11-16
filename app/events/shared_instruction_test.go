@@ -648,6 +648,18 @@ func TestInstructionNumericNamespacesAndNoCleanup(t *testing.T) {
 	require.Zero(t, extra, "no training, cleanup or separate local cards")
 }
 
+func TestInstructionSoftBanReportsActualRestriction(t *testing.T) {
+	t.Parallel()
+	f := instructionFleet(t, []int{2}, nil)
+	f.fixtures[0].listener.SoftBanMode = true
+	instructionForward(t, f, 1349)
+	settleInstructions(t, f)
+	text := instructionText(t, f, "restricted")
+	require.Contains(t, text, "авторов с ограниченной отправкой: 1")
+	require.NotContains(t, text, "авторов заблокировано")
+	require.Equal(t, map[int64]int{501: 1}, f.fixtures[0].banCalls)
+}
+
 func TestInstructionLateProofRetiresProvisionalCard(t *testing.T) {
 	t.Parallel()
 	f := instructionFleet(t, []int{2, 2}, nil)
