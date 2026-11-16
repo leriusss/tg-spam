@@ -28,30 +28,31 @@ import (
 // TelegramListener listens to tg update, forward to bots and send back responses
 // Not thread safe
 type TelegramListener struct {
-	RecoveryJournal         *moderation.Journal // optional durable stage-2 authority
-	TbAPI                   TbAPI               // telegram bot API
-	SpamLogger              SpamLogger          // logger to save spam to files and db
-	Bot                     Bot                 // bot to handle messages
-	BotUsername             string              // telegram bot username (without "@" prefix)
-	Group                   string              // can be int64 or public group username (without "@" prefix)
-	AdminGroup              string              // can be int64 or public group username (without "@" prefix)
-	IdleDuration            time.Duration       // idle timeout to send "idle" message to bots
-	SuperUsers              SuperUsers          // list of superusers, can ban and report spam, can't be banned
-	TestingIDs              []int64             // list of chat IDs to test the bot
-	StartupMsg              string              // message to send on startup to the primary chat
-	WarnMsg                 string              // message to send on warning
-	NoSpamReply             bool                // do not reply on spam messages in the primary chat
-	SuppressJoinMessage     bool                // delete join message when kick out user
-	DeleteJoinMessages      bool                // delete join messages immediately
-	DeleteLeaveMessages     bool                // delete leave messages immediately
-	TrainingMode            bool                // do not ban users, just report and train spam detector
-	SoftBanMode             bool                // do not ban users, but restrict their actions
-	Locator                 Locator             // message locator to get info about messages
-	ReportConfig            ReportConfig        // user spam reporting configuration
-	DisableAdminSpamForward bool                // disable forwarding spam reports to admin chat support
-	Dry                     bool                // dry run, do not ban or send messages
-	AggressiveCleanup       bool                // delete all messages from user when banned via /spam command
-	AggressiveCleanupLimit  int                 // max messages to delete in aggressive cleanup mode
+	SharedForward           *SharedForwardConfig // nil disables cross-instance coordination
+	RecoveryJournal         *moderation.Journal  // optional durable stage-2 authority
+	TbAPI                   TbAPI                // telegram bot API
+	SpamLogger              SpamLogger           // logger to save spam to files and db
+	Bot                     Bot                  // bot to handle messages
+	BotUsername             string               // telegram bot username (without "@" prefix)
+	Group                   string               // can be int64 or public group username (without "@" prefix)
+	AdminGroup              string               // can be int64 or public group username (without "@" prefix)
+	IdleDuration            time.Duration        // idle timeout to send "idle" message to bots
+	SuperUsers              SuperUsers           // list of superusers, can ban and report spam, can't be banned
+	TestingIDs              []int64              // list of chat IDs to test the bot
+	StartupMsg              string               // message to send on startup to the primary chat
+	WarnMsg                 string               // message to send on warning
+	NoSpamReply             bool                 // do not reply on spam messages in the primary chat
+	SuppressJoinMessage     bool                 // delete join message when kick out user
+	DeleteJoinMessages      bool                 // delete join messages immediately
+	DeleteLeaveMessages     bool                 // delete leave messages immediately
+	TrainingMode            bool                 // do not ban users, just report and train spam detector
+	SoftBanMode             bool                 // do not ban users, but restrict their actions
+	Locator                 Locator              // message locator to get info about messages
+	ReportConfig            ReportConfig         // user spam reporting configuration
+	DisableAdminSpamForward bool                 // disable forwarding spam reports to admin chat support
+	Dry                     bool                 // dry run, do not ban or send messages
+	AggressiveCleanup       bool                 // delete all messages from user when banned via /spam command
+	AggressiveCleanupLimit  int                  // max messages to delete in aggressive cleanup mode
 
 	senderFeedbackAt time.Time
 	adminHandler     *admin
@@ -177,6 +178,20 @@ func (l *TelegramListener) Do(ctx context.Context) error {
 			l.AggressiveCleanupLimit)
 	}
 
+	if l.SharedForward != nil {
+		if l.adminHandler.recovery == nil {
+			return fmt.Errorf("shared forwards require moderation recovery")
+		}
+		if err := l.RecoveryJournal.EnableSharedOutbox(ctx); err != nil {
+			return fmt.Errorf("initialize shared outbox: %w", err)
+		}
+		bridge := &sharedForward{config: *l.SharedForward, admin: l.adminHandler, cache: map[string]string{}}
+		l.adminHandler.shared = bridge
+		sharedCtx, stopShared := context.WithCancel(ctx)
+		sharedDone := make(chan struct{})
+		go func() { defer close(sharedDone); bridge.run(sharedCtx) }()
+		defer func() { stopShared(); <-sharedDone }()
+	}
 	u := tbapi.NewUpdate(0)
 	u.Timeout = 60
 

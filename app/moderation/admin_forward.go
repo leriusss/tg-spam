@@ -75,6 +75,11 @@ func (j *Journal) forwardBatch(ctx context.Context, tx journalTx, receipt string
 // personal forward is a new decision/view epoch with a distinct bound card.
 func (j *Journal) AcceptForward(ctx context.Context, chat, destination, operator int64,
 	delivery ForwardDelivery, targets []ForwardTarget, now time.Time) (out ForwardAdmission, err error) {
+	return j.acceptForward(ctx, chat, destination, operator, delivery, targets, now, nil)
+}
+
+func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator int64,
+	delivery ForwardDelivery, targets []ForwardTarget, now time.Time, shared *SharedReport) (out ForwardAdmission, err error) {
 	if chat == 0 || destination == 0 || operator <= 0 || delivery.ChatID != destination ||
 		delivery.UpdateID <= 0 || delivery.MessageID <= 0 || len(targets) == 0 || len(targets) > 20 {
 		return out, errors.New("invalid forward delivery scope")
@@ -102,6 +107,10 @@ func (j *Journal) AcceptForward(ctx context.Context, chat, destination, operator
 		}
 		if found {
 			out = old
+			if shared != nil {
+				shared.Receipt = old.Receipt
+				return j.saveSharedOutbox(ctx, tx, *shared)
+			}
 			return nil
 		}
 		var total, live, queued, rate int
@@ -248,6 +257,11 @@ func (j *Journal) AcceptForward(ctx context.Context, chat, destination, operator
 		if e := j.exec(ctx, tx, `INSERT INTO moderation_forward_deliveries VALUES (?,?,?,?,?,?,?,?)`, j.db.GID(), delivery.UpdateID, delivery.ChatID, delivery.MessageID, operator, id, out.Previous, out.Reason); e != nil {
 			return e
 		}
+		if shared != nil {
+			if e := j.exec(ctx, tx, `INSERT INTO moderation_silent_cards VALUES (?,?)`, j.db.GID(), id); e != nil {
+				return e
+			}
+		}
 		p := Plan{
 			Key:          id,
 			ChatID:       chat,
@@ -261,7 +275,7 @@ func (j *Journal) AcceptForward(ctx context.Context, chat, destination, operator
 		if e := j.registerPlan(ctx, tx, p, now); e != nil {
 			return e
 		}
-		if allConfirmed || allBlocked || len(targets) == 1 && !review {
+		if shared == nil && (allConfirmed || allBlocked || len(targets) == 1 && !review) {
 			batch, e := j.forwardBatch(ctx, tx, id)
 			if e != nil {
 				return e
@@ -271,6 +285,12 @@ func (j *Journal) AcceptForward(ctx context.Context, chat, destination, operator
 				selected[i] = i
 			}
 			if e := j.selectForwardTX(ctx, tx, id, chat, batch, selected, operator, now); e != nil {
+				return e
+			}
+		}
+		if shared != nil {
+			shared.Receipt = id
+			if e := j.saveSharedOutbox(ctx, tx, *shared); e != nil {
 				return e
 			}
 		}
