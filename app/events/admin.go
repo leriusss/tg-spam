@@ -454,6 +454,11 @@ func (a *admin) directReport(update tbapi.Update, updateSamples bool) error {
 // InlineCallbackHandler handles a callback from Telegram, which is a response to a message with inline keyboard.
 // The callback contains user info, which is used to unban the user.
 func (a *admin) InlineCallbackHandler(query *tbapi.CallbackQuery) error {
+	if a.shared != nil {
+		if handled, err := a.shared.rejectForeignCallback(context.Background(), query); handled || err != nil {
+			return err
+		}
+	}
 	if a.shared != nil && strings.HasPrefix(query.Data, "S:") {
 		return a.shared.callback(context.Background(), query)
 	}

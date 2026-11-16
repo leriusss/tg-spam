@@ -834,6 +834,35 @@ func TestSharedUnknownCardSendIsNeverReplayed(t *testing.T) {
 	require.Empty(t, f.fixtures[0].banCalls)
 }
 
+func TestSharedForgedLegacyNamespacesCannotAdoptTheAnchor(t *testing.T) {
+	f := newSharedFleet(t, []int{2}, nil)
+	f.forward(t, 1324)
+	f.tick(t)
+	c := f.one(t)
+	var before int
+	require.NoError(t, f.fixtures[0].db.Get(&before, `SELECT count(*) FROM moderation_receipts`))
+	sends := len(f.fixtures[0].api.SendCalls())
+	for _, data := range []string{"?501:800", "+501:800", "501:800", "!501:800", "M+:forged",
+		"R+501:800", "R!501:800", "S:" + strings.Repeat("x", 65)} {
+		q := &tbapi.CallbackQuery{ID: "forged legacy", From: &tbapi.User{ID: 11}, Data: data,
+			Message: &tbapi.Message{Chat: tbapi.Chat{ID: 456}, MessageID: c.NotificationID, From: &tbapi.User{ID: 100}}}
+		if strings.HasPrefix(data, "R") {
+			require.NoError(t, f.fixtures[0].listener.reportsHandler.HandleReportCallback(context.Background(), q))
+		} else {
+			require.NoError(t, f.bridges[0].admin.InlineCallbackHandler(q))
+		}
+	}
+	f.fixtures[0].settle(t)
+	var after int
+	require.NoError(t, f.fixtures[0].db.Get(&after, `SELECT count(*) FROM moderation_receipts`))
+	require.Equal(t, before, after)
+	require.Len(t, f.fixtures[0].api.SendCalls(), sends, "foreign callbacks cannot replace the shared keyboard")
+	require.False(t, f.one(t).Decided)
+	require.Empty(t, f.fixtures[0].banCalls)
+	require.Empty(t, f.fixtures[0].deleteCalls)
+	f.fixtures[0].noLearning(t)
+}
+
 func TestSharedConcurrentSubmitAndPersistentOwnerClaim(t *testing.T) {
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	f.forward(t, 1324)

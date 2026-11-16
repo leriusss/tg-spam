@@ -39,6 +39,39 @@ func (s *sharedForward) clockNow() time.Time {
 	return time.Now()
 }
 
+// Callback data is untrusted. Legacy dispatch must never reinterpret this message.
+func (s *sharedForward) rejectForeignCallback(ctx context.Context, q *tbapi.CallbackQuery) (bool, error) {
+	if q == nil || q.Message == nil || strings.HasPrefix(q.Data, "S:") || s.config.Peer != s.config.Owner ||
+		q.Message.Chat.ID != s.admin.adminChatID {
+		return false, nil
+	}
+	legacyMarkup := false
+	if q.Message.ReplyMarkup != nil {
+		for _, row := range q.Message.ReplyMarkup.InlineKeyboard {
+			for _, button := range row {
+				if button.CallbackData != nil && strings.HasPrefix(*button.CallbackData, "S:") {
+					return true, s.admin.answerRecoveryCallback(ctx, q, "Изменённые кнопки этой карточки не дают полномочий.")
+				}
+				legacyMarkup = true
+			}
+		}
+	}
+	store := s.current()
+	blocked := !legacyMarkup
+	if store != nil {
+		known, e := store.ForeignNamespaceBlocked(ctx, q.Message.Chat.ID, q.Message.MessageID)
+		if e == nil {
+			blocked = known
+		} else if !legacyMarkup {
+			blocked = true
+		}
+	}
+	if blocked {
+		return true, s.admin.answerRecoveryCallback(ctx, q, "Для общей карточки доступны только её актуальные кнопки.")
+	}
+	return false, nil
+}
+
 func deliveryForShared(u tbapi.Update) moderation.ForwardDelivery {
 	return moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: u.Message.Chat.ID, MessageID: u.Message.MessageID}
 }
@@ -272,6 +305,9 @@ func (s *sharedForward) callback(ctx context.Context, q *tbapi.CallbackQuery) er
 	if q == nil || q.From == nil || q.Message == nil || q.Message.From == nil ||
 		q.Message.From.ID != s.config.Peer || s.config.Peer != s.config.Owner || q.Message.Chat.ID != s.admin.adminChatID {
 		return errors.New("shared callback owner mismatch")
+	}
+	if len(q.Data) > 64 {
+		return s.admin.answerRecoveryCallback(ctx, q, "Некорректные данные кнопки; действий нет.")
 	}
 	if code := s.admin.forwardOperator(ctx, q.From); code != "" {
 		return s.admin.answerRecoveryCallback(ctx, q, forwardOperatorFeedback(code))

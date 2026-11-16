@@ -34,6 +34,20 @@ type SharedView struct {
 	Page int
 }
 
+// ForeignNamespaceBlocked prevents legacy handlers from adopting the shared anchor.
+func (s *SharedStore) ForeignNamespaceBlocked(ctx context.Context, admin int64, notification int) (blocked bool, err error) {
+	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error {
+		a, e := s.readAnchor(ctx, tx, admin)
+		if e != nil {
+			return e
+		}
+		blocked = notification > 0 && notification == a.NotificationID || a.SendState == "unknown" ||
+			a.SendState == "armed" && a.NotificationID == 0
+		return nil
+	})
+	return blocked, err
+}
+
 func (s *SharedStore) readAnchor(ctx context.Context, tx journalTx, admin int64) (sharedAnchor, error) {
 	var rows []string
 	j := s.journal

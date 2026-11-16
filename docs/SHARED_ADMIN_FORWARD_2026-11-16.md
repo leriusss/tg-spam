@@ -107,6 +107,11 @@ Distinct inquiries retain their separate refs, targets, requesters, decisions an
 deadlines; the card provides paginated inquiry navigation and history. Navigation
 never authorizes moderation. Callbacks must match the inquiry currently displayed
 in that anchor, in addition to its saved revision and the current operator role.
+The shared anchor is protected before legacy callback dispatch: forged `?`, `+`,
+`M+`, `R+` and reporter callbacks cannot adopt its message, replace its keyboard,
+train the classifier or admit legacy actions. Callback data is bounded to 64
+bytes. Unclassified owner callbacks fail closed when anchor binding is unavailable;
+existing legacy cards are not rewritten.
 
 Crossed late deliveries therefore cannot create additional provisional cards,
 even before the relationship between their original sets is known. Exact-set
