@@ -188,7 +188,11 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		if row.UserID == a.primChatID {
 			target.Blocked = "anonymous_admin_gate"
 		}
-		if len(rows) == 1 && origin.Reliable && target.IdentityID != 0 &&
+		// An explicit all-originals instruction can cover a different author in
+		// another chat, but only that original's own saved numeric update proves it.
+		allOriginals := a.shared != nil && a.shared.config.Policy == moderation.ForwardAllPolicy &&
+			target.Evidence == "telegram_update"
+		if !allOriginals && len(rows) == 1 && origin.Reliable && target.IdentityID != 0 &&
 			(origin.ID != target.IdentityID || string(origin.Kind) != target.IdentityKind) {
 			target.Blocked = "forward_identity_mismatch"
 		}

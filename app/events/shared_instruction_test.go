@@ -210,6 +210,32 @@ func TestInstructionSingleAndUnknownAuthor(t *testing.T) {
 	}
 }
 
+func TestInstructionOpenOriginDoesNotOverrideOtherOriginalAuthors(t *testing.T) {
+	t.Parallel()
+	f := instructionFleet(t, []int{1, 1, 1, 0, 0}, nil)
+	_, err := f.fixtures[2].db.Exec(`DELETE FROM message_authors`)
+	require.NoError(t, err)
+	for i, fixture := range f.fixtures {
+		u := manualForwardUpdate()
+		u.Message.MessageID, u.UpdateID = 1349, 600000+i
+		u.Message.ForwardOrigin = &tbapi.MessageOrigin{Type: "user", SenderUser: &tbapi.User{ID: 501}}
+		fixture.listen(t, u)
+		f.bridges[i] = fixture.listener.adminHandler.shared
+		f.bridges[i].store = f.store
+		f.bridges[i].now = func() time.Time { return f.now }
+	}
+	settleInstructions(t, f)
+	require.Equal(t, map[int64]int{501: 1}, f.fixtures[0].banCalls)
+	require.Equal(t, map[int64]int{502: 1}, f.fixtures[1].banCalls)
+	require.Equal(t, map[int]int{900: 1}, f.fixtures[1].deleteCalls)
+	require.Empty(t, f.fixtures[2].banCalls, "the forward's author cannot supply a different unknown author's ID")
+	require.Equal(t, map[int]int{1000: 1}, f.fixtures[2].deleteCalls)
+	for _, fixture := range f.fixtures[3:] {
+		require.Empty(t, fixture.banCalls)
+		require.Empty(t, fixture.deleteCalls)
+	}
+}
+
 func TestInstructionLateResultsAndFrozenChoices(t *testing.T) {
 	t.Parallel()
 	runInstructionLateResults(t, nil)
