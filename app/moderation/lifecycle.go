@@ -351,6 +351,13 @@ func (j *Journal) registerPlan(ctx context.Context, tx journalTx, p Plan, now ti
 }
 
 func (j *Journal) dirtyCard(ctx context.Context, tx journalTx, receipt string, now time.Time) error {
+	var silent int
+	if e := tx.GetContext(ctx, &silent, j.db.Adopt(`SELECT count(*) FROM moderation_silent_cards WHERE gid=? AND receipt=?`), j.db.GID(), receipt); e != nil {
+		return journalError(e)
+	}
+	if silent != 0 {
+		return nil
+	}
 	var card Card
 	err := tx.GetContext(
 		ctx,

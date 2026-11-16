@@ -923,6 +923,11 @@ func (r *userReports) callbackReportCancel(_ context.Context, query *tbapi.Callb
 
 // HandleReportCallback routes report callbacks to the appropriate handler
 func (r *userReports) HandleReportCallback(ctx context.Context, query *tbapi.CallbackQuery) error {
+	if r.recoveryAdmin != nil && r.recoveryAdmin.shared != nil {
+		if handled, err := r.recoveryAdmin.shared.rejectForeignCallback(ctx, query); handled || err != nil {
+			return err
+		}
+	}
 	chatID := query.Message.Chat.ID
 	if chatID != r.adminChatID {
 		return nil

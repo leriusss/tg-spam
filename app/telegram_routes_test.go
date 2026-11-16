@@ -600,11 +600,15 @@ func TestTelegramRoutesRealTLSAndReadTimeouts(t *testing.T) {
 		assert.Equal(t, 1, f.r.snapshot().PollingFailures[0])
 	})
 	t.Run("response read", func(t *testing.T) {
-		f := newRouteFixture(t, func(w http.ResponseWriter, req *http.Request) {
+		release := make(chan struct{})
+		defer close(release)
+		f := newRouteFixture(t, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"ok":`)
 			w.(http.Flusher).Flush()
-			<-req.Context().Done()
+			// Keep the chunked response incomplete until ReadAll observes the timeout.
+			// Returning on server cancellation races a valid terminating chunk/EOF.
+			<-release
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()

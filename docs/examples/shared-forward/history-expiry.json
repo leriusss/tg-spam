@@ -1,0 +1,46 @@
+[
+  {
+    "Ref": "eabcb5417eb5e1b718be01e4a5723627",
+    "NotificationID": 1001,
+    "SendState": "known",
+    "Caption": "Пересылка №1324.\nРучная модерация — общее обращение.\nСрок выбора истёк. Новая попытка требует новой пересылки и явного решения.\nБалтия — найдено: 2.\nЕвропа — найдено: 2.\n\nПодробнее (отдельные оригиналы и история):\nБалтия (chat -1000), оригинал №800: initial; источник: telegram_update; delete-deadline: 2026-11-17T14:37:19Z.\nБалтия (chat -1000), оригинал №801: initial; источник: telegram_update; delete-deadline: 2026-11-17T14:37:19Z.\nЕвропа (chat -1001), оригинал №900: initial; источник: telegram_update; delete-deadline: 2026-11-17T14:37:19Z.\nЕвропа (chat -1001), оригинал №901: initial; источник: telegram_update; delete-deadline: 2026-11-17T14:37:19Z.\n",
+    "Keyboard": {
+      "inline_keyboard": [
+        [
+          {
+            "text": "Кратко",
+            "callback_data": "S:v0:eabcb5417eb5e1b718be01e4a5723627:3"
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "Ref": "4e9688026abd3925c4c0a36efad622ee",
+    "NotificationID": 1002,
+    "SendState": "known",
+    "Caption": "Пересылка №1325.\nРучная модерация — общее обращение.\nВыберите перечисленные оригиналы; совпадение текста не подтверждает автора.\nБалтия — найдено: 2.\nЕвропа — не найдено.\n",
+    "Keyboard": {
+      "inline_keyboard": [
+        [
+          {
+            "text": "Обработать: Балтия",
+            "callback_data": "S:100:4e9688026abd3925c4c0a36efad622ee:3"
+          }
+        ],
+        [
+          {
+            "text": "Обработать все перечисленные допустимые цели",
+            "callback_data": "S:all:4e9688026abd3925c4c0a36efad622ee:3"
+          }
+        ],
+        [
+          {
+            "text": "Подробнее",
+            "callback_data": "S:v1:4e9688026abd3925c4c0a36efad622ee:3"
+          }
+        ]
+      ]
+    }
+  }
+]

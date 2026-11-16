@@ -38,7 +38,14 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		log.Printf("[DEBUG] admin report ignored: outcome=missing_origin admin_msg_id=%d", m.MessageID)
 		return nil
 	}
+	authorized := false
 	reply := func(s string) error {
+		if a.shared != nil && !diagnostic && authorized {
+			return a.shared.captureFailure(deliveryForShared(u), m.From.ID, s)
+		}
+		if a.shared != nil && !diagnostic && a.shared.config.Peer != a.shared.config.Owner {
+			return nil
+		}
 		out := tbapi.NewMessage(a.adminChatID, s)
 		out.ReplyParameters = tbapi.ReplyParameters{MessageID: m.MessageID}
 		if _, err := a.tbAPI.Send(out); err != nil {
@@ -50,9 +57,10 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		log.Printf("[INFO] admin forward operator: outcome=%s", code)
 		return reply(forwardOperatorFeedback(code))
 	}
+	authorized = true
 
 	delivery := moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: m.Chat.ID, MessageID: m.MessageID}
-	if !diagnostic && a.recovery != nil {
+	if !diagnostic && a.recovery != nil && a.shared == nil {
 		_, seen, e := a.recovery.journal.LookupForwardDelivery(context.Background(), delivery, m.From.ID)
 		if e != nil {
 			return reply(
@@ -91,6 +99,9 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		return reply("Отказ: locator недоступен или содержит конфликтующие оригиналы. Попробуйте позже; действий нет.")
 	}
 	if len(rows) == 0 {
+		if a.shared != nil && !diagnostic {
+			return a.shared.capture(delivery, m.From.ID, nil)
+		}
 		log.Printf(
 			"[INFO] admin forward search: outcome=locator_miss primary_chat=%d delivery=%d diagnostic=%t",
 			a.primChatID,
@@ -211,6 +222,9 @@ func (a *admin) MsgHandler(u tbapi.Update) error {
 		}
 	}
 
+	if a.shared != nil {
+		return a.shared.capture(delivery, m.From.ID, targets)
+	}
 	_, err = a.recovery.journal.AcceptForward(
 		context.Background(),
 		a.primChatID,

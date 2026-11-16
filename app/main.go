@@ -39,9 +39,12 @@ import (
 )
 
 type options struct {
-	ModerationRecovery bool   `long:"moderation-recovery" env:"MODERATION_RECOVERY" description:"enable durable moderation recovery"`
-	InstanceID         string `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
-	DataBaseURL        string `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
+	SharedForwardDB    string  `long:"shared-forward-db" env:"SHARED_FORWARD_DB" description:"opt-in separate coordination database; empty disables shared forwards"`
+	SharedForwardOwner int64   `long:"shared-forward-owner" env:"SHARED_FORWARD_OWNER" description:"fixed numeric card-owner bot ID"`
+	SharedForwardPeers []int64 `long:"shared-forward-peer" env:"SHARED_FORWARD_PEERS" env-delim:"," description:"complete numeric bot-ID roster"`
+	ModerationRecovery bool    `long:"moderation-recovery" env:"MODERATION_RECOVERY" description:"enable durable moderation recovery"`
+	InstanceID         string  `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
+	DataBaseURL        string  `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
 
 	Telegram struct {
 		Token             string        `long:"token" env:"TOKEN" description:"telegram bot token"`
@@ -242,7 +245,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	masked := []string{opts.Telegram.Token, opts.OpenAI.Token}
+	masked := []string{opts.Telegram.Token, opts.OpenAI.Token, opts.SharedForwardDB}
 	if opts.Server.AuthPasswd != "auto" && opts.Server.AuthPasswd != "" {
 		// auto passwd should not be masked as we print it
 		masked = append(masked, opts.Server.AuthPasswd)
@@ -404,6 +407,10 @@ func executeWithTelegram(ctx context.Context, opts options,
 		return fmt.Errorf("can't make telegram bot, %w", err)
 	}
 	tbAPI.Debug = opts.TGDbg
+	sharedConfig, err := sharedForwardOptions(opts, tbAPI.Self.ID)
+	if err != nil {
+		return err
+	}
 
 	// make spam logger writer
 	loggerWr, err := makeSpamLogWriter(opts)
@@ -420,6 +427,7 @@ func executeWithTelegram(ctx context.Context, opts options,
 
 	// make telegram listener
 	tgListener := events.TelegramListener{
+		SharedForward:       sharedConfig,
 		RecoveryJournal:     recoveryJournal,
 		TbAPI:               tbAPI,
 		BotUsername:         tbAPI.Self.UserName,
