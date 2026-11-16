@@ -54,6 +54,7 @@ func NewJournal(ctx context.Context, db *engine.SQL, limits Limits) (*Journal, e
 		`CREATE INDEX IF NOT EXISTS idx_moderation_due ON moderation_actions(gid,state,next_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_receipt_actions ON moderation_actions(gid,receipt)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_deleted_pair ON moderation_actions(gid,chat_id,message_id,state)`,
+		`CREATE INDEX IF NOT EXISTS idx_moderation_identity_actions ON moderation_actions(gid,chat_id,identity_kind,identity_id,kind,next_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_retention ON moderation_receipts(gid,state,created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_moderation_original_receipt ON moderation_receipts(gid,chat_id,message_id)`,
 	}

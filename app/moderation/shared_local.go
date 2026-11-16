@@ -2,11 +2,24 @@ package moderation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
+
+// ErrSharedReview means a refusal appeared after the coordinator's saved intent.
+var ErrSharedReview = errors.New("shared decision needs fresh explicit review")
+
+// SharedRefusal is a causal snapshot of a known terminal local operation.
+type SharedRefusal struct {
+	Key, Kind, Code string
+	MessageID       int
+	IdentityID      int64
+}
 
 // SharedReport contains one bot's search, never another bot's authority or token.
 type SharedReport struct {
@@ -16,6 +29,7 @@ type SharedReport struct {
 	Delivery                                  ForwardDelivery
 	Targets                                   []ForwardTarget
 	Actions                                   []Action
+	Refusals                                  []SharedRefusal
 }
 
 // EnableSharedOutbox adds an opt-in durable handoff alongside the local journal.
@@ -39,7 +53,7 @@ func (j *Journal) saveSharedOutbox(ctx context.Context, tx journalTx, r SharedRe
 		return ErrCapacity
 	}
 	// The authoritative target snapshot is loaded from the local receipt on export.
-	r.Targets, r.Actions = nil, nil
+	r.Targets, r.Actions, r.Refusals = nil, nil, nil
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return journalError(err)
@@ -83,6 +97,13 @@ func (j *Journal) SharedOutbox(ctx context.Context) ([]SharedReport, error) {
 			}
 			r.Targets, r.Actions, r.State, r.Reason = c.Forward.Targets, c.Actions, c.Forward.State, c.Forward.Reason
 			r.Expires = c.Forward.Expires
+			if r.State == "pending" {
+				var e error
+				r.Refusals, e = j.sharedRefusals(ctx, r, c.Forward.Targets)
+				if e != nil {
+					return nil, e
+				}
+			}
 			// Quotes and unrelated technical action fields are unnecessary in the shared DB.
 			for i := range r.Targets {
 				r.Targets[i].Text = ""
@@ -95,7 +116,8 @@ func (j *Journal) SharedOutbox(ctx context.Context) ([]SharedReport, error) {
 
 // DecideSharedForward imports a frozen coordinator decision into this bot only.
 // The existing worker rechecks roles and safety gates immediately before effects.
-func (j *Journal) DecideSharedForward(ctx context.Context, r SharedReport, operator int64, selected []int, now time.Time) error {
+func (j *Journal) DecideSharedForward(ctx context.Context, r SharedReport, operator int64,
+	selected []int, automatic bool, now time.Time) error {
 	return j.transaction(ctx, func(tx journalTx) error {
 		b, err := j.forwardBatch(ctx, tx, r.Receipt)
 		if err != nil {
@@ -120,9 +142,63 @@ func (j *Journal) DecideSharedForward(ctx context.Context, r SharedReport, opera
 		if b.State != "pending" || b.Expires <= now.UnixMilli() {
 			return errors.New("shared local choice expired")
 		}
+		for _, index := range selected {
+			if index < 0 || index >= len(b.Targets) {
+				return errors.New("shared selection outside frozen local targets")
+			}
+			for _, wanted := range forwardActions(b.Targets[index], r.Receipt, chat, now) {
+				prior, reused, review, e := j.reusableForwardAction(ctx, tx, wanted, now)
+				if e != nil {
+					return e
+				}
+				if !reused && review && (automatic || !slices.ContainsFunc(r.Refusals, func(f SharedRefusal) bool {
+					return f.Key == sharedRefusalKey(prior, wanted.Kind)
+				})) {
+					return fmt.Errorf("%w: %s %s", ErrSharedReview, wanted.Kind, prior.Code)
+				}
+			}
+		}
 		if updateErr := j.exec(ctx, tx, `UPDATE moderation_forward_batches SET requester=? WHERE gid=? AND receipt=?`, operator, j.db.GID(), r.Receipt); updateErr != nil {
 			return updateErr
 		}
 		return j.selectForwardTX(ctx, tx, r.Receipt, chat, b, selected, operator, now)
 	})
+}
+
+func sharedRefusalKey(a Action, kind string) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s:%s:%s:%s:%d:%d", kind, a.ID, a.State, a.Code, a.Attempts, a.Generation))
+	return hex.EncodeToString(sum[:])
+}
+
+func (j *Journal) sharedRefusals(ctx context.Context, r SharedReport, targets []ForwardTarget) (out []SharedRefusal, err error) {
+	err = j.readCardTransaction(ctx, func(tx journalTx) error {
+		seen := map[string]bool{}
+		for i := range targets {
+			t := &targets[i]
+			for _, wanted := range forwardActions(*t, r.Receipt, r.ChatID, time.Now()) {
+				prior, reused, review, e := j.reusableForwardAction(ctx, tx, wanted, time.Now())
+				if e != nil {
+					return e
+				}
+				confirmed := reused && prior.State == Confirmed && !prior.Uncertain
+				if wanted.Kind == "original_delete" {
+					t.DeleteConfirmed = confirmed
+				} else {
+					t.BanConfirmed = confirmed
+				}
+				if reused || !review {
+					continue
+				}
+				key := sharedRefusalKey(prior, wanted.Kind)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				out = append(out, SharedRefusal{Key: key, Kind: wanted.Kind, Code: prior.Code,
+					MessageID: wanted.MessageID, IdentityID: wanted.IdentityID})
+			}
+		}
+		return nil
+	})
+	return out, err
 }

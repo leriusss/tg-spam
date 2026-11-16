@@ -24,11 +24,19 @@ type SharedForwardConfig struct {
 }
 
 type sharedForward struct {
+	now    func() time.Time
 	config SharedForwardConfig
 	admin  *admin
 	mu     sync.RWMutex
 	store  *moderation.SharedStore
 	cache  map[string]string // owned only by the single background loop
+}
+
+func (s *sharedForward) clockNow() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func deliveryForShared(u tbapi.Update) moderation.ForwardDelivery {
@@ -39,6 +47,10 @@ func (s *sharedForward) captureFailure(delivery moderation.ForwardDelivery, oper
 	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, SearchError: truncateRunes(reason, 500)}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
+		if s.config.Peer != s.config.Owner {
+			log.Printf("[WARN] shared search refusal could not be journaled")
+			return nil
+		}
 		return fmt.Errorf("save shared search refusal: %w", err)
 	}
 	return nil
@@ -54,6 +66,10 @@ func (s *sharedForward) capture(delivery moderation.ForwardDelivery, operator in
 	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, Targets: targets}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
+		if s.config.Peer != s.config.Owner {
+			log.Printf("[WARN] shared forward could not be journaled")
+			return nil
+		}
 		return fmt.Errorf("save shared forward: %w", err)
 	}
 	return nil
@@ -114,6 +130,9 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		}
 		if e := store.Submit(ctx, r, now); e != nil {
 			submitFailure = fmt.Errorf("submit shared report: %w", e)
+			if errors.Is(e, moderation.ErrCapacity) {
+				continue
+			}
 			break // existing decisions must still reach local journals if new intake is full
 		}
 		s.cache[key] = string(raw)
@@ -140,7 +159,13 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 				continue
 			}
 			// The frozen local receipt additionally binds requester, delivery and expiry.
-			if e := s.admin.recovery.journal.DecideSharedForward(ctx, choice.Report, c.DecisionOperator, choice.Selected, now); e != nil {
+			e := s.admin.recovery.journal.DecideSharedForward(ctx, choice.Report, c.DecisionOperator,
+				choice.Selected, c.Automatic, now)
+			if errors.Is(e, moderation.ErrSharedReview) {
+				if reviewErr := store.RequireReview(ctx, c.Ref, s.config.Peer, e.Error()); reviewErr != nil {
+					return fmt.Errorf("record fresh review: %w", reviewErr)
+				}
+			} else if e != nil {
 				log.Printf("[WARN] shared decision not admitted to local journal; expired or unavailable authority")
 			} else {
 				s.cache[key] = "done"
@@ -153,24 +178,29 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 			if e := store.AutoChoose(ctx, s.config.Peer, c.Ref, now); e != nil {
 				return fmt.Errorf("admit unique shared original: %w", e)
 			}
-			fresh, e := store.Case(ctx, c.Ref)
-			if e != nil {
-				return fmt.Errorf("refresh shared case: %w", e)
-			}
-			c = fresh
 		}
-		if e := s.render(ctx, store, c, now); e != nil {
-			return e
+	}
+	if s.config.Peer == s.config.Owner {
+		view, found, e := store.View(ctx, s.config.Peer, s.admin.adminChatID, now)
+		if e != nil {
+			return fmt.Errorf("load shared presentation: %w", e)
+		}
+		if found {
+			if e := s.render(ctx, store, view, now); e != nil {
+				return e
+			}
 		}
 	}
 	return submitFailure
 }
 
-func (s *sharedForward) render(ctx context.Context, store *moderation.SharedStore, c moderation.SharedCase, now time.Time) error {
+func (s *sharedForward) render(ctx context.Context, store *moderation.SharedStore,
+	view moderation.SharedView, now time.Time) error {
+	c := view.Case
 	if c.Canonical != "" && c.NotificationID == 0 {
 		return nil
 	}
-	text, buttons := sharedCard(c, s.config.Peers, now)
+	text, buttons := sharedViewCard(view, s.config.Peers, now)
 	raw, err := json.Marshal(buttons)
 	if err != nil {
 		return fmt.Errorf("encode shared keyboard: %w", err)
@@ -259,7 +289,19 @@ func (s *sharedForward) callback(ctx context.Context, q *tbapi.CallbackQuery) er
 		return s.admin.answerRecoveryCallback(ctx, q, "Координатор недоступен. Выбор не принят; повторите позже.")
 	}
 	verb := parts[1]
-	if page, ok := strings.CutPrefix(verb, "v"); ok {
+	if strings.HasPrefix(verb, "c") || strings.HasPrefix(verb, "p") {
+		n, e := strconv.Atoi(verb[1:])
+		if e != nil || n < 0 {
+			return errors.New("invalid shared view navigation")
+		}
+		index, page := -1, -1
+		if verb[0] == 'c' {
+			index = n
+		} else {
+			page = n
+		}
+		err = store.SwitchView(ctx, s.config.Peer, parts[2], revision, q.Message.Chat.ID, q.Message.MessageID, index, page)
+	} else if page, ok := strings.CutPrefix(verb, "v"); ok {
 		n, e := strconv.Atoi(page)
 		if e != nil {
 			return fmt.Errorf("parse shared page: %w", e)
@@ -287,7 +329,7 @@ func (s *sharedForward) callback(ctx context.Context, q *tbapi.CallbackQuery) er
 			}
 		}
 		err = store.Decide(ctx, s.config.Peer, parts[2], revision,
-			q.Message.Chat.ID, q.Message.MessageID, q.From.ID, peer, index, time.Now())
+			q.Message.Chat.ID, q.Message.MessageID, q.From.ID, peer, index, s.clockNow())
 	}
 	if err != nil {
 		return s.admin.answerRecoveryCallback(ctx, q,

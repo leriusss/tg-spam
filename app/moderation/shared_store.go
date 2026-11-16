@@ -25,6 +25,21 @@ type SharedChoice struct {
 	Selected []int
 }
 
+// SharedIntent preserves superseded dispatch authority without replaying it.
+type SharedIntent struct {
+	Choices             []SharedIntentChoice
+	Operator, DecidedAt int64
+	Automatic           bool
+	Reason              string
+}
+
+// SharedIntentChoice retains history without duplicating whole reports.
+type SharedIntentChoice struct {
+	Peer       int64
+	Receipt    string
+	MessageIDs []int
+}
+
 // SharedCase retains incoming deliveries separately from exact original targets.
 type SharedCase struct {
 	Ref                                               string
@@ -34,6 +49,10 @@ type SharedCase struct {
 	Revision                                          int
 	Reports                                           []SharedReport
 	Choices                                           []SharedChoice
+	PriorIntents                                      []SharedIntent
+	Automatic, NeedsReview                            bool
+	ReviewReason                                      string
+	DecidedAt                                         int64
 	Decided                                           bool
 	DecisionOperator                                  int64
 	NotificationID                                    int
@@ -60,6 +79,7 @@ func NewSharedStore(ctx context.Context, db *engine.SQL, owner int64, peers []in
 	}
 	for _, q := range []string{
 		`CREATE TABLE IF NOT EXISTS shared_config (gid TEXT PRIMARY KEY, payload TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS shared_views (gid TEXT NOT NULL, destination BIGINT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,destination))`,
 		`CREATE TABLE IF NOT EXISTS shared_cases (gid TEXT NOT NULL, ref TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,ref))`,
 		`CREATE TABLE IF NOT EXISTS shared_searches (gid TEXT NOT NULL, peer BIGINT NOT NULL, destination BIGINT NOT NULL, message_id INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(gid,peer,destination,message_id))`,
 		`CREATE TABLE IF NOT EXISTS shared_deliveries (gid TEXT NOT NULL, peer BIGINT NOT NULL, update_id BIGINT NOT NULL, destination BIGINT NOT NULL, message_id INTEGER NOT NULL, operator_id BIGINT NOT NULL, ref TEXT NOT NULL, PRIMARY KEY(gid,peer,update_id), UNIQUE(gid,peer,destination,message_id))`,
@@ -142,7 +162,7 @@ func sameOriginals(a, b SharedReport) bool {
 
 func sharedTerminal(c SharedCase) bool {
 	if !c.Decided {
-		return false
+		return c.NeedsReview && len(c.PriorIntents) > 20
 	}
 	for _, choice := range c.Choices {
 		found := false
@@ -169,8 +189,13 @@ func sharedTerminal(c SharedCase) bool {
 func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time) error {
 	if !slices.Contains(s.peers, r.Peer) || r.Operator <= 0 || r.ChatID == 0 || r.Delivery.UpdateID <= 0 ||
 		r.Delivery.ChatID == 0 || r.Delivery.MessageID <= 0 || len(r.Targets) > 20 || len(r.Actions) > 100 ||
+		len(r.Refusals) > 40 ||
 		len(r.Name) > 320 || len(r.SearchError) > 2000 {
 		return errors.New("invalid shared report")
+	}
+	r.Targets = slices.Clone(r.Targets)
+	for i := range r.Targets {
+		r.Targets[i].Text = ""
 	}
 	j := s.journal
 	return j.transaction(ctx, func(tx journalTx) error {
@@ -235,7 +260,7 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		// Coalesce a new unsent provisional case with an existing active inquiry.
 		if len(deliveries) == 0 && (index < 0 || all[index].NotificationID == 0 && all[index].SendState == "" && !all[index].Decided) {
 			for i, c := range all {
-				if i == index || c.Canonical != "" || c.AdminID != r.Delivery.ChatID ||
+				if i == index || c.Canonical != "" || c.Decided || c.AdminID != r.Delivery.ChatID ||
 					c.Expires <= now.UnixMilli() || sharedTerminal(c) {
 					continue
 				}
@@ -328,6 +353,9 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 			}
 			// Repeated forwards retain the original receipt and its decision epoch.
 			if old.Receipt == r.Receipt {
+				if !slices.Equal(old.Refusals, r.Refusals) {
+					c.Revision++
+				}
 				c.Reports[i] = r
 			}
 		}
@@ -358,7 +386,13 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 
 // Cases returns a bounded consistent snapshot. No network effects occur here.
 func (s *SharedStore) Cases(ctx context.Context) (out []SharedCase, err error) {
-	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error { out, err = s.cases(ctx, tx); return err })
+	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error {
+		out, err = s.cases(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return s.decorateCases(ctx, tx, out)
+	})
 	return out, err
 }
 
@@ -366,13 +400,19 @@ func (s *SharedStore) Cases(ctx context.Context) (out []SharedCase, err error) {
 // Telegram anchor. A choice cannot acquire later reports or new originals.
 func (s *SharedStore) Decide(ctx context.Context, peer int64, ref string, revision int,
 	admin int64, anchor int, operator, targetPeer int64, targetIndex int, now time.Time) error {
-	return s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.Canonical != "" || c.Revision != revision || c.AdminID != admin ||
+	return s.change(ctx, ref, func(tx journalTx, c *SharedCase) error {
+		if !s.anchorBound(ctx, tx, *c, peer, admin, anchor) || c.Canonical != "" || c.Revision != revision || c.AdminID != admin ||
 			c.NotificationID != anchor || anchor <= 0 ||
 			operator <= 0 || c.Expires <= now.UnixMilli() || c.Decided {
 			return errors.New("stale or unbound shared callback")
 		}
+		if len(c.PriorIntents) > 20 {
+			return ErrCapacity
+		}
 		c.DecisionOperator = operator
+		c.DecidedAt = now.UnixMilli()
+		c.Automatic = false
+		c.NeedsReview = false
 		return s.choose(c, targetPeer, targetIndex)
 	})
 }
@@ -402,13 +442,13 @@ func (s *SharedStore) choose(c *SharedCase, peer int64, index int) error {
 	return nil
 }
 
-func (s *SharedStore) change(ctx context.Context, ref string, fn func(*SharedCase) error) error {
+func (s *SharedStore) change(ctx context.Context, ref string, fn func(journalTx, *SharedCase) error) error {
 	return s.journal.transaction(ctx, func(tx journalTx) error {
 		c, err := s.readCase(ctx, tx, ref)
 		if err != nil {
 			return err
 		}
-		if applyErr := fn(&c); applyErr != nil {
+		if applyErr := fn(tx, &c); applyErr != nil {
 			return applyErr
 		}
 		return s.save(ctx, tx, c)
@@ -430,76 +470,27 @@ func (s *SharedStore) readCase(ctx context.Context, tx journalTx, ref string) (S
 
 // Case returns one consistent saved inquiry without scanning unrelated history.
 func (s *SharedStore) Case(ctx context.Context, ref string) (out SharedCase, err error) {
-	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error { out, err = s.readCase(ctx, tx, ref); return err })
+	err = s.journal.readCardTransaction(ctx, func(tx journalTx) error {
+		out, err = s.readCase(ctx, tx, ref)
+		if err != nil {
+			return err
+		}
+		a, e := s.readAnchor(ctx, tx, out.AdminID)
+		if e != nil {
+			return e
+		}
+		applyAnchor(&out, a)
+		return nil
+	})
 	return out, err
-}
-
-// ClaimCard reserves the sole owner's send/edit before the external call.
-// An abandoned initial send is uncertain and will never be sent again blindly.
-func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref, rendered string,
-	now time.Time) (out SharedCase, claimed bool, err error) {
-	err = s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.CollectUntil > now.UnixMilli() || c.NextAt > now.UnixMilli() ||
-			c.LastRender == rendered || c.SendState == "unknown" || c.SendState == "failed" {
-			return nil
-		}
-		if c.Lease != "" {
-			if c.LeaseUntil > now.UnixMilli() {
-				return nil
-			}
-			if c.NotificationID == 0 {
-				c.SendState = "unknown"
-				c.Lease = ""
-				return nil
-			}
-		}
-		if c.NotificationID == 0 && c.SendState == "armed" {
-			c.SendState = "unknown"
-			return nil
-		}
-		c.Lease = token()
-		c.LeaseUntil = now.Add(30 * time.Second).UnixMilli()
-		c.SendState = "armed"
-		c.Attempts++
-		out = *c
-		claimed = true
-		return nil
-	})
-	return out, claimed, err
-}
-
-// FinishCard records only the outcome for the fenced owner claim.
-func (s *SharedStore) FinishCard(ctx context.Context, c SharedCase, anchor int, rendered, outcome string, now time.Time) error {
-	return s.change(ctx, c.Ref, func(current *SharedCase) error {
-		if current.Lease != c.Lease || current.Lease == "" {
-			return ErrLease
-		}
-		current.Lease = ""
-		current.LeaseUntil = 0
-		switch outcome {
-		case "ok":
-			current.NotificationID = anchor
-			current.SendState = "known"
-			current.LastRender = rendered
-			current.Attempts = 0
-		case "retry":
-			current.SendState = ""
-			current.NextAt = now.Add(10 * time.Second).UnixMilli()
-			if current.Attempts >= 5 {
-				current.SendState = "failed"
-			}
-		default:
-			current.SendState = outcome
-		}
-		return nil
-	})
 }
 
 // AutoChoose preserves the existing single-original flow only after every peer
 // responded and only if that original does not require an explicit new attempt.
 func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, now time.Time) error {
-	return s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.Canonical != "" || c.Decided || c.Expires <= now.UnixMilli() || len(c.Reports) != len(s.peers) {
+	return s.change(ctx, ref, func(_ journalTx, c *SharedCase) error {
+		if peer != s.owner || c.Canonical != "" || c.Decided || c.NeedsReview ||
+			c.Expires <= now.UnixMilli() || len(c.Reports) != len(s.peers) {
 			return nil
 		}
 		count := 0
@@ -513,12 +504,49 @@ func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, no
 				only = r
 			}
 		}
-		if count != 1 || only.Targets[0].Blocked != "" ||
+		if count != 1 || only.Targets[0].Blocked != "" || len(only.Refusals) > 0 ||
 			only.Reason != "initial" && only.Reason != "ongoing" && only.Reason != "already_confirmed" {
 			return nil
 		}
 		c.DecisionOperator = c.Operator
+		c.DecidedAt = now.UnixMilli()
+		c.Automatic = true
 		return s.choose(c, only.Peer, 0)
+	})
+}
+
+// RequireReview invalidates delayed dispatch authority if local facts changed.
+func (s *SharedStore) RequireReview(ctx context.Context, ref string, peer int64, reason string) error {
+	if len(reason) > 512 {
+		return errors.New("shared review reason exceeds bound")
+	}
+	return s.change(ctx, ref, func(_ journalTx, c *SharedCase) error {
+		if !c.Decided {
+			return nil
+		}
+		allowed := false
+		for _, choice := range c.Choices {
+			allowed = allowed || choice.Report.Peer == peer
+		}
+		if !allowed {
+			return errors.New("shared review peer has no saved choice")
+		}
+		intent := SharedIntent{Operator: c.DecisionOperator, DecidedAt: c.DecidedAt, Automatic: c.Automatic, Reason: reason}
+		for _, choice := range c.Choices {
+			entry := SharedIntentChoice{Peer: choice.Report.Peer, Receipt: choice.Report.Receipt}
+			for _, index := range choice.Selected {
+				entry.MessageIDs = append(entry.MessageIDs, choice.Report.Targets[index].MessageID)
+			}
+			intent.Choices = append(intent.Choices, entry)
+		}
+		c.PriorIntents = append(c.PriorIntents, intent)
+		c.ReviewReason = reason
+		c.Choices = nil
+		c.Decided = false
+		c.Automatic = false
+		c.NeedsReview = true
+		c.Revision++
+		return nil
 	})
 }
 
@@ -555,8 +583,8 @@ func sameInquiry(a, b SharedCase) bool {
 	return found
 }
 
-// Reconcile replaces a second provisional card with a pointer only after every
-// peer proves an identical exact-original set. It never combines two decisions.
+// Reconcile coalesces inquiry records after every peer proves the same exact
+// original set. Presentation remains one anchor; accepted decisions stay separate.
 func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) error {
 	if peer != s.owner {
 		return errors.New("only card owner reconciles inquiries")
@@ -569,17 +597,17 @@ func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) 
 		}
 		for i := range cases {
 			a := &cases[i]
-			if a.Canonical != "" || a.Expires <= now.UnixMilli() || sharedTerminal(*a) || !s.completeCase(*a) {
+			if a.Canonical != "" || a.Decided || a.Expires <= now.UnixMilli() || sharedTerminal(*a) || !s.completeCase(*a) {
 				continue
 			}
 			for k := i + 1; k < len(cases); k++ {
 				b := &cases[k]
-				if b.Canonical != "" || b.Expires <= now.UnixMilli() || sharedTerminal(*b) ||
-					!s.completeCase(*b) || a.Decided && b.Decided || !sameInquiry(*a, *b) {
+				if b.Canonical != "" || b.Decided || b.Expires <= now.UnixMilli() || sharedTerminal(*b) ||
+					!s.completeCase(*b) || !sameInquiry(*a, *b) {
 					continue
 				}
 				canonical, alias := a, b
-				if b.Decided || !a.Decided && a.NotificationID == 0 && b.NotificationID > 0 {
+				if a.NotificationID == 0 && b.NotificationID > 0 {
 					canonical, alias = b, a
 				}
 				alias.Canonical = canonical.Ref
@@ -602,8 +630,9 @@ func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) 
 
 // Navigate persists the details page while retaining callback binding.
 func (s *SharedStore) Navigate(ctx context.Context, peer int64, ref string, revision int, admin int64, anchor, page int) error {
-	return s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.Revision != revision || c.AdminID != admin || c.NotificationID != anchor ||
+	return s.change(ctx, ref, func(tx journalTx, c *SharedCase) error {
+		if !s.anchorBound(ctx, tx, *c, peer, admin, anchor) || c.Revision != revision ||
+			c.AdminID != admin || c.NotificationID != anchor ||
 			anchor <= 0 || page < 0 || page > 100 {
 			return fmt.Errorf("invalid shared navigation")
 		}

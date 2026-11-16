@@ -92,20 +92,29 @@ chat. A local immutable receipt and outbox entry commit together; zero matches
 and search refusals are persisted too. Local cards for these receipts are
 suppressed. Ordinary detector, reporting and other moderation paths are unchanged.
 
-Repeated inquiries coalesce while active only when they refer to the same
+Unselected inquiries coalesce only when they refer to the same
 exact local original IDs **and numeric provenance**, not text or display names.
 The full delivery ledger remains separate. Different originals retain separate
 target identities. A changed candidate set starts a new inquiry; it cannot
 expand an existing confirmed selection. A provisional inquiry can be merged
-only before its card send is reserved and before any decision exists.
+only before it has been displayed or selected. A new forward after a saved
+decision starts a separate logical decision epoch behind the same Telegram
+message. This allows an explicit choice for late targets while earlier work
+is still pending or uncertain; it cannot expand that earlier decision.
 
-With crossed late deliveries, different bots may initially report disjoint
-original sets for two forwards. Their relation is not yet proven, so provisional
-partial cards can exist. Once every peer establishes the same exact candidate
-sets, reconciliation keeps one active card and edits the additional known
-anchor into a short link to it, invalidating its action buttons. It never
-combines two already accepted decisions. If evidence never arrives, it cannot
-truthfully infer equivalence from text; the partial inquiries expire normally.
+Every logical inquiry shares **one persistent Telegram message per admin chat**.
+Distinct inquiries retain their separate refs, targets, requesters, decisions and
+deadlines; the card provides paginated inquiry navigation and history. Navigation
+never authorizes moderation. Callbacks must match the inquiry currently displayed
+in that anchor, in addition to its saved revision and the current operator role.
+
+Crossed late deliveries therefore cannot create additional provisional cards,
+even before the relationship between their original sets is known. Exact-set
+coalescing can later simplify the inquiry menu; it never merges distinct original
+identities or combines two accepted decisions. While correspondence is unproven,
+the inquiries remain separate behind the same message. The next pending inquiry
+is shown after the current one finishes; explicit navigation can pin a historical
+view without extending any expiry or delete deadline.
 
 One fixed bot ID owns the Telegram card and callbacks. Other processes may
 resume that bot's work after restart, using SQL claims. A different bot cannot
@@ -140,17 +149,31 @@ cached as an optimization, with SQL still authoritative after restart. Card
 creation/edit claims have 30-second leases and 15-second HTTP timeouts. Known
 rejected retryable sends/edits have at most five attempts with ten-second waits.
 An uncertain first send, lost acknowledgement, or abandoned initial-send lease
-is marked `unknown`: it is **never blindly resent**. Missing edit anchors are
+is marked `unknown` for the shared admin-chat anchor: it is **never blindly resent**,
+even when another independent inquiry or an explicit new attempt arrives.
+Missing edit anchors are
 not replaced with new cards. Operator reconciliation of such cases is required;
 there is no exactly-once Telegram API guarantee.
 
 Choices expire after 15 minutes; local expiry can be earlier when handoff was
-delayed. A permanent refusal, expiry or finished decision requires a **new
-forward plus explicit choice** for another attempt. Confirmed actions are linked
+delayed. A refused or finished already-imported decision, or an expired inquiry,
+requires a **new forward plus explicit choice** for another attempt. Confirmed actions are linked
 instead of repeated; earliest delete deadlines survive new receipts. Old case
-callbacks remain bound to their own ref/revision/anchor and cannot authorize
+callbacks remain bound to their own ref/revision/anchor and the currently
+displayed inquiry and cannot authorize
 the next attempt. Unknown action outcomes follow the existing worker's recovery
 rules, never a second coordinator action executor.
+
+Local admission also checks a causal snapshot of any known terminal refusals.
+The snapshot includes a hash of the local action identity, terminal state, code
+and attempt generation. A failure that appears after an automatic or explicit
+intent was saved cannot be retried by delayed dispatch: the local transaction
+admits no actions and the same inquiry requires a fresh explicit choice. Changed
+refusal snapshots invalidate old buttons. This uses recorded facts, not clock
+ordering between hosts. Superseded intents retain their exact original sets,
+operator and reason in Details; no deadline is extended. At most 21 superseded
+intents are retained per inquiry before further choices require a new inquiry.
+
 
 Hard limits: five peers, 20 originals per peer, 500 inquiries in the shared DB and
 500 delivered-or-pending outbox entries per bot (2,500 delivery rows total). Each report omits source quotes;
@@ -177,7 +200,8 @@ from the multi-instance test fixture, with synthetic identities only.
 
 Regression tests use real separate SQL journals, the listener source recorder,
 actual forward handler, actual shared renderer and actual recovery worker with
-Telegram mocks. PostgreSQL exercises the same incident scenario in full CI.
+Telegram mocks. PostgreSQL exercises the incident, independent-inquiry navigation and crossed-late
+delivery scenarios, plus delayed-intent refusal guards, in full CI.
 Existing build/test/race/lint, recovery, reporting, auto-trust and e2e workflows
 are retained without weakening checks. Final results and exact reviewed HEAD are
 reported in the PR and the local validation receipt.
