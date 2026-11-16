@@ -99,6 +99,14 @@ target identities. A changed candidate set starts a new inquiry; it cannot
 expand an existing confirmed selection. A provisional inquiry can be merged
 only before its card send is reserved and before any decision exists.
 
+With crossed late deliveries, different bots may initially report disjoint
+original sets for two forwards. Their relation is not yet proven, so provisional
+partial cards can exist. Once every peer establishes the same exact candidate
+sets, reconciliation keeps one active card and edits the additional known
+anchor into a short link to it, invalidating its action buttons. It never
+combines two already accepted decisions. If evidence never arrives, it cannot
+truthfully infer equivalence from text; the partial inquiries expire normally.
+
 One fixed bot ID owns the Telegram card and callbacks. Other processes may
 resume that bot's work after restart, using SQL claims. A different bot cannot
 edit the original bot's Telegram card; owner migration requires an explicit
@@ -152,8 +160,10 @@ keeps its existing queue and limits. Terminal history is not silently discarded.
 Archive/rotation needs an explicit maintenance procedure retaining receipt,
 delivery and earliest-deadline tombstones before raising the limit. This initial
 bounded design is for the five-bot fleet, not an indefinite high-volume service.
-Expect several MiB to tens of MiB of metadata at the cap, bounded polling reads,
-and no build-time or continuously resident extra service process. Measure actual
+Expect tens to low hundreds of MiB of metadata at the cap including delivery
+snapshots, indexes and journal overhead; these are estimates, not a capacity
+benchmark. Full-history JSON reads also use transient buffers. Polling is bounded,
+with no build-time or continuously resident extra service process. Measure actual
 SQL latency and disk growth during the future observation period.
 
 ## Card and validation
@@ -196,10 +206,36 @@ reported in the PR and the local validation receipt.
    original journals and deadlines; the new feature governs new intake only.
 7. To roll back, fence new shared intake, preserve/export current shared state
    and every **current** runtime DB, and account for already imported local
-   actions before disabling coordination. Revert the binary/config only after
-   deciding how to finish or cancel still-authorized local work. Keep shared
+   actions before disabling coordination. The simplest rollback clears the shared
+   feature flag while retaining this binary and its silent-card guard. Revert to
+   a pre-feature binary only after deciding how to finish or cancel still-authorized
+   local work and applying the notification fence below. Keep shared
    state for review; no cross-database transaction or global cancel is promised.
-   Additive SQL tables are compatible with the old binary. **Never restore an
+   Additive SQL tables are structurally compatible with the old binary, but its
+   worker does not know the silent-card table. **Never restore an
    old runtime DB**: that would lose decisions, deduplication and deadlines.
+
+For an older-binary rollback, stop only the affected bot workers after taking the
+fresh backups above. In each affected current runtime DB, run this transaction
+with a bound `gid`; use `BEGIN IMMEDIATE` for SQLite, `BEGIN` for PostgreSQL:
+
+```sql
+UPDATE moderation_cards SET destination=0
+WHERE gid=:gid AND EXISTS (
+  SELECT 1 FROM moderation_silent_cards s
+  WHERE s.gid=moderation_cards.gid AND s.receipt=moderation_cards.receipt
+);
+```
+
+Commit and verify only silent card contexts changed. Preserve all receipt
+destinations, decisions, actions, targets and deadlines. This makes an older
+worker's possible local-card notifications fail its existing
+`notification_destination_changed` gate before any Telegram call; it does not
+withdraw authorized moderation actions. Known shared anchors belong to the
+shared DB and remain untouched. The rollback regression checks this SQL and the
+existing recovery gate using legacy-shaped notification work; it is not a
+full deployment rehearsal of the old binary. Confirm this boundary in the future
+staging rehearsal before deployment. No old DB restore or shared-state deletion
+is part of the procedure.
 
 No real production action, merge or deployment was performed for this PR.

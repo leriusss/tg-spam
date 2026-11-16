@@ -118,6 +118,11 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		}
 		s.cache[key] = string(raw)
 	}
+	if s.config.Peer == s.config.Owner {
+		if e := store.Reconcile(ctx, s.config.Peer, now); e != nil {
+			return fmt.Errorf("reconcile shared inquiries: %w", e)
+		}
+	}
 	cases, err := store.Cases(ctx)
 	if err != nil {
 		return fmt.Errorf("read shared cases: %w", err)
@@ -144,7 +149,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		if s.config.Peer != s.config.Owner {
 			continue
 		}
-		if !c.Decided && len(c.Reports) == len(s.config.Peers) {
+		if c.Canonical == "" && !c.Decided && len(c.Reports) == len(s.config.Peers) {
 			if e := store.AutoChoose(ctx, s.config.Peer, c.Ref, now); e != nil {
 				return fmt.Errorf("admit unique shared original: %w", e)
 			}
@@ -162,6 +167,9 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 }
 
 func (s *sharedForward) render(ctx context.Context, store *moderation.SharedStore, c moderation.SharedCase, now time.Time) error {
+	if c.Canonical != "" && c.NotificationID == 0 {
+		return nil
+	}
 	text, buttons := sharedCard(c, s.config.Peers, now)
 	raw, err := json.Marshal(buttons)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,15 @@ import (
 )
 
 func sharedCard(c moderation.SharedCase, peers []int64, now time.Time) (string, tbapi.InlineKeyboardMarkup) {
+	if c.Canonical != "" {
+		anchor := fmt.Sprintf("№%d", c.CanonicalAnchor)
+		chat := strconv.FormatInt(c.AdminID, 10)
+		if strings.HasPrefix(chat, "-100") && c.CanonicalAnchor > 0 {
+			anchor = fmt.Sprintf("<a href=\"https://t.me/c/%s/%d\">№%d</a>", chat[4:], c.CanonicalAnchor, c.CanonicalAnchor)
+		}
+		return "Найден тот же сохранённый набор оригиналов. Используйте общую карточку " + anchor + ". Новых действий нет.",
+			tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{}}
+	}
 	var out strings.Builder
 	out.WriteString("Ручная модерация — общее обращение.\n")
 	canChoose := !c.Decided && c.Expires > now.UnixMilli()

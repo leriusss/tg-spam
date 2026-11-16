@@ -28,6 +28,8 @@ type SharedChoice struct {
 // SharedCase retains incoming deliveries separately from exact original targets.
 type SharedCase struct {
 	Ref                                               string
+	Canonical                                         string
+	CanonicalAnchor                                   int
 	AdminID, Operator, Created, Expires, CollectUntil int64
 	Revision                                          int
 	Reports                                           []SharedReport
@@ -233,7 +235,7 @@ func (s *SharedStore) Submit(ctx context.Context, r SharedReport, now time.Time)
 		// Coalesce a new unsent provisional case with an existing active inquiry.
 		if len(deliveries) == 0 && (index < 0 || all[index].NotificationID == 0 && all[index].SendState == "" && !all[index].Decided) {
 			for i, c := range all {
-				if i == index || c.AdminID != r.Delivery.ChatID ||
+				if i == index || c.Canonical != "" || c.AdminID != r.Delivery.ChatID ||
 					c.Expires <= now.UnixMilli() || sharedTerminal(c) {
 					continue
 				}
@@ -365,7 +367,8 @@ func (s *SharedStore) Cases(ctx context.Context) (out []SharedCase, err error) {
 func (s *SharedStore) Decide(ctx context.Context, peer int64, ref string, revision int,
 	admin int64, anchor int, operator, targetPeer int64, targetIndex int, now time.Time) error {
 	return s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.Revision != revision || c.AdminID != admin || c.NotificationID != anchor || anchor <= 0 ||
+		if peer != s.owner || c.Canonical != "" || c.Revision != revision || c.AdminID != admin ||
+			c.NotificationID != anchor || anchor <= 0 ||
 			operator <= 0 || c.Expires <= now.UnixMilli() || c.Decided {
 			return errors.New("stale or unbound shared callback")
 		}
@@ -496,7 +499,7 @@ func (s *SharedStore) FinishCard(ctx context.Context, c SharedCase, anchor int, 
 // responded and only if that original does not require an explicit new attempt.
 func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, now time.Time) error {
 	return s.change(ctx, ref, func(c *SharedCase) error {
-		if peer != s.owner || c.Decided || c.Expires <= now.UnixMilli() || len(c.Reports) != len(s.peers) {
+		if peer != s.owner || c.Canonical != "" || c.Decided || c.Expires <= now.UnixMilli() || len(c.Reports) != len(s.peers) {
 			return nil
 		}
 		count := 0
@@ -516,6 +519,84 @@ func (s *SharedStore) AutoChoose(ctx context.Context, peer int64, ref string, no
 		}
 		c.DecisionOperator = c.Operator
 		return s.choose(c, only.Peer, 0)
+	})
+}
+
+func (s *SharedStore) completeCase(c SharedCase) bool {
+	if len(c.Reports) != len(s.peers) {
+		return false
+	}
+	for _, r := range c.Reports {
+		if r.SearchError != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func sameInquiry(a, b SharedCase) bool {
+	if a.AdminID != b.AdminID || len(a.Reports) != len(b.Reports) {
+		return false
+	}
+	found := false
+	for i, r := range a.Reports {
+		u := b.Reports[i]
+		if r.Peer != u.Peer || r.ChatID != u.ChatID {
+			return false
+		}
+		if len(r.Targets) == 0 && len(u.Targets) == 0 {
+			continue
+		}
+		if !sameOriginals(r, u) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+// Reconcile replaces a second provisional card with a pointer only after every
+// peer proves an identical exact-original set. It never combines two decisions.
+func (s *SharedStore) Reconcile(ctx context.Context, peer int64, now time.Time) error {
+	if peer != s.owner {
+		return errors.New("only card owner reconciles inquiries")
+	}
+	j := s.journal
+	return j.transaction(ctx, func(tx journalTx) error {
+		cases, err := s.cases(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for i := range cases {
+			a := &cases[i]
+			if a.Canonical != "" || a.Expires <= now.UnixMilli() || sharedTerminal(*a) || !s.completeCase(*a) {
+				continue
+			}
+			for k := i + 1; k < len(cases); k++ {
+				b := &cases[k]
+				if b.Canonical != "" || b.Expires <= now.UnixMilli() || sharedTerminal(*b) ||
+					!s.completeCase(*b) || a.Decided && b.Decided || !sameInquiry(*a, *b) {
+					continue
+				}
+				canonical, alias := a, b
+				if b.Decided || !a.Decided && a.NotificationID == 0 && b.NotificationID > 0 {
+					canonical, alias = b, a
+				}
+				alias.Canonical = canonical.Ref
+				alias.CanonicalAnchor = canonical.NotificationID
+				alias.Revision++
+				if err := s.save(ctx, tx, *alias); err != nil {
+					return err
+				}
+				if err := j.exec(ctx, tx, `UPDATE shared_deliveries SET ref=? WHERE gid=? AND ref=?`, canonical.Ref, j.db.GID(), alias.Ref); err != nil {
+					return err
+				}
+				if alias == a {
+					break
+				}
+			}
+		}
+		return nil
 	})
 }
 

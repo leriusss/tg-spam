@@ -302,6 +302,32 @@ func TestSharedDoesNotImportLegacyCards(t *testing.T) {
 	require.Len(t, f.fixtures[0].cards, 1)
 }
 
+func TestSharedOlderWorkerNotificationFencePreservesAuthority(t *testing.T) {
+	f := newSharedFleet(t, []int{2}, nil)
+	f.forward(t, 1324)
+	f.tick(t)
+	fixture := f.fixtures[0]
+	reports, err := fixture.j.SharedOutbox(context.Background())
+	require.NoError(t, err)
+	r := reports[0]
+	_, err = fixture.db.Exec(fixture.db.Adopt(`UPDATE moderation_cards SET destination=0 WHERE gid=? AND EXISTS (SELECT 1 FROM moderation_silent_cards s WHERE s.gid=moderation_cards.gid AND s.receipt=moderation_cards.receipt)`), fixture.db.GID())
+	require.NoError(t, err)
+	var destination int64
+	require.NoError(t, fixture.db.Get(&destination, fixture.db.Adopt(`SELECT destination FROM moderation_receipts WHERE gid=? AND id=?`), fixture.db.GID(), r.Receipt))
+	require.EqualValues(t, 456, destination)
+	// Model the older dirtyCard's notification after expiry/worker completion.
+	_, err = fixture.db.Exec(fixture.db.Adopt(`INSERT INTO moderation_actions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), fixture.db.GID(), r.Receipt+":card", r.Receipt, "card", 0, 0, "system", 0, 0, 0, moderation.Pending, "", 0, f.now.Add(time.Hour).UnixMilli(), f.now.UnixMilli(), "", 0, false, 1, 0, 0)
+	require.NoError(t, err)
+	fixture.settle(t)
+	require.Len(t, fixture.cards, 1)
+	rows, err := fixture.j.SharedOutbox(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, r.Targets, rows[0].Targets)
+	var code string
+	require.NoError(t, fixture.db.Get(&code, fixture.db.Adopt(`SELECT code FROM moderation_actions WHERE gid=? AND id=?`), fixture.db.GID(), r.Receipt+":card"))
+	require.Equal(t, "notification_destination_changed", code)
+}
+
 func TestSharedHistoricalSuccessAndPartialFailure(t *testing.T) {
 	f := newSharedFleet(t, []int{2, 2}, nil)
 	prior := moderation.Plan{Key: "source:-1000:800:user:501", ChatID: -1000, IdentityID: 501, IdentityKind: "user", MessageID: 800, Destination: 456, Origin: "detector",
@@ -458,6 +484,40 @@ func TestSharedLateResponseAndRoleRevocation(t *testing.T) {
 	require.Empty(t, f.fixtures[0].banCalls)
 	require.Empty(t, f.fixtures[0].deleteCalls)
 	require.Empty(t, f.fixtures[1].banCalls)
+}
+
+func TestSharedCrossedLateDeliveriesLeaveOneActiveCard(t *testing.T) {
+	f := newSharedFleet(t, []int{2, 2}, nil)
+	f.forward(t, 1324, 0)
+	f.forward(t, 1325, 1)
+	f.tick(t)
+	cases, err := f.store.Cases(context.Background())
+	require.NoError(t, err)
+	require.Len(t, cases, 2)
+	require.Len(t, f.fixtures[0].cards, 2)
+	f.forward(t, 1324, 1)
+	f.forward(t, 1325, 0)
+	f.tick(t)
+	cases, err = f.store.Cases(context.Background())
+	require.NoError(t, err)
+	active, aliases := 0, 0
+	for _, c := range cases {
+		if c.Canonical == "" {
+			active++
+			continue
+		}
+		aliases++
+		text, keyboard := sharedCard(c, f.bridges[0].config.Peers, f.now)
+		require.Contains(t, text, "Используйте общую карточку")
+		require.Empty(t, keyboard.InlineKeyboard)
+		f.choose(t, c, "all", nil)
+	}
+	require.Equal(t, 1, active)
+	require.Equal(t, 1, aliases)
+	for _, fixture := range f.fixtures {
+		require.Empty(t, fixture.banCalls)
+		require.Empty(t, fixture.deleteCalls)
+	}
 }
 
 func TestSharedSingleOriginalAndTerminalRetry(t *testing.T) {
