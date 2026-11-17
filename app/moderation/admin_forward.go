@@ -28,6 +28,7 @@ type ForwardTarget struct {
 	Text              string
 	Blocked           string
 	Deadline          int64
+	BanDeadline       int64
 }
 
 // ForwardBatch stores an immutable candidate set and its one explicit decision.
@@ -108,6 +109,7 @@ func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator
 		if found {
 			out = old
 			if shared != nil {
+				shared.Policy = "" // replay cannot upgrade a historical intake; existing outbox wins
 				var silent int
 				if e := tx.GetContext(ctx, &silent, j.db.Adopt(`SELECT count(*) FROM moderation_silent_cards WHERE gid=? AND receipt=?`), j.db.GID(), old.Receipt); e != nil {
 					return journalError(e)
@@ -188,6 +190,9 @@ func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator
 		ongoing := false
 		for i := range targets {
 			t := &targets[i]
+			if shared != nil && shared.Policy == ForwardAllPolicy {
+				t.BanDeadline = now.Add(24 * time.Hour).UnixMilli()
+			}
 			allBlocked = allBlocked && t.Blocked != ""
 			t.Deadline = now.Add(24 * time.Hour).UnixMilli()
 			if t.MessageDate > 0 && t.MessageDate <= now.Unix() {
@@ -252,14 +257,18 @@ func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator
 		} else if ongoing && !review {
 			out.Reason = "ongoing"
 		}
-		raw, e := json.Marshal(targets)
-		if e != nil {
-			return journalError(e)
+		raw, marshalErr := json.Marshal(targets)
+		if marshalErr != nil {
+			return journalError(marshalErr)
 		}
 		if e := j.exec(ctx, tx, `INSERT INTO moderation_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)`, j.db.GID(), id, chat, 0, "message", targets[0].MessageID, destination, "ready", "", 0, now.UnixMilli()); e != nil {
 			return e
 		}
-		if e := j.exec(ctx, tx, `INSERT INTO moderation_forward_batches VALUES (?,?,?,?,?,?,?)`, j.db.GID(), id, operator, now.Add(15*time.Minute).UnixMilli(), "pending", string(raw), "[]"); e != nil {
+		expires := now.Add(15 * time.Minute).UnixMilli()
+		if shared != nil && shared.Policy == ForwardAllPolicy {
+			expires = min(expires, shared.Expires)
+		}
+		if e := j.exec(ctx, tx, `INSERT INTO moderation_forward_batches VALUES (?,?,?,?,?,?,?)`, j.db.GID(), id, operator, expires, "pending", string(raw), "[]"); e != nil {
 			return e
 		}
 		if e := j.exec(ctx, tx, `INSERT INTO moderation_forward_deliveries VALUES (?,?,?,?,?,?,?,?)`, j.db.GID(), delivery.UpdateID, delivery.ChatID, delivery.MessageID, operator, id, out.Previous, out.Reason); e != nil {
@@ -298,6 +307,13 @@ func (j *Journal) acceptForward(ctx context.Context, chat, destination, operator
 		}
 		if shared != nil {
 			shared.Receipt = id
+			if shared.Policy == ForwardAllPolicy {
+				refusals, refusalErr := j.sharedRefusalsTX(ctx, tx, *shared, targets, now)
+				if refusalErr != nil {
+					return refusalErr
+				}
+				shared.Refusals = refusals
+			}
 			if e := j.saveSharedOutbox(ctx, tx, *shared); e != nil {
 				return e
 			}
@@ -318,6 +334,10 @@ func forwardActions(t ForwardTarget, receipt string, chat int64, now time.Time) 
 	}
 	actions := []Action{del}
 	if t.IdentityID != 0 {
+		deadline := t.BanDeadline
+		if deadline == 0 {
+			deadline = now.Add(24 * time.Hour).UnixMilli()
+		}
 		kind := "ban"
 		if t.BanKind == "restrict" && t.IdentityKind == "user" {
 			kind = "restrict"
@@ -325,7 +345,7 @@ func forwardActions(t ForwardTarget, receipt string, chat int64, now time.Time) 
 		actions = append(
 			actions,
 			Action{ID: fmt.Sprintf("%s:%s:%d", receipt, t.IdentityKind, t.IdentityID), Receipt: receipt, Kind: kind,
-				ChatID: chat, IdentityID: t.IdentityID, IdentityKind: t.IdentityKind, Deadline: now.Add(24 * time.Hour).UnixMilli()},
+				ChatID: chat, IdentityID: t.IdentityID, IdentityKind: t.IdentityKind, Deadline: deadline},
 		)
 	}
 	return actions

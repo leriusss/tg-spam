@@ -27,7 +27,8 @@ type sharedAnchor struct {
 
 // SharedView presents one inquiry without any global selected or pinned view.
 type SharedView struct {
-	Case SharedCase
+	Case      SharedCase
+	PeerNames map[int64]string // presentation only, learned from saved participant reports
 }
 
 // ForeignNamespaceBlocked prevents legacy handlers from adopting known shared cards.

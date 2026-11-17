@@ -39,12 +39,13 @@ import (
 )
 
 type options struct {
-	SharedForwardDB    string  `long:"shared-forward-db" env:"SHARED_FORWARD_DB" description:"opt-in separate coordination database; empty disables shared forwards"`
-	SharedForwardOwner int64   `long:"shared-forward-owner" env:"SHARED_FORWARD_OWNER" description:"fixed numeric card-owner bot ID"`
-	SharedForwardPeers []int64 `long:"shared-forward-peer" env:"SHARED_FORWARD_PEERS" env-delim:"," description:"complete numeric bot-ID roster"`
-	ModerationRecovery bool    `long:"moderation-recovery" env:"MODERATION_RECOVERY" description:"enable durable moderation recovery"`
-	InstanceID         string  `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
-	DataBaseURL        string  `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
+	SharedForwardDB     string  `long:"shared-forward-db" env:"SHARED_FORWARD_DB" description:"opt-in separate coordination database; empty disables shared forwards"`
+	SharedForwardPolicy string  `long:"shared-forward-policy" env:"SHARED_FORWARD_POLICY" default:"forward_all_v1" choice:"forward_all_v1" choice:"legacy" description:"policy for new shared forward intake; existing decisions retain their policy"`
+	SharedForwardOwner  int64   `long:"shared-forward-owner" env:"SHARED_FORWARD_OWNER" description:"fixed numeric card-owner bot ID"`
+	SharedForwardPeers  []int64 `long:"shared-forward-peer" env:"SHARED_FORWARD_PEERS" env-delim:"," description:"complete numeric bot-ID roster"`
+	ModerationRecovery  bool    `long:"moderation-recovery" env:"MODERATION_RECOVERY" description:"enable durable moderation recovery"`
+	InstanceID          string  `long:"instance-id" env:"INSTANCE_ID" default:"tg-spam" description:"instance id"`
+	DataBaseURL         string  `long:"db" env:"DB" default:"tg-spam.db" description:"database URL, if empty uses sqlite"`
 
 	Telegram struct {
 		Token             string        `long:"token" env:"TOKEN" description:"telegram bot token"`

@@ -1,5 +1,12 @@
 # Manual moderation by personal forward
 
+Shared coordination now defaults to the versioned
+[forward instruction policy](../FORWARD_INSTRUCTION_POLICY.md): new personal
+admin forwards automatically process all admissible originals, without a choice
+callback. The single-instance and historical selection rules below remain intact.
+`SHARED_FORWARD_POLICY=legacy` restores the previous shared admission policy on a
+compatible binary; it does not reinterpret old receipts or cancel accepted work.
+
 ## Runtime path and authorization
 
 `TelegramListener.Do` routes admin chat messages to `admin.MsgHandler`. Only a

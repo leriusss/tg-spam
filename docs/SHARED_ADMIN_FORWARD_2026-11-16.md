@@ -137,6 +137,11 @@ Callback data is bounded to 64 bytes; legacy incident cards are not rewritten.
 Late results edit the corresponding inquiry's card and never expand a saved
 selection. Missing peers are shown honestly in the renderer.
 
+New intakes use the versioned [forward instruction policy](FORWARD_INSTRUCTION_POLICY.md):
+all admissible saved originals are processed without a callback, and a late
+participant receives a separate frozen local decision within the original expiry.
+The following selection protocol remains for historical/explicit `legacy` intake.
+
 If all configured bots answered and exactly one original is admissible without
 retry review, the existing single-original workflow proceeds. Otherwise the
 operator selects a chat, a particular original in Details, or all explicitly
@@ -216,7 +221,7 @@ alter B. On the next poll the actual renderer edits only this verified message.
 Old buttons remain stale. Preserve the backup, verification evidence and tool
 result as the private operator record. No such operation was run in production.
 
-Local admission also checks a causal snapshot of any known terminal refusals.
+For historical selection intake, local admission also checks a causal snapshot of any known terminal refusals.
 The snapshot includes a hash of the local action identity, terminal state, code
 and attempt generation. A failure that appears after an automatic or explicit
 intent was saved cannot be retried by delayed dispatch: the local transaction
@@ -268,6 +273,11 @@ The independent SQLite regression fixtures run in parallel so the expanded suite
 fits the existing CI time limit; assertions and workflow timeouts are unchanged.
 
 ## Future activation, observation and rollback
+
+For the new instruction policy, use the activation and compatible rollback gates
+in [FORWARD_INSTRUCTION_POLICY.md](FORWARD_INSTRUCTION_POLICY.md). The older-binary
+notification fence below is necessary for pre-shared binaries but is not a complete
+policy downgrade procedure: unfinished instruction dispatch must also be protected.
 
 1. Review and approve the exact engine HEAD independently. No activation is
    authorized by this document or draft PR.

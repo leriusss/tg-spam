@@ -15,6 +15,9 @@ import (
 func sharedViewCard(view moderation.SharedView, peers []int64, now time.Time) (string, tbapi.InlineKeyboardMarkup) {
 	c := view.Case
 	text, keyboard := sharedCard(c, peers, now)
+	if c.Policy == moderation.ForwardAllPolicy && c.Canonical == "" {
+		text, keyboard = sharedInstructionCard(c, peers, view.PeerNames, now)
+	}
 	if len(c.Reports) > 0 && c.Reports[0].Delivery.MessageID > 0 {
 		text = fmt.Sprintf("Пересылка №%d.\n", c.Reports[0].Delivery.MessageID) + text
 	}
@@ -31,6 +34,9 @@ func sharedCard(c moderation.SharedCase, peers []int64, now time.Time) (string, 
 		}
 		return "Найден тот же сохранённый набор оригиналов. Используйте общую карточку " + anchor + ". Новых действий нет.",
 			tbapi.InlineKeyboardMarkup{InlineKeyboard: [][]tbapi.InlineKeyboardButton{}}
+	}
+	if c.Policy == moderation.ForwardAllPolicy {
+		return sharedInstructionCard(c, peers, nil, now)
 	}
 	var out strings.Builder
 	out.WriteString("Ручная модерация — общее обращение.\n")

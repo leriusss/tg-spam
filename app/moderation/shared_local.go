@@ -14,6 +14,9 @@ import (
 // ErrSharedReview means a refusal appeared after the coordinator's saved intent.
 var ErrSharedReview = errors.New("shared decision needs fresh explicit review")
 
+// ForwardAllPolicy marks a newly admitted explicit forward, never legacy work.
+const ForwardAllPolicy = "forward_all_v1"
+
 // SharedRefusal is a causal snapshot of a known terminal local operation.
 type SharedRefusal struct {
 	Key, Kind, Code string
@@ -23,6 +26,8 @@ type SharedRefusal struct {
 
 // SharedReport contains one bot's search, never another bot's authority or token.
 type SharedReport struct {
+	Policy                                    string
+	RequestedAt                               int64
 	Peer, ChatID, Operator                    int64
 	Expires                                   int64
 	Name, Receipt, State, Reason, SearchError string
@@ -53,7 +58,10 @@ func (j *Journal) saveSharedOutbox(ctx context.Context, tx journalTx, r SharedRe
 		return ErrCapacity
 	}
 	// The authoritative target snapshot is loaded from the local receipt on export.
-	r.Targets, r.Actions, r.Refusals = nil, nil, nil
+	r.Targets, r.Actions = nil, nil
+	if r.Policy != ForwardAllPolicy {
+		r.Refusals = nil
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return journalError(err)
@@ -64,6 +72,15 @@ func (j *Journal) saveSharedOutbox(ctx context.Context, tx journalTx, r SharedRe
 // AcceptSharedForward never auto-selects and never schedules a local card.
 // Receipt and outbox commit together, including deliveries with no matches.
 func (j *Journal) AcceptSharedForward(ctx context.Context, r SharedReport, now time.Time) error {
+	if r.Policy != "" && r.Policy != ForwardAllPolicy {
+		return errors.New("unsupported forward policy")
+	}
+	if r.Policy == ForwardAllPolicy {
+		if r.RequestedAt <= 0 || r.RequestedAt > now.Add(5*time.Second).UnixMilli() {
+			return errors.New("forward instruction timestamp unavailable or in the future")
+		}
+		r.Expires = min(now.Add(15*time.Minute).UnixMilli(), r.RequestedAt+int64(15*time.Minute/time.Millisecond))
+	}
 	if r.Peer <= 0 || r.ChatID == 0 || r.Operator <= 0 || r.Delivery.ChatID == 0 ||
 		r.Delivery.UpdateID <= 0 || r.Delivery.MessageID <= 0 || len(r.Name) > 320 || len(r.SearchError) > 2000 {
 		return errors.New("invalid shared delivery")
@@ -97,7 +114,7 @@ func (j *Journal) SharedOutbox(ctx context.Context) ([]SharedReport, error) {
 			}
 			r.Targets, r.Actions, r.State, r.Reason = c.Forward.Targets, c.Actions, c.Forward.State, c.Forward.Reason
 			r.Expires = c.Forward.Expires
-			if r.State == "pending" {
+			if r.State == "pending" && r.Policy != ForwardAllPolicy {
 				var e error
 				r.Refusals, e = j.sharedRefusals(ctx, r, c.Forward.Targets)
 				if e != nil {
@@ -139,6 +156,11 @@ func (j *Journal) DecideSharedForward(ctx context.Context, r SharedReport, opera
 		if b.Requester != r.Operator {
 			return errors.New("shared requester mismatch")
 		}
+		if r.Policy == ForwardAllPolicy {
+			if err := j.forwardAllAuthority(ctx, tx, r, operator, now); err != nil {
+				return err
+			}
+		}
 		if b.State != "pending" || b.Expires <= now.UnixMilli() {
 			return errors.New("shared local choice expired")
 		}
@@ -151,9 +173,10 @@ func (j *Journal) DecideSharedForward(ctx context.Context, r SharedReport, opera
 				if e != nil {
 					return e
 				}
-				if !reused && review && (automatic || !slices.ContainsFunc(r.Refusals, func(f SharedRefusal) bool {
+				observed := slices.ContainsFunc(r.Refusals, func(f SharedRefusal) bool {
 					return f.Key == sharedRefusalKey(prior, wanted.Kind)
-				})) {
+				})
+				if !reused && review && (automatic && r.Policy != ForwardAllPolicy || !observed) {
 					return fmt.Errorf("%w: %s %s", ErrSharedReview, wanted.Kind, prior.Code)
 				}
 			}
@@ -172,33 +195,61 @@ func sharedRefusalKey(a Action, kind string) string {
 
 func (j *Journal) sharedRefusals(ctx context.Context, r SharedReport, targets []ForwardTarget) (out []SharedRefusal, err error) {
 	err = j.readCardTransaction(ctx, func(tx journalTx) error {
-		seen := map[string]bool{}
-		for i := range targets {
-			t := &targets[i]
-			for _, wanted := range forwardActions(*t, r.Receipt, r.ChatID, time.Now()) {
-				prior, reused, review, e := j.reusableForwardAction(ctx, tx, wanted, time.Now())
-				if e != nil {
-					return e
-				}
-				confirmed := reused && prior.State == Confirmed && !prior.Uncertain
-				if wanted.Kind == "original_delete" {
-					t.DeleteConfirmed = confirmed
-				} else {
-					t.BanConfirmed = confirmed
-				}
-				if reused || !review {
-					continue
-				}
-				key := sharedRefusalKey(prior, wanted.Kind)
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				out = append(out, SharedRefusal{Key: key, Kind: wanted.Kind, Code: prior.Code,
-					MessageID: wanted.MessageID, IdentityID: wanted.IdentityID})
-			}
-		}
-		return nil
+		out, err = j.sharedRefusalsTX(ctx, tx, r, targets, time.Now())
+		return err
 	})
 	return out, err
+}
+
+func (j *Journal) sharedRefusalsTX(ctx context.Context, tx journalTx, r SharedReport,
+	targets []ForwardTarget, now time.Time) (out []SharedRefusal, err error) {
+	seen := map[string]bool{}
+	for i := range targets {
+		t := &targets[i]
+		for _, wanted := range forwardActions(*t, r.Receipt, r.ChatID, now) {
+			prior, reused, review, e := j.reusableForwardAction(ctx, tx, wanted, now)
+			if e != nil {
+				return nil, e
+			}
+			confirmed := reused && prior.State == Confirmed && !prior.Uncertain
+			if wanted.Kind == "original_delete" {
+				t.DeleteConfirmed = confirmed
+			} else {
+				t.BanConfirmed = confirmed
+			}
+			if reused || !review {
+				continue
+			}
+			key := sharedRefusalKey(prior, wanted.Kind)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, SharedRefusal{Key: key, Kind: wanted.Kind, Code: prior.Code,
+				MessageID: wanted.MessageID, IdentityID: wanted.IdentityID})
+		}
+	}
+	return out, nil
+}
+
+// A coordinator cannot promote a legacy receipt or import a later refusal as a
+// fresh instruction. The original local intake is the authority for this policy.
+func (j *Journal) forwardAllAuthority(ctx context.Context, tx journalTx, r SharedReport,
+	operator int64, now time.Time) error {
+	var raw string
+	id := fmt.Sprintf("%d:%d", r.Delivery.ChatID, r.Delivery.MessageID)
+	if err := tx.GetContext(ctx, &raw, j.db.Adopt(`SELECT payload FROM moderation_shared_outbox WHERE gid=? AND id=?`), j.db.GID(), id); err != nil {
+		return journalError(err)
+	}
+	var saved SharedReport
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		return journalError(err)
+	}
+	if saved.Policy != ForwardAllPolicy || saved.Receipt != r.Receipt || saved.Delivery != r.Delivery ||
+		saved.Operator != operator || operator != r.Operator || r.Expires <= now.UnixMilli() ||
+		r.RequestedAt != saved.RequestedAt || r.Expires > saved.Expires ||
+		!slices.Equal(saved.Refusals, r.Refusals) {
+		return errors.New("forward instruction does not match immutable local intake")
+	}
+	return nil
 }

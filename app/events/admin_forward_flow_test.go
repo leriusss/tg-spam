@@ -158,7 +158,7 @@ func originalForwardUpdate(mid int, author int64) tbapi.Update {
 	return tbapi.Update{UpdateID: mid + 10000, Message: m}
 }
 func manualForwardUpdate() tbapi.Update {
-	return tbapi.Update{UpdateID: 20000, Message: &tbapi.Message{Chat: tbapi.Chat{ID: 456}, MessageID: 900, From: &tbapi.User{ID: 11}, Text: "same fixture original", ForwardOrigin: &tbapi.MessageOrigin{Type: "hidden_user", SenderUserName: "Untrusted name"}}}
+	return tbapi.Update{UpdateID: 20000, Message: &tbapi.Message{Date: int(time.Now().Unix()), Chat: tbapi.Chat{ID: 456}, MessageID: 900, From: &tbapi.User{ID: 11}, Text: "same fixture original", ForwardOrigin: &tbapi.MessageOrigin{Type: "hidden_user", SenderUserName: "Untrusted name"}}}
 }
 
 // Exercise the real listener routing and source recorder, not direct enqueue helpers.

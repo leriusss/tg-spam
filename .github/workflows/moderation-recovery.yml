@@ -22,6 +22,8 @@ jobs:
         run: go test -race -short -timeout=180s ./app/moderation ./app/events ./app/storage ./app
       - name: Repeat real SQLite claim contention regressions twenty times
         run: go test -race -count=20 -timeout=180s ./app/moderation -run '^(TestSimultaneousActionClaimsAcrossSQLHandles|TestClaimReadBusyRecovers|TestClaimFailedCommitReturnsNoOwner)$'
+      - name: Repeat instruction coordinator contention ten times
+        run: go test -race -count=10 -timeout=180s ./app/events -run '^TestInstructionConcurrentCoordinatorDecisions$'
       - name: Full project including PostgreSQL and capacity probe
         run: go test -race -timeout=300s ./...
       - name: Compile with race instrumentation

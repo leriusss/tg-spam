@@ -18,6 +18,7 @@ import (
 // SharedForwardConfig connects to coordination metadata only. Opening it runs
 // asynchronously: ordinary automatic moderation does not depend on this DB.
 type SharedForwardConfig struct {
+	Policy      string
 	Peer, Owner int64
 	Peers       []int64
 	Open        func(context.Context) (*moderation.SharedStore, func(), error)
@@ -37,6 +38,13 @@ func (s *sharedForward) clockNow() time.Time {
 		return s.now()
 	}
 	return time.Now()
+}
+
+func (s *sharedForward) decisionTime(start time.Time) time.Time {
+	if current := s.clockNow(); current.After(start) {
+		return current
+	}
+	return start
 }
 
 // Callback data is untrusted. Legacy dispatch must never reinterpret this message.
@@ -76,9 +84,12 @@ func deliveryForShared(u tbapi.Update) moderation.ForwardDelivery {
 	return moderation.ForwardDelivery{UpdateID: u.UpdateID, ChatID: u.Message.Chat.ID, MessageID: u.Message.MessageID}
 }
 
-func (s *sharedForward) captureFailure(delivery moderation.ForwardDelivery, operator int64, reason string) error {
-	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
+func (s *sharedForward) captureFailure(delivery moderation.ForwardDelivery, operator int64, reason string, sentAt ...int) error {
+	r := moderation.SharedReport{Policy: s.config.Policy, Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, SearchError: truncateRunes(reason, 500)}
+	if len(sentAt) == 1 {
+		r.RequestedAt = int64(sentAt[0]) * 1000
+	}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
 		if s.config.Peer != s.config.Owner {
 			log.Printf("[WARN] shared search refusal could not be journaled")
@@ -95,9 +106,13 @@ func (s *sharedForward) current() *moderation.SharedStore {
 	return s.store
 }
 
-func (s *sharedForward) capture(delivery moderation.ForwardDelivery, operator int64, targets []moderation.ForwardTarget) error {
-	r := moderation.SharedReport{Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
+func (s *sharedForward) capture(delivery moderation.ForwardDelivery, operator int64,
+	targets []moderation.ForwardTarget, sentAt ...int) error {
+	r := moderation.SharedReport{Policy: s.config.Policy, Peer: s.config.Peer, ChatID: s.admin.primChatID, Operator: operator,
 		Name: truncateRunes(s.admin.recovery.chatName, 80), Delivery: delivery, Targets: targets}
+	if len(sentAt) == 1 {
+		r.RequestedAt = int64(sentAt[0]) * 1000
+	}
 	if err := s.admin.recovery.journal.AcceptSharedForward(context.Background(), r, time.Now()); err != nil {
 		if s.config.Peer != s.config.Owner {
 			log.Printf("[WARN] shared forward could not be journaled")
@@ -184,7 +199,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 			continue
 		}
 		for _, choice := range c.Choices {
-			if choice.Report.Peer != s.config.Peer || choice.Report.ChatID != s.admin.primChatID {
+			if choice.Refusal != "" || choice.Report.Peer != s.config.Peer || choice.Report.ChatID != s.admin.primChatID {
 				continue
 			}
 			key := "decision:" + c.Ref + ":" + choice.Report.Receipt
@@ -192,8 +207,18 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 				continue
 			}
 			// The frozen local receipt additionally binds requester, delivery and expiry.
-			e := s.admin.recovery.journal.DecideSharedForward(ctx, choice.Report, c.DecisionOperator,
-				choice.Selected, c.Automatic, now)
+			decisionNow := s.decisionTime(now)
+			decisionCtx, cancelDecision := context.WithCancel(ctx)
+			if choice.Report.Policy == moderation.ForwardAllPolicy {
+				cancelDecision()
+				if choice.Report.Expires <= decisionNow.UnixMilli() {
+					continue // expiry cannot admit new local actions, including after restart
+				}
+				decisionCtx, cancelDecision = context.WithDeadline(ctx, time.UnixMilli(choice.Report.Expires))
+			}
+			e := s.admin.recovery.journal.DecideSharedForward(decisionCtx, choice.Report, c.DecisionOperator,
+				choice.Selected, c.Automatic, decisionNow)
+			cancelDecision()
 			if errors.Is(e, moderation.ErrSharedReview) {
 				if reviewErr := store.RequireReview(ctx, c.Ref, s.config.Peer, e.Error()); reviewErr != nil {
 					return fmt.Errorf("record fresh review: %w", reviewErr)
@@ -207,13 +232,36 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 		if s.config.Peer != s.config.Owner {
 			continue
 		}
-		if c.Canonical == "" && !c.Decided && len(c.Reports) == len(s.config.Peers) {
-			if e := store.AutoChoose(ctx, s.config.Peer, c.Ref, now); e != nil {
+		legacyChoice := c.Policy == "" && !c.Decided && len(c.Reports) == len(s.config.Peers)
+		if c.Canonical == "" && (c.HasPendingInstruction(now) || legacyChoice) {
+			decisionCtx, cancelDecision := context.WithCancel(ctx)
+			decisionNow := now
+			if c.Policy == moderation.ForwardAllPolicy {
+				if code := s.admin.forwardOperator(ctx, &tbapi.User{ID: c.Operator}); code != "" {
+					cancelDecision()
+					continue // workers independently recheck before every effect
+				}
+				decisionNow = s.decisionTime(now)
+				cancelDecision()
+				if !c.HasPendingInstruction(decisionNow) {
+					continue // the role lookup itself may have crossed the original expiry
+				}
+				decisionCtx, cancelDecision = context.WithDeadline(ctx, time.UnixMilli(c.Expires))
+			}
+			e := store.AutoChoose(decisionCtx, s.config.Peer, c.Ref, decisionNow)
+			cancelDecision()
+			if e != nil {
 				return fmt.Errorf("admit unique shared original: %w", e)
 			}
 		}
 	}
 	if s.config.Peer == s.config.Owner {
+		peerNames := map[int64]string{}
+		for _, previous := range cases {
+			for _, report := range previous.Reports {
+				peerNames[report.Peer] = report.Name
+			}
+		}
 		for _, c := range cases {
 			if c.AdminID != s.admin.adminChatID {
 				continue
@@ -223,6 +271,7 @@ func (s *sharedForward) step(ctx context.Context, now time.Time) error {
 				return fmt.Errorf("load shared presentation: %w", e)
 			}
 			if found {
+				view.PeerNames = peerNames
 				if e := s.render(ctx, store, view, now); e != nil {
 					return e
 				}
