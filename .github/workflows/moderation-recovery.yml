@@ -28,7 +28,7 @@ jobs:
       - name: Repeat execute cancellation and unexpected updates closure twenty times
         run: go test -race -count=20 -timeout=240s ./app -run '^TestTelegramStartupExecute$'
       - name: Repeat real SQLite claim contention regressions twenty times
-        run: go test -race -count=20 -timeout=180s ./app/moderation -run '^(TestSimultaneousActionClaimsAcrossSQLHandles|TestClaimReadBusyRecovers|TestClaimFailedCommitReturnsNoOwner)$'
+        run: go test -race -count=20 -timeout=180s ./app/moderation -run '^(TestSimultaneousActionClaimsAcrossSQLHandles|TestClaimReadBusyRecovers|TestClaimFailedCommitReturnsNoOwner|TestClaimCancellationLeavesUsablePool)$'
       - name: Repeat instruction coordinator contention ten times
         run: go test -race -count=10 -timeout=180s ./app/events -run '^TestInstructionConcurrentCoordinatorDecisions$'
       - name: Full project including PostgreSQL and capacity probe

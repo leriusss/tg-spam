@@ -101,6 +101,11 @@ func (j *Journal) transaction(ctx context.Context, fn func(journalTx) error) err
 			conn, err = j.db.Connx(ctx)
 			if err == nil {
 				_, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE")
+				if err != nil {
+					// Cancellation can be reported after SQLite has begun the transaction.
+					// Do not return a connection with an ambiguous BEGIN to the pool.
+					_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+				}
 				if err == nil {
 					_, err = conn.ExecContext(
 						ctx,

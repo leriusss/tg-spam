@@ -1,8 +1,9 @@
 # Startup shutdown and events CI budget
 
 Baseline: `96ff9b90fb41f24dcda394cbf762d3d8fe8a9f60` (PR #22 merge).
-This correction changes tests and CI only. Production listener, moderation,
-SQLite settings, retries and deadlines are unchanged.
+This correction changes tests and CI and adds a five-line connection-lifetime
+fix in production `Journal.transaction`. The production listener, moderation
+decisions, SQLite settings, retry budgets and deadlines are unchanged.
 
 ## Execute shutdown contract
 
@@ -29,6 +30,39 @@ Local Linux Go 1.25.14 verification: 20 race repetitions (60 child processes),
 173.106 seconds, passed. Recovery CI now makes these repetitions mandatory with
 a 240-second package deadline, leaving headroom above that measured run.
 
+## Cancellation at the SQLite BEGIN boundary
+
+An additional instrumented local run finished in 348.714 seconds but failed
+`TestInstructionLateProofRetiresProvisionalCard` with "cannot start a transaction
+within a transaction". This is a real connection-cleanup defect, distinct from
+the original package timeout; that run is not counted as successful validation.
+
+The cause is the gap between SQLite executing `BEGIN IMMEDIATE` and returning
+its result. The vendored modernc driver's `stmt.exec` has a deferred interruption
+check that can report `ctx.Err()` after execution. The journal previously assumed
+an error meant BEGIN had not opened a transaction. It released the connection
+without rollback or discard; a subsequent operation reused that active
+transaction and failed its own BEGIN.
+
+On a BEGIN error, the journal now marks the reserved connection `driver.ErrBadConn`
+through the standard `sql.Conn.Raw` API before releasing it. Closing the physical
+SQLite connection rolls back any open transaction. The original error is still
+returned; there is no speculative second BEGIN, swallowed error, renewed retry
+budget or acquired claim. The existing retry loop and SQL ownership boundary
+are unchanged. This cleanup is necessary for correctness under listener/worker
+cancellation, not an SQLite performance setting.
+
+`TestClaimCancellationLeavesUsablePool` makes this boundary deterministic using
+the existing real-file SQLite driver probe: execute real BEGIN, cancel, return
+the driver's ambiguous canceled result, then reuse the same SQL handle. It
+checks no owner/success on failure, unchanged attempts and control version,
+released reserved connections, exactly one subsequent claim/attempt, and no
+second claim. A second phase cancels after real writes but before COMMIT to
+preserve the existing rollback guarantee. The BEGIN phase fails consistently
+with the old journal; the COMMIT phase passes. The corrected journal passed 20
+race repetitions of both phases plus all existing claim-contention targets in
+49.048 seconds. These phases are also included in recovery CI's 20-repeat step.
+
 ## Why the events budget changes
 
 The original package-wide 180-second alarm expired while the active tests were
@@ -48,11 +82,29 @@ This is a slower filesystem/environment measurement, not a successful full run
 or a CI runner timing. It also shows why elapsed suite time must be measured
 separately from individual test time and from overlapping parallel durations.
 
+Two complete local Linux Go 1.25.14 baseline runs, including all four PostgreSQL
+test groups, passed with race and atomic coverage in 495.068 seconds (CPU/block
+profiling enabled) and 403.316 seconds (without profiling). Both used two CPUs
+and a 600-second diagnostic deadline on Docker Desktop's Linux filesystem;
+they are not measurements of the faster GitHub runner or the final fix.
+The first profile sampled 229.80 CPU seconds: SQLite parsing accounted for
+37.98% cumulatively, `NewJournal` for 20.03%, lifecycle migration for 6.29%, and
+`newForwardFixtureDB` for 10.78%. These cumulative paths overlap and must not be
+added. They confirm substantial real SQL/migration cost across many fixtures.
+Block time is dominated by test scheduling/channel waits and idle SQL opener
+goroutines; its aggregate across goroutines is not wall-clock duration.
+
+Fixture inspection retains `t.Cleanup` SQL-handle closure and explicit reopened
+handles in restart/inter-handle scenarios. Removing their migrations or changing
+database pragmas would remove realistic coverage rather than fix a proven
+fixture setup defect. The confirmed lifetime defect is fixed as described above.
+
 CI keeps the complete `./...` set, race, atomic coverage, PostgreSQL and all
 assertions, with a 360-second per-package deadline and a 25-minute job ceiling.
 The focused and full recovery suites use the same 360-second package budget.
-The existing 20 claim-contention and 10 coordinator-contention repetitions are
-unchanged. No fixture is replaced with mocks or an in-memory database and no
+The existing 20 claim-contention and 10 coordinator-contention targets are
+retained; the cleanup regression is added to the 20-repeat step. No fixture is
+replaced with mocks or an in-memory database and no
 production SQLite pragma is adjusted to make CI faster.
 
 ## Repeatable full-package diagnosis
