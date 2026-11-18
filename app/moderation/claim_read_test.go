@@ -31,6 +31,7 @@ type claimReadProbe struct {
 	onBegin     func(context.Context, error)
 	beginError  error
 	onCommit    func()
+	onRollback  func(error)
 	commitError error
 }
 
@@ -53,6 +54,10 @@ func (c *claimProbeConnector) Connect(_ context.Context) (driver.Conn, error) {
 type claimProbeConn struct {
 	driver.Conn
 	probe *claimReadProbe
+}
+
+func (c *claimProbeConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
 }
 
 func (c *claimProbeConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -78,6 +83,9 @@ func (c *claimProbeConn) ExecContext(ctx context.Context, query string, args []d
 		}
 	}
 	result, err := c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
+	if c.probe.enabled.Load() && query == "ROLLBACK" && c.probe.onRollback != nil {
+		c.probe.onRollback(err)
+	}
 	if c.probe.enabled.Load() && query == "BEGIN IMMEDIATE" {
 		if c.probe.onBegin != nil {
 			c.probe.onBegin(ctx, err)

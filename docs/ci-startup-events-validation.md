@@ -1,8 +1,9 @@
 # Startup shutdown and events CI budget
 
 Baseline: `96ff9b90fb41f24dcda394cbf762d3d8fe8a9f60` (PR #22 merge).
-This correction changes tests and CI and adds a five-line connection-lifetime
-fix in production `Journal.transaction`. The production listener, moderation
+This correction changes tests and CI, fixes connection lifetime in production
+`Journal.transaction`, and clears rolled-back `SharedStore.ClaimCard` results.
+The production listener, moderation
 decisions, SQLite settings, retry budgets and deadlines are unchanged.
 
 ## Execute shutdown contract
@@ -62,6 +63,37 @@ preserve the existing rollback guarantee. The BEGIN phase fails consistently
 with the old journal; the COMMIT phase passes. The corrected journal passed 20
 race repetitions of both phases plus all existing claim-contention targets in
 49.048 seconds. These phases are also included in recovery CI's 20-repeat step.
+
+## Shared-card ownership belongs to a committed attempt
+
+One independent full Linux race/atomic-coverage profile exposed another real
+defect: `TestSharedConcurrentCardClaimsAcrossRestartedStores` counted two
+successful callers instead of one. The SQL transaction callback can run again
+after SQLITE_BUSY and rollback. `ClaimCard` captured `out` and `claimed` outside
+that callback, set them before COMMIT, and retained those values if a retried
+attempt lost the lease to another SQL handle. A terminal COMMIT error could
+also return a successful flag and an uncommitted lease.
+
+The fix resets those two result values on every transaction attempt and returns
+an empty result/false on transaction error. It does not change lease durations,
+retry rules, case selection or SQL ownership. A rolled-back attempt grants no
+permission to send or edit a card.
+
+Two deterministic regressions use real file-backed SQL through the existing
+driver probe. One refuses COMMIT after the real claim writes and checks there
+is no successful return or persisted lease. The other refuses the first COMMIT,
+observes the real ROLLBACK, lets a separate SQL handle commit its lease, and
+only then lets the original call retry. It requires the retried loser to return
+false/no lease, with exactly one persisted attempt and the winning handle's
+lease. Both regressions fail on the old `ClaimCard`. The probe forwards native
+`BeginTx` so read-only store transactions remain real as well.
+
+Recovery CI repeats both regressions and the existing genuine concurrent
+restarted-store scenario 20 times. The original concurrent assertions and their
+PostgreSQL counterpart are retained. Failed intermediate profiles are retained
+as evidence and are not counted toward the final candidate's stability runs.
+Locally, the combined 20-repeat race run of all six claim regression targets
+completed successfully in 87.533 seconds.
 
 ## Why the events budget changes
 

@@ -201,6 +201,7 @@ func (s *SharedStore) ResolveUnknown(ctx context.Context, peer int64, ref string
 func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref string, revision int, rendered string,
 	now time.Time) (out SharedCase, claimed bool, err error) {
 	err = s.journal.transaction(ctx, func(tx journalTx) error {
+		out, claimed = SharedCase{}, false // a rolled-back attempt grants no lease on retry
 		c, e := s.readCase(ctx, tx, ref)
 		if e != nil {
 			return e
@@ -269,6 +270,9 @@ func (s *SharedStore) ClaimCard(ctx context.Context, peer int64, ref string, rev
 		claimed = true
 		return nil
 	})
+	if err != nil {
+		return SharedCase{}, false, err
+	}
 	return out, claimed, err
 }
 
