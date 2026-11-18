@@ -29,6 +29,9 @@ type claimReadProbe struct {
 	writes      atomic.Int32
 	onRead      func(context.Context, error)
 	onBegin     func(context.Context, error)
+	beginError  error
+	onCommit    func()
+	onRollback  func(error)
 	commitError error
 }
 
@@ -53,6 +56,10 @@ type claimProbeConn struct {
 	probe *claimReadProbe
 }
 
+func (c *claimProbeConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
 func (c *claimProbeConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	rows, err := c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
 	if c.probe.enabled.Load() && strings.Contains(query, "SELECT count(*) FROM moderation_actions") &&
@@ -69,12 +76,23 @@ func (c *claimProbeConn) ExecContext(ctx context.Context, query string, args []d
 	if c.probe.enabled.Load() {
 		c.probe.writes.Add(1)
 		if query == "COMMIT" && c.probe.commitError != nil {
+			if c.probe.onCommit != nil {
+				c.probe.onCommit()
+			}
 			return nil, c.probe.commitError
 		}
 	}
 	result, err := c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
-	if c.probe.enabled.Load() && query == "BEGIN IMMEDIATE" && c.probe.onBegin != nil {
-		c.probe.onBegin(ctx, err)
+	if c.probe.enabled.Load() && query == "ROLLBACK" && c.probe.onRollback != nil {
+		c.probe.onRollback(err)
+	}
+	if c.probe.enabled.Load() && query == "BEGIN IMMEDIATE" {
+		if c.probe.onBegin != nil {
+			c.probe.onBegin(ctx, err)
+		}
+		if err == nil && c.probe.beginError != nil {
+			return nil, c.probe.beginError
+		}
 	}
 	return result, err
 }
@@ -308,6 +326,55 @@ func TestClaimFailedCommitReturnsNoOwner(t *testing.T) {
 	a, ok, err := j.Claim(testCtx, now)
 	require.ErrorIs(t, err, probe.commitError)
 	assertUnclaimed(t, db, claimReadResult{a, ok, err})
+}
+
+func TestClaimCancellationLeavesUsablePool(t *testing.T) {
+	for _, phase := range []string{"begin", "commit"} {
+		t.Run(phase, func(t *testing.T) {
+			j, db, _, probe, _ := claimReadFixture(t)
+			now := seedClaimRead(t, j)
+			var before, version int64
+			query := "SELECT version FROM moderation_control WHERE gid=?"
+			require.NoError(t, db.Get(&before, query, db.GID()))
+			ctx, cancel := context.WithCancel(testCtx)
+			defer cancel()
+			if phase == "begin" {
+				// modernc stmt.exec may report ctx.Err() from its deferred interrupt
+				// check after executing BEGIN. The file-backed BEGIN remains real.
+				probe.onBegin = func(_ context.Context, err error) {
+					require.NoError(t, err, "SQLite must actually begin before cancellation")
+					cancel()
+				}
+				probe.beginError = context.Canceled
+			} else {
+				// Cancel after real claim/control writes but before COMMIT; verify
+				// the existing cancellation-independent rollback is preserved too.
+				probe.onCommit, probe.commitError = cancel, context.Canceled
+			}
+			probe.enabled.Store(true)
+			a, ok, err := j.Claim(ctx, now)
+			require.ErrorIs(t, err, context.Canceled)
+			probe.enabled.Store(false)
+			require.Zero(t, db.Stats().InUse, "failed claim must release its reserved connection")
+			assertUnclaimed(t, db, claimReadResult{a, ok, err})
+			require.NoError(t, db.Get(&version, query, db.GID()))
+			require.Equal(t, before, version, "cancellation must leave no uncommitted control writes")
+
+			// Reuse the same handle: exactly one subsequent owner and attempt.
+			a, ok, err = j.Claim(testCtx, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.Equal(t, 1, a.Attempts)
+			require.NotEmpty(t, a.Owner)
+			require.NoError(t, db.Get(&version, query, db.GID()))
+			require.Equal(t, before+1, version, "only the successful claim commits a control update")
+			other, claimed, err := j.Claim(testCtx, now)
+			require.NoError(t, err)
+			require.False(t, claimed, "the same action cannot acquire a second owner")
+			require.Empty(t, other.Owner)
+			require.Zero(t, db.Stats().InUse)
+		})
+	}
 }
 
 type claimReadEvent struct {
