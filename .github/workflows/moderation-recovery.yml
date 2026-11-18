@@ -5,6 +5,11 @@ on:
   pull_request:
     paths: ['app/**', 'tools/**', '.github/workflows/moderation-recovery.yml']
   workflow_dispatch:
+    inputs:
+      events-profile:
+        description: Run three independent full race/atomic-coverage events profiles
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -19,13 +24,15 @@ jobs:
         with:
           go-version: '1.25'
       - name: Focused recovery, safety and SQLite race checks
-        run: go test -race -short -timeout=180s ./app/moderation ./app/events ./app/storage ./app
+        run: go test -race -short -timeout=360s ./app/moderation ./app/events ./app/storage ./app
+      - name: Repeat execute cancellation and unexpected updates closure twenty times
+        run: go test -race -count=20 -timeout=240s ./app -run '^TestTelegramStartupExecute$'
       - name: Repeat real SQLite claim contention regressions twenty times
         run: go test -race -count=20 -timeout=180s ./app/moderation -run '^(TestSimultaneousActionClaimsAcrossSQLHandles|TestClaimReadBusyRecovers|TestClaimFailedCommitReturnsNoOwner)$'
       - name: Repeat instruction coordinator contention ten times
         run: go test -race -count=10 -timeout=180s ./app/events -run '^TestInstructionConcurrentCoordinatorDecisions$'
       - name: Full project including PostgreSQL and capacity probe
-        run: go test -race -timeout=300s ./...
+        run: go test -race -timeout=360s ./...
       - name: Compile with race instrumentation
         if: always()
         run: go build -race ./...
@@ -34,3 +41,40 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
           golangci-lint run --new-from-rev=44d5999c44554acef747d7e44ed11709ea513212
+  events-profile:
+    if: github.event_name == 'workflow_dispatch' && inputs.events-profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        repetition: [1, 2, 3]
+    env:
+      GOMAXPROCS: '2'
+      TZ: America/Chicago
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+      - name: Profile the full events package including PostgreSQL
+        run: |
+          set -o pipefail
+          go version
+          go test -json -race -count=1 -timeout=600s -covermode=atomic \
+            -coverprofile=events.cov -cpuprofile=events.cpu -blockprofile=events.block \
+            ./app/events | tee events.json
+          go tool pprof -top -cum -nodecount=25 events.cpu > events-cpu.txt
+          go tool pprof -top -nodecount=25 events.block > events-block.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: events-profile-${{ matrix.repetition }}
+          path: |
+            events.json
+            events.cov
+            events.cpu
+            events.block
+            events-cpu.txt
+            events-block.txt
+          retention-days: 14

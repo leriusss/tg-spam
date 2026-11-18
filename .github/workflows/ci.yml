@@ -18,6 +18,7 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
     - name: checkout
       uses: actions/checkout@v6
@@ -30,7 +31,9 @@ jobs:
 
     - name: build and test
       run: |
-        go test -v -race -timeout=180s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...
+        # Full SQL-backed events coverage exceeds the old package-wide 180s budget.
+        # See docs/ci-startup-events-validation.md for timings and profiles.
+        go test -v -race -timeout=360s -covermode=atomic -coverprofile=$GITHUB_WORKSPACE/profile.cov_tmp ./...
         go build -race ./...
         cat $GITHUB_WORKSPACE/profile.cov_tmp | grep -v "mocks" | grep -v "_mock" > $GITHUB_WORKSPACE/profile.cov
       env:

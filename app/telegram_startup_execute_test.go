@@ -31,7 +31,7 @@ func TestTelegramStartupExecute(t *testing.T) {
 		testTelegramStartupExecuteChild(t, scenario)
 		return
 	}
-	for _, scenario := range []string{"retry then success", "permanent failure"} {
+	for _, scenario := range []string{"retry then success", "updates closed", "permanent failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
@@ -75,6 +75,7 @@ func testTelegramStartupExecuteChild(t *testing.T, scenario string) {
 			ChatID: -100, IdentityID: 7, IdentityKind: "user", MessageID: 1, MessageDate: time.Now().Unix()}}}, time.Now())
 	require.NoError(t, err)
 	var getMe, polling, notices atomic.Int32
+	pollStarted, pollStopped := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		method := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
@@ -96,7 +97,10 @@ func testTelegramStartupExecuteChild(t *testing.T, scenario string) {
 		case "getChat":
 			_, _ = io.WriteString(w, `{"ok":true,"result":{"id":-100,"type":"supergroup","title":"fixture"}}`)
 		case "getUpdates":
-			polling.Add(1)
+			if polling.Add(1) == 1 {
+				close(pollStarted)
+				defer close(pollStopped)
+			}
 			<-r.Context().Done()
 		case "getChatMember":
 			_, _ = io.WriteString(w, `{"ok":true,"result":{"status":"member","user":{"id":7,"is_bot":false,"first_name":"fixture"}}}`)
@@ -114,10 +118,10 @@ func testTelegramStartupExecuteChild(t *testing.T, scenario string) {
 	var bot atomic.Pointer[tbapi.BotAPI]
 	// Cancel the library's polling context even when an assertion fails.
 	defer func() {
+		cancel()
 		if api := bot.Load(); api != nil {
 			api.StopReceivingUpdates()
 		}
-		cancel()
 	}()
 	clock := newStartupTestClock()
 	policy := clock.policy()
@@ -162,6 +166,13 @@ func testTelegramStartupExecuteChild(t *testing.T, scenario string) {
 		}
 		return
 	}
+	select {
+	case <-pollStarted:
+	case err = <-done:
+		t.Fatalf("startup stopped before polling: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("polling did not start")
+	}
 	var earlyErr error
 	require.Eventually(t, func() bool {
 		select {
@@ -188,14 +199,39 @@ func testTelegramStartupExecuteChild(t *testing.T, scenario string) {
 	require.EqualValues(t, 1, notices.Load())
 	require.EqualValues(t, 1, polling.Load())
 	require.Equal(t, 1, startupWorkerGoroutines(t), "one recovery worker after initialization")
-	bot.Load().StopReceivingUpdates()
-	cancel()
+	if scenario == "updates closed" {
+		// Closing the SDK channel with a live execute context is a failure,
+		// independently of the normal cancellation path below.
+		require.NoError(t, ctx.Err())
+		bot.Load().StopReceivingUpdates()
+	} else {
+		// Contract: cancel execute, join the listener and its recovery worker,
+		// then stop SDK polling. Keeping updates open makes cancellation the
+		// only possible exit cause; stopping both first would race in select.
+		cancel()
+	}
 	select {
 	case err = <-done:
-		require.ErrorIs(t, err, context.Canceled)
-		require.Zero(t, startupWorkerGoroutines(t), "worker must be joined on listener cancellation")
+		if scenario == "updates closed" {
+			require.EqualError(t, err, "telegram listener failed, telegram update chan closed")
+			require.NoError(t, ctx.Err(), "unexpected channel closure must not be hidden as cancellation")
+		} else {
+			require.ErrorIs(t, err, context.Canceled)
+			select {
+			case <-pollStopped:
+				t.Fatal("SDK polling stopped before the listener/worker joined")
+			default:
+			}
+		}
+		require.Zero(t, startupWorkerGoroutines(t), "worker must be joined on either listener exit")
 	case <-time.After(5 * time.Second):
 		t.Fatal("listener/worker did not stop")
+	}
+	bot.Load().StopReceivingUpdates()
+	select {
+	case <-pollStopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SDK polling request was not released")
 	}
 }
 
